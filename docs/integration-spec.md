@@ -6,6 +6,88 @@ Replace cryoglyph (bitmap atlas text renderer) with sluggrs (GPU curve
 evaluation) in iced's wgpu backend. The integration point is a single file:
 `iced/wgpu/src/text.rs` (~650 lines).
 
+## Blockers (resolve before implementation)
+
+### Blocker 1: Font byte access
+
+**Status**: Unresolved — requires a spike.
+
+`prepare()` needs raw font bytes for skrifa outline extraction. The path
+from `cosmic_text::LayoutGlyph::font_id` → `&[u8]` font data through
+cosmic_text's `FontSystem` must be validated with working code before
+Phase B can start. Candidate API path:
+
+```
+FontSystem::db() → fontdb::Database
+fontdb::Database::face_source(font_id) → Source::Binary(Arc<[u8]>)
+```
+
+If this doesn't work cleanly, alternatives include:
+- Maintaining a parallel font cache keyed by font_id
+- Using cosmic_text's swash integration to get font refs
+
+This spike should produce a standalone test that extracts an outline from
+a glyph returned by cosmic_text layout.
+
+### Blocker 2: Glyph cache key
+
+The glyph cache key must uniquely identify a glyph's outline geometry.
+`(font_id, glyph_id)` alone is NOT sufficient because:
+
+- **Variable fonts**: The same font_id + glyph_id produces different
+  outlines at different variation coordinates (weight, width, etc.)
+- **Font collections**: A font_id might map to different faces within
+  a collection
+
+The key must capture everything that affects outline shape:
+
+```rust
+#[derive(Hash, Eq, PartialEq)]
+pub struct GlyphKey {
+    /// cosmic_text font identifier — must uniquely identify the face
+    /// within the font database, including collection index
+    font_id: cosmic_text::fontdb::ID,
+    /// Glyph index within the font
+    glyph_id: u16,
+    /// Normalized variation coordinates, if any. For static fonts this
+    /// is empty. For variable fonts, this captures the specific instance.
+    /// Quantized to avoid floating-point hash instability.
+    variation_hash: u64,
+}
+```
+
+The exact fields depend on what cosmic_text exposes. The spike in Blocker 1
+should also determine what variation state is available at layout time.
+
+**Important**: The cache key deliberately excludes size, position, and
+subpixel offset. Outlines are resolution-independent — vertex attributes
+handle the per-instance transform. This is the core architectural advantage
+over cryoglyph's `CacheKey` which includes physical position.
+
+### Blocker 3: Non-vector glyph fallback
+
+Slug cannot render bitmap glyphs (color emoji, bitmap-only fonts).
+Silently skipping these is not acceptable — it produces user-visible
+missing text.
+
+**Required strategy for Phase 1**: Detect non-vector glyphs (no outline
+data from skrifa) and fall back to a bitmap path. Options:
+
+1. **Hybrid rendering**: Keep a minimal cryoglyph instance for bitmap-only
+   glyphs. Detect during prepare, route to the appropriate renderer.
+   Two draw calls per text batch (one Slug, one bitmap).
+
+2. **Skip in Phase 1, hard error in debug**: Render a visible placeholder
+   (e.g. missing-glyph box) for non-vector glyphs so the omission is
+   obvious during testing. Implement bitmap fallback before any user-facing
+   release.
+
+3. **cryoglyph as dependency**: sluggrs depends on cryoglyph for bitmap
+   fallback. Heavy, but zero new code for the bitmap path.
+
+Recommendation: Option 2 for Phase 1 (visible placeholder), Option 1 for
+production. The spec must not treat this as optional.
+
 ## API Surface
 
 sluggrs must export the same public types that `text.rs` imports from
@@ -76,12 +158,50 @@ Cryoglyph: Two bitmap atlas textures (color + mask), etagere packer, LRU
 glyph cache keyed by `cosmic_text::CacheKey` (physical glyph position).
 
 sluggrs: Two data textures (curve Rgba32Float + band Rgba32Uint), a glyph
-outline cache keyed by `(font_id, glyph_id)` (resolution-independent — a
-key advantage), and a bind group referencing both textures.
+outline cache keyed by `GlyphKey` (resolution-independent), and a bind
+group referencing both textures.
 
 The curve texture stores control points. The band texture stores the
 acceleration structure. Both grow as new glyphs are encountered. The band
-texture is always `BAND_TEXTURE_WIDTH` wide and grows in height.
+texture is always `BAND_TEXTURE_WIDTH` (4096) wide and grows in height.
+
+##### GlyphEntry
+
+The bridge between glyph cache, texture data, and vertex packing.
+Every field here is consumed downstream — this is the central data
+contract.
+
+```rust
+/// Location and metadata for a cached glyph in the GPU textures.
+struct GlyphEntry {
+    /// Texel offset of this glyph's band headers in the band texture.
+    /// The shader reads band headers starting at (band_offset, 0) and
+    /// wrapping at BAND_TEXTURE_WIDTH.
+    band_offset: u32,
+
+    /// Number of horizontal bands (y-direction) minus 1. Passed to
+    /// the shader as band_max.y.
+    band_max_y: u32,
+    /// Number of vertical bands (x-direction) minus 1. Passed to
+    /// the shader as band_max.x.
+    band_max_x: u32,
+
+    /// Scale + offset to map em-space coordinates to band indices.
+    /// Computed by build_bands(). Passed to the shader as-is.
+    band_transform: [f32; 4],  // [scale_x, scale_y, offset_x, offset_y]
+
+    /// Glyph bounding box in em-space (from GpuOutline.bounds).
+    /// Used to compute screen_rect and em_rect vertex attributes.
+    bounds: [f32; 4],  // [min_x, min_y, max_x, max_y]
+}
+```
+
+Vertex packing reads from GlyphEntry:
+- `screen_rect` = bounds scaled by font_size/units_per_em, positioned
+  by cosmic_text layout
+- `em_rect` = bounds directly
+- `band_transform` = band_transform directly
+- `glyph_data` = `[band_offset, 0, band_max_x, band_max_y]`
 
 ```rust
 pub struct TextAtlas {
@@ -94,26 +214,55 @@ pub struct TextAtlas {
     format: wgpu::TextureFormat,
     color_mode: ColorMode,
 
-    // Glyph cache: (font_id, glyph_id) → location in textures
+    // Glyph cache: GlyphKey → location in textures
     glyph_cache: HashMap<GlyphKey, GlyphEntry>,
-    // Current write cursors
-    curve_cursor: u32,
-    band_cursor: u32,
-    // Pending texture data to upload
-    curve_data: Vec<[f32; 4]>,
-    band_data: Vec<[u32; 4]>,
+
+    // Write cursors (append-only within a frame)
+    curve_cursor: u32,  // next free texel in curve texture
+    band_cursor: u32,   // next free texel in band texture (linear, pre-wrap)
 }
 ```
 
 **Key difference from cryoglyph**: Glyph data is resolution-independent.
-A glyph cached at 12px works identically at 72px — only the vertex
-attributes change. This eliminates re-rasterization on scale changes.
+A glyph cached once serves all sizes — only the vertex attributes change.
+This eliminates re-rasterization on scale changes.
+
+##### Texture growth and invalidation
+
+Curve texture: single row, starts at width 1024. When `curve_cursor`
+exceeds width, reallocate at 2x width, re-upload all existing data, and
+rebind. Existing offsets remain valid because data is append-only and
+positions don't change.
+
+Band texture: fixed width `BAND_TEXTURE_WIDTH` (4096), starts at height 1.
+When `band_cursor / BAND_TEXTURE_WIDTH` exceeds current height, reallocate
+at 2x height, re-upload, and rebind. Same invariant: existing offsets
+are stable.
+
+On `trim()`: clear the glyph_cache, reset cursors to 0. Next frame
+repopulates on demand. This is simpler than LRU eviction and acceptable
+because outline extraction + band building is fast (no rasterization).
+
+Rebind: after any texture reallocation, recreate the bind group that
+references both texture views. The `TextRenderer` holds a pipeline (which
+references the bind group layout, not the bind group itself), so it
+remains valid. The bind group is set per-draw in `render()`.
 
 ```rust
 impl TextAtlas {
     pub fn new(device, queue, cache, format) -> Self;
     pub fn with_color_mode(device, queue, cache, format, color_mode) -> Self;
     pub fn trim(&mut self);
+
+    /// Upload a glyph's curve + band data. Returns the GlyphEntry.
+    /// Grows textures if needed.
+    fn upload_glyph(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        gpu_outline: &GpuOutline,
+        band_data: &BandData,
+    ) -> GlyphEntry;
 }
 ```
 
@@ -144,7 +293,7 @@ impl TextRenderer {
         atlas: &mut TextAtlas,
         viewport: &Viewport,
         text_areas: impl IntoIterator<Item = TextArea<'a>>,
-        cache: &mut SwashCache,  // ignored — we use skrifa, but keep for API compat
+        cache: &mut SwashCache,  // accepted for API compat, not used
     ) -> Result<(), PrepareError>;
 
     pub fn render(
@@ -190,56 +339,47 @@ for run in buffer.layout_runs() {
 
 Same as cryoglyph — cosmic_text does the shaping/layout.
 
-### 2. Look up or extract glyph outline
+### 2. Classify and cache glyph
 
-Cache key: `(font_id, glyph_id)` — NOT physical position.
-This is a major win: one outline serves all sizes.
+```rust
+let key = GlyphKey::from_glyph(font_system, &glyph);
 
-```
-let key = GlyphKey { font_id, glyph_id };
+// Check if this glyph has a vector outline
 if !atlas.glyph_cache.contains_key(&key) {
-    let outline = extract_outline(font_data, glyph_id);
-    let gpu_outline = prepare_outline(&outline);
-    let bands = build_bands(&gpu_outline, ...);
-    // Upload curve + band data to textures
-    atlas.upload_glyph(key, &gpu_outline, &bands);
+    match extract_outline(font_data, glyph_id) {
+        Some(outline) => {
+            let gpu_outline = prepare_outline(&outline);
+            let bands = build_bands(&gpu_outline, ...);
+            atlas.upload_glyph(device, queue, &gpu_outline, &bands);
+        }
+        None => {
+            // Non-vector glyph (emoji, bitmap font).
+            // Phase 1: render placeholder box.
+            // Production: route to bitmap fallback.
+            atlas.mark_non_vector(key);
+            continue;
+        }
+    }
 }
 ```
 
 ### 3. Build vertex instance
 
-For each visible glyph, compute:
+For each visible vector glyph, compute from `GlyphEntry`:
 
-- **screen_rect**: position and size in screen pixels (from cosmic_text
-  layout + TextArea position/scale)
-- **em_rect**: the glyph's bounding box in em-space (from GpuOutline.bounds)
-- **band_transform**: scale + offset to map em-space → band index
-  (from BandData)
-- **glyph_data**: packed texture offsets for band lookup
-  (from GlyphEntry in atlas cache)
-- **color**: RGBA from glyph.color_opt or TextArea.default_color
+- **screen_rect**: `entry.bounds` scaled by `font_size / units_per_em`,
+  positioned by cosmic_text layout (glyph.x, run.line_y) + TextArea
+  (left, top, scale)
+- **em_rect**: `entry.bounds` directly
+- **band_transform**: `entry.band_transform` directly
+- **glyph_data**: `[entry.band_offset, 0, entry.band_max_x, entry.band_max_y]`
+- **color**: `glyph.color_opt.unwrap_or(text_area.default_color)`
 
 ### 4. Upload and draw
 
-Same as cryoglyph: upload vertex buffer, set pipeline + bind groups, draw
-instanced triangle strips.
-
-## Font Data Access
-
-cryoglyph uses `SwashCache::get_image_uncached(font_system, cache_key)` to
-rasterize glyphs. We need raw font bytes to extract outlines via skrifa.
-
-`cosmic_text::FontSystem` provides access to font data through its
-`fontdb` database. We can get font bytes via:
-
-```rust
-let font_id = glyph.font_id;  // from cosmic_text::LayoutGlyph
-// cosmic_text::FontSystem -> fontdb::Database
-// fontdb::Database::face_source(id) -> Source::Binary(Arc<[u8]>)
-```
-
-This needs investigation — the exact API path from a `LayoutGlyph`'s
-font reference to raw font bytes through cosmic_text's font system.
+Upload instance buffer via staging belt (same pattern as cryoglyph).
+Set pipeline, bind groups (atlas textures + viewport uniform), vertex
+buffer. Draw instanced triangle strips: 4 vertices × instance_count.
 
 ## Changes to iced
 
@@ -259,57 +399,71 @@ font reference to raw font bytes through cosmic_text's font system.
 
 ### `iced/wgpu/src/text.rs`
 
-Mechanical find-replace of `cryoglyph::` → `sluggrs::` if we match the
-API exactly. The only expected difference is that `SwashCache::new()` is
-still called (for API compat) but ignored internally during prepare.
+This is NOT a mechanical find-replace. While the public type names match,
+the semantic differences require targeted changes:
 
-## Open Questions
+- **Namespace swap**: `cryoglyph::` → `sluggrs::` for type references.
+  This part is mechanical.
 
-### 1. Font byte access
+- **SwashCache usage**: cryoglyph creates `SwashCache::new()` per prepare
+  call and passes it for glyph rasterization. sluggrs accepts the parameter
+  for API compat but doesn't use it. No code change needed, but the
+  allocation is wasted. Acceptable for now.
 
-How to get from `cosmic_text::FontSystem` + `LayoutGlyph::font_id` to
-raw `&[u8]` font data for skrifa. This is the critical path for outline
-extraction. Needs code-level investigation of cosmic_text internals.
+- **ColorMode**: cryoglyph uses `TextAtlas::with_color_mode()` to control
+  sRGB handling. sluggrs accepts the parameter but ignores it (Slug renders
+  in linear space). May need revisiting for correct color output.
 
-### 2. Glyph cache key
+- **Atlas trim semantics**: cryoglyph's `trim()` clears per-frame glyph
+  usage sets for LRU eviction. sluggrs's `trim()` clears the entire cache
+  and resets texture cursors. This means glyph re-extraction on the next
+  frame after trim, which is fast but worth profiling.
 
-cosmic_text's `CacheKey` includes subpixel position. Our outlines are
-resolution-independent, so we cache by `(font_id, glyph_id)` only. But
-the vertex attributes (screen position) still need the subpixel offset
-from cosmic_text's layout. Need to verify this doesn't cause issues.
+- **Error handling**: `PrepareError::AtlasFull` in cryoglyph means the
+  bitmap atlas hit max texture size. In sluggrs this maps to curve/band
+  textures hitting device limits, which is much harder to reach (vector
+  data is dramatically smaller than bitmaps).
 
-### 3. Texture growth strategy
+## Clip Bounds
 
-cryoglyph grows its atlas by 2x when full. Our curve texture is a single
-row that grows in width; the band texture is fixed-width (4096) and grows
-in height. Need a growth strategy that doesn't invalidate existing data
-(append-only within a frame, repack on trim).
+**Design decision**: sluggrs relies on the scissor rect for clipping,
+not per-glyph clip testing.
 
-### 4. Color emoji
+cryoglyph clips individual glyph quads against `TextBounds` and adjusts
+atlas UVs to crop partially visible glyphs. sluggrs renders full glyph
+quads and depends on the scissor rect that `text.rs:397` sets via
+`render_pass.set_scissor_rect(...)`.
 
-Slug can't render bitmap emoji. For now, these glyphs will be silently
-skipped (no outline to extract). A bitmap fallback is tracked in TODO.md.
+This is valid **if and only if**:
+1. Every text render pass sets a scissor rect before drawing
+2. Glyph quads that extend beyond the scissor are correctly clipped by
+   the GPU (guaranteed by the spec)
+3. No batching or layering assumptions break when quads extend beyond
+   their logical bounds
 
-### 5. Clip bounds
+Verification needed: review every call to `State::render()` and
+`Storage::get()` to confirm scissor rects are always set. Check that
+depth/stencil (if used) doesn't interact badly with oversized quads.
 
-cryoglyph does per-glyph clip testing against TextBounds and crops atlas
-UVs. We render full glyph quads and rely on the scissor rect that
-`text.rs` already sets. This should be equivalent but needs verification
-that no glyphs leak outside clip bounds.
-
-### 6. The SwashCache parameter
-
-`text.rs` passes `&mut SwashCache::new()` to every prepare call. Since
-we don't rasterize, we accept but ignore it. We could also newtype it
-to avoid the allocation, but the cost is negligible.
+If this proves problematic, add per-glyph bounds checking in prepare()
+to skip off-screen glyphs entirely (cheaper than cryoglyph's UV cropping
+since we don't need to adjust texture coordinates).
 
 ## Phasing
+
+### Phase 0: Spike (pre-implementation)
+
+Resolve Blockers 1 and 2 with working code:
+- Extract a glyph outline from cosmic_text's font system via skrifa
+- Determine the correct GlyphKey fields for variable fonts
+- Produce a test that exercises the full path from `LayoutGlyph` to
+  `GpuOutline`
 
 ### Phase A: API skeleton
 
 Create the sluggrs API types with the correct signatures. Implement
 trivial stubs (prepare does nothing, render draws nothing). Swap the
-dependency in iced and verify it compiles.
+dependency in iced and verify it compiles and runs (with no visible text).
 
 ### Phase B: Outline extraction in prepare
 
@@ -326,4 +480,5 @@ visual output.
 ### Phase D: Polish
 
 Handle edge cases (empty buffers, zero-size glyphs, missing outlines).
-Texture growth. Trim/eviction. Performance tuning.
+Texture growth. Trim/eviction. Performance tuning. Non-vector glyph
+placeholders.
