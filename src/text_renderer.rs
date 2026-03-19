@@ -168,29 +168,21 @@ impl TextRenderer {
                     let scale = glyph.font_size * text_area.scale / units_per_em;
                     let [min_x, min_y, max_x, max_y] = entry.bounds;
 
-                    // Dilation: expand bounds by 1 pixel (in em-space) so the
-                    // fragment shader's AA ramp has room to fade at edges.
-                    let dilation = if scale > 0.0 { 1.0 / scale } else { 0.0 };
-                    let d_min_x = min_x - dilation;
-                    let d_min_y = min_y - dilation;
-                    let d_max_x = max_x + dilation;
-                    let d_max_y = max_y + dilation;
-
                     // Screen position: glyph position from layout + text area offset
                     let glyph_x = text_area.left + (glyph.x + glyph.x_offset) * text_area.scale;
                     let glyph_y = text_area.top + (run.line_y + glyph.y_offset) * text_area.scale;
 
-                    // Screen rect: position + size of the dilated quad
-                    let screen_x = glyph_x + d_min_x * scale;
-                    let screen_y = glyph_y - d_max_y * scale; // flip Y: font is Y-up
-                    let screen_w = (d_max_x - d_min_x) * scale;
-                    let screen_h = (d_max_y - d_min_y) * scale;
+                    // Screen rect: undilated quad (shader handles 1px dilation)
+                    let screen_x = glyph_x + min_x * scale;
+                    let screen_y = glyph_y - max_y * scale; // flip Y: font is Y-up
+                    let screen_w = (max_x - min_x) * scale;
+                    let screen_h = (max_y - min_y) * scale;
 
-                    // Skip if entirely outside bounds
-                    if screen_x + screen_w < bounds_min_x as f32
-                        || screen_x > bounds_max_x as f32
-                        || screen_y + screen_h < bounds_min_y as f32
-                        || screen_y > bounds_max_y as f32
+                    // Skip if entirely outside bounds (1px margin for shader dilation)
+                    if screen_x + screen_w + 1.0 < bounds_min_x as f32
+                        || screen_x - 1.0 > bounds_max_x as f32
+                        || screen_y + screen_h + 1.0 < bounds_min_y as f32
+                        || screen_y - 1.0 > bounds_max_y as f32
                     {
                         continue;
                     }
@@ -217,7 +209,7 @@ impl TextRenderer {
 
                     self.instances.push(GlyphInstance {
                         screen_rect: [screen_x, screen_y, screen_w, screen_h],
-                        em_rect: [d_min_x, d_min_y, d_max_x, d_max_y],
+                        em_rect: [min_x, min_y, max_x, max_y],
                         band_transform: entry.band_transform,
                         glyph_data: [
                             entry.band_offset % crate::BAND_TEXTURE_WIDTH,

@@ -2,6 +2,8 @@ use sluggrs::band::{self, build_bands, CurveLocation};
 use sluggrs::outline::{char_to_glyph_id, extract_outline};
 use sluggrs::prepare::{self, GpuOutline};
 
+const CURVE_TEXTURE_WIDTH: u32 = 4096;
+
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::{
@@ -11,7 +13,13 @@ use winit::{
     window::Window,
 };
 
-const FONT_BYTES: &[u8] = include_bytes!("fonts/InterVariable.ttf");
+// Embedded fonts (always available)
+const INTER_VARIABLE: &[u8] = include_bytes!("fonts/InterVariable.ttf");
+const ROBOTO_REGULAR: &[u8] = include_bytes!("fonts/Roboto-Regular.ttf");
+const ROBOTO_THIN: &[u8] = include_bytes!("fonts/Roboto-Thin.ttf");
+const ROBOTO_BOLD: &[u8] = include_bytes!("fonts/Roboto-Bold.ttf");
+const CASKAYDIA: &[u8] = include_bytes!("fonts/CaskaydiaCoveNerdFont-Regular.ttf");
+const RUNES: &[u8] = include_bytes!("fonts/EBH Runes.otf");
 
 /// Per-instance vertex data for a glyph (matches GlyphInstance in shader).
 #[repr(C)]
@@ -43,9 +51,7 @@ fn build_curve_texture(glyphs: &[PreparedGlyph]) -> Vec<[f32; 4]> {
 
     for glyph in glyphs {
         for curve in &glyph.gpu_outline.curves {
-            // Texel 1: p1.x, p1.y, p2.x, p2.y
             texels.push([curve.p1[0], curve.p1[1], curve.p2[0], curve.p2[1]]);
-            // Texel 2: p3.x, p3.y, 0, 0
             texels.push([curve.p3[0], curve.p3[1], 0.0, 0.0]);
         }
     }
@@ -78,17 +84,32 @@ fn build_band_texture(glyphs: &[PreparedGlyph]) -> Vec<[u32; 4]> {
     texels
 }
 
-/// Prepare glyphs for a string of text.
-/// `base_curve_offset` and `base_band_offset` allow chaining multiple calls.
+/// Prepare glyphs for a string of text with a given font.
 fn prepare_text(
+    font_data: &[u8],
     text: &str,
     font_size: f32,
     start_x: f32,
     start_y: f32,
+    color: [f32; 4],
+    weight: Option<f32>,
     base_curve_offset: u32,
     base_band_offset: u32,
 ) -> (Vec<PreparedGlyph>, Vec<GlyphInstance>) {
-    let font = skrifa::FontRef::new(FONT_BYTES).expect("failed to parse font");
+    let font = match skrifa::FontRef::new(font_data) {
+        Ok(f) => f,
+        Err(_) => {
+            // Try as font collection (index 0)
+            match skrifa::FontRef::from_index(font_data, 0) {
+                Ok(f) => f,
+                Err(e) => {
+                    log::error!("Failed to parse font: {:?}", e);
+                    return (Vec::new(), Vec::new());
+                }
+            }
+        }
+    };
+
     let units_per_em = {
         use skrifa::raw::TableProvider;
         font.head().expect("no head table").units_per_em() as f32
@@ -101,19 +122,17 @@ fn prepare_text(
     let mut curve_offset: u32 = base_curve_offset;
     let mut band_offset: u32 = base_band_offset;
 
-    // Simple horizontal advance lookup
     let hmtx = {
         use skrifa::raw::TableProvider;
         font.hmtx().expect("no hmtx table")
     };
 
     for ch in text.chars() {
-        let glyph_id = match char_to_glyph_id(FONT_BYTES, ch) {
+        let glyph_id = match char_to_glyph_id(font_data, ch) {
             Some(id) => id,
             None => continue,
         };
 
-        // Get advance width
         let advance = hmtx
             .h_metrics()
             .get(glyph_id as usize)
@@ -125,10 +144,13 @@ fn prepare_text(
                     .unwrap_or(units_per_em * 0.5)
             });
 
-        let outline = match extract_outline(FONT_BYTES, 0, glyph_id, &[]) {
+        let wght_tag = skrifa::Tag::new(b"wght");
+        let location: Vec<skrifa::setting::VariationSetting> = weight
+            .map(|w| vec![skrifa::setting::VariationSetting::new(wght_tag, w)])
+            .unwrap_or_default();
+        let outline = match extract_outline(font_data, 0, glyph_id, &location) {
             Some(o) => o,
             None => {
-                // Space or non-drawing glyph — just advance
                 cursor_x += advance * scale;
                 continue;
             }
@@ -137,30 +159,29 @@ fn prepare_text(
         let gpu_outline = prepare::prepare_outline(&outline);
         let num_curves = gpu_outline.curves.len();
 
-        // Build curve locations (each curve takes 2 texels in the curve texture)
         let curve_locations: Vec<CurveLocation> = (0..num_curves)
-            .map(|i| CurveLocation {
-                x: curve_offset + (i as u32) * 2,
-                y: 0,
+            .map(|i| {
+                let linear = curve_offset + (i as u32) * 2;
+                CurveLocation {
+                    x: linear % CURVE_TEXTURE_WIDTH,
+                    y: linear / CURVE_TEXTURE_WIDTH,
+                }
             })
             .collect();
 
-        // Choose band counts based on glyph complexity
-        let band_count =
-            if num_curves < 10 {
-                4
-            } else if num_curves < 30 {
-                8
-            } else {
-                12
-            };
+        let band_count = if num_curves < 10 {
+            4
+        } else if num_curves < 30 {
+            8
+        } else {
+            12
+        };
         let band_data = build_bands(&gpu_outline, &curve_locations, band_count, band_count);
 
         let [min_x, min_y, max_x, max_y] = gpu_outline.bounds;
 
-        // Screen-space rectangle for this glyph
         let screen_x = cursor_x + min_x * scale;
-        let screen_y = start_y - max_y * scale; // flip Y: font is Y-up
+        let screen_y = start_y - max_y * scale;
         let screen_w = (max_x - min_x) * scale;
         let screen_h = (max_y - min_y) * scale;
 
@@ -171,12 +192,12 @@ fn prepare_text(
             em_rect: [min_x, min_y, max_x, max_y],
             band_transform: band_data.band_transform,
             glyph_data: [
-                band_offset,       // glyph data x in band texture
-                0,                 // glyph data y in band texture (row 0 for now)
-                (band_count - 1) as u32, // band_max_x (max index, not count)
-                (band_count - 1) as u32, // band_max_y (max index, not count)
+                band_offset % sluggrs::BAND_TEXTURE_WIDTH,
+                band_offset / sluggrs::BAND_TEXTURE_WIDTH,
+                (band_count - 1) as u32,
+                (band_count - 1) as u32,
             ],
-            color: [1.0, 1.0, 1.0, 1.0], // white text
+            color,
         });
 
         prepared.push(PreparedGlyph {
@@ -184,7 +205,7 @@ fn prepare_text(
             band_data,
         });
 
-        curve_offset += (num_curves as u32) * 2; // 2 texels per curve
+        curve_offset += (num_curves as u32) * 2;
         band_offset += glyph_band_texel_count;
         cursor_x += advance * scale;
     }
@@ -208,6 +229,21 @@ struct RenderState {
     texture_bind_group: wgpu::BindGroup,
     instance_buffer: wgpu::Buffer,
     instance_count: u32,
+    zoom: f32,
+}
+
+impl RenderState {
+    fn update_params(&self) {
+        let params = Params {
+            screen_size: [
+                self.config.width as f32 / self.zoom,
+                self.config.height as f32 / self.zoom,
+            ],
+            _pad: [0.0; 2],
+        };
+        self.queue
+            .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
+    }
 }
 
 impl App {
@@ -229,8 +265,8 @@ impl ApplicationHandler for App {
             event_loop
                 .create_window(
                     Window::default_attributes()
-                        .with_title("Slug Font Rendering PoC")
-                        .with_inner_size(winit::dpi::LogicalSize::new(1024, 600)),
+                        .with_title("sluggrs demo")
+                        .with_inner_size(winit::dpi::LogicalSize::new(1200, 900)),
                 )
                 .expect("failed to create window"),
         );
@@ -255,14 +291,21 @@ impl ApplicationHandler for App {
                     state.config.width = new_size.width.max(1);
                     state.config.height = new_size.height.max(1);
                     state.surface.configure(&state.device, &state.config);
+                    state.update_params();
 
-                    let params = Params {
-                        screen_size: [state.config.width as f32, state.config.height as f32],
-                        _pad: [0.0; 2],
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if let Some(state) = &mut self.state {
+                    let scroll = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                        winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 50.0,
                     };
-                    state
-                        .queue
-                        .write_buffer(&state.params_buffer, 0, bytemuck::bytes_of(&params));
+                    state.zoom = (state.zoom * (1.0 + scroll * 0.1)).clamp(0.1, 20.0);
+                    state.update_params();
 
                     if let Some(window) = &self.window {
                         window.request_redraw();
@@ -277,6 +320,11 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
+}
+
+/// Try to load an optional font from disk (for licensed fonts not in git).
+fn try_load_font(path: &str) -> Option<Vec<u8>> {
+    std::fs::read(path).ok()
 }
 
 async fn init_render_state(window: Arc<Window>) -> RenderState {
@@ -302,7 +350,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
 
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
-            label: Some("slug-glyph device"),
+            label: Some("sluggrs demo device"),
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::default(),
             ..Default::default()
@@ -311,39 +359,142 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
         .expect("failed to get device");
 
     let size = window.inner_size();
-    let config = surface
+    let mut config = surface
         .get_default_config(&adapter, size.width.max(1), size.height.max(1))
         .expect("surface not supported");
+
+    // Force sRGB so the shader's linear coverage output gets proper gamma correction.
+    // Without this, nvidia surfaces may default to non-sRGB (Bgra8Unorm) which
+    // produces washed-out, thin-looking text.
+    config.format = config.format.add_srgb_suffix();
     surface.configure(&device, &config);
 
-    // --- Prepare glyph data ---
-    let (prepared_glyphs, instances) = prepare_text("Hello, Slug!", 72.0, 50.0, 300.0, 0, 0);
+    let sf = window.scale_factor() as f32;
+    eprintln!("Adapter: {:?}", adapter.get_info().name);
+    eprintln!("Surface format: {:?}", config.format);
+    eprintln!("Physical size: {}x{}", config.width, config.height);
+    eprintln!("Scale factor: {}", sf);
 
-    log::info!(
-        "Prepared {} glyphs, {} instances",
-        prepared_glyphs.len(),
-        instances.len()
-    );
-    for (i, g) in prepared_glyphs.iter().enumerate() {
-        log::info!(
-            "  glyph {}: {} curves, bounds [{:.0}, {:.0}, {:.0}, {:.0}]",
-            i,
-            g.gpu_outline.curves.len(),
-            g.gpu_outline.bounds[0],
-            g.gpu_outline.bounds[1],
-            g.gpu_outline.bounds[2],
-            g.gpu_outline.bounds[3]
-        );
+    // --- Optional licensed fonts (not in git, loaded from disk) ---
+    let tisa_data = try_load_font("/home/folk/.local/share/fonts/TisaPro-Regular.otf");
+    let berlingske_data = try_load_font("/home/folk/.local/share/fonts/BerlingskeSerif-Regular.ttf");
+
+    let white = [1.0, 1.0, 1.0, 1.0];
+    let light_gray = [0.75, 0.75, 0.75, 1.0];
+    let gold = [0.95, 0.78, 0.2, 1.0];
+    let cyan = [0.4, 0.85, 0.9, 1.0];
+    let green = [0.5, 0.9, 0.5, 1.0];
+    let pink = [0.95, 0.5, 0.65, 1.0];
+
+    let mut all_prepared: Vec<PreparedGlyph> = Vec::new();
+    let mut all_instances: Vec<GlyphInstance> = Vec::new();
+
+    let mut curve_offset: u32 = 0;
+    let mut band_offset: u32 = 0;
+
+    // add_line takes logical sizes/positions and scales to physical pixels
+    let mut add_line = |font_data: &[u8], text: &str, size: f32, x: f32, y: f32, color: [f32; 4], weight: Option<f32>| {
+        let (prepared, instances) =
+            prepare_text(font_data, text, size * sf, x * sf, y * sf, color, weight, curve_offset, band_offset);
+        for g in &prepared {
+            curve_offset += (g.gpu_outline.curves.len() as u32) * 2;
+            band_offset += (g.band_data.entries.len() / 4) as u32;
+        }
+        all_prepared.extend(prepared);
+        all_instances.extend(instances);
+    };
+
+    let left = 40.0;
+    let mut y = 30.0;
+
+    // --- Sizes (Inter Variable, TTF) ---
+    add_line(INTER_VARIABLE, "12px Inter: the quick brown fox jumps over the lazy dog", 12.0, left, y, light_gray, None);
+    y += 24.0;
+
+    add_line(INTER_VARIABLE, "16px Inter: the quick brown fox jumps over the lazy dog", 16.0, left, y, white, None);
+    y += 30.0;
+
+    add_line(INTER_VARIABLE, "24px Inter: the quick brown fox jumps over the lazy dog", 24.0, left, y, white, None);
+    y += 40.0;
+
+    add_line(INTER_VARIABLE, "48px Inter: Slug GPU text rendering", 48.0, left, y, white, None);
+    y += 68.0;
+
+    add_line(INTER_VARIABLE, "72px Inter", 72.0, left, y, gold, None);
+    y += 90.0;
+
+    // --- Inter Variable weights (wght axis) ---
+    add_line(INTER_VARIABLE, "24px Inter Thin (wght=100): fine hairline strokes", 24.0, left, y, light_gray, Some(100.0));
+    y += 38.0;
+
+    add_line(INTER_VARIABLE, "24px Inter Light (wght=300): lightweight text", 24.0, left, y, white, Some(300.0));
+    y += 38.0;
+
+    add_line(INTER_VARIABLE, "24px Inter Regular (wght=400): standard weight", 24.0, left, y, white, Some(400.0));
+    y += 38.0;
+
+    add_line(INTER_VARIABLE, "24px Inter Bold (wght=700): heavy strokes", 24.0, left, y, white, Some(700.0));
+    y += 38.0;
+
+    add_line(INTER_VARIABLE, "24px Inter Black (wght=900): maximum weight", 24.0, left, y, white, Some(900.0));
+    y += 44.0;
+
+    // --- Weights (Roboto, TTF, separate files per weight) ---
+    add_line(ROBOTO_THIN, "24px Roboto Thin (separate TTF)", 24.0, left, y, light_gray, None);
+    y += 38.0;
+
+    add_line(ROBOTO_REGULAR, "24px Roboto Regular (separate TTF)", 24.0, left, y, white, None);
+    y += 38.0;
+
+    add_line(ROBOTO_BOLD, "24px Roboto Bold (separate TTF): tight joins", 24.0, left, y, white, None);
+    y += 44.0;
+
+    // --- Font variety ---
+    add_line(CASKAYDIA, "20px Caskaydia Cove (mono, TTF): fn main() { let x = 42; }", 20.0, left, y, cyan, None);
+    y += 36.0;
+
+    if let Some(ref tisa) = tisa_data {
+        add_line(tisa, "22px Tisa Pro (serif, OTF/CFF cubic curves)", 22.0, left, y, white, None);
+        y += 38.0;
     }
 
+    if let Some(ref berlingske) = berlingske_data {
+        add_line(berlingske, "22px Berlingske Serif (TTF)", 22.0, left, y, white, None);
+        y += 38.0;
+    }
+
+    add_line(RUNES, "abcdefghijklm", 36.0, left, y, gold, None);
+    y += 14.0;
+    add_line(INTER_VARIABLE, "36px EBH Runes (OTF): decorative outlines", 14.0, left, y, light_gray, None);
+    y += 40.0;
+
+    // --- Known artifact glyphs (bold-weight curve joins) ---
+    add_line(INTER_VARIABLE, "36px Inter Bold artifact test: a & a & a & a", 36.0, left, y, pink, Some(700.0));
+    y += 54.0;
+
+    add_line(ROBOTO_BOLD, "36px Roboto Bold artifact test: a & a & a & a", 36.0, left, y, pink, None);
+    y += 54.0;
+
+    add_line(INTER_VARIABLE, "60px Inter Bold: & & & a a a", 60.0, left, y, green, Some(700.0));
+
+    log::info!(
+        "Prepared {} glyphs, {} instances across all lines",
+        all_prepared.len(),
+        all_instances.len()
+    );
+
     // Build GPU textures
-    let curve_texels = build_curve_texture(&prepared_glyphs);
-    let band_texels = build_band_texture(&prepared_glyphs);
+    let curve_texels = build_curve_texture(&all_prepared);
+    let band_texels = build_band_texture(&all_prepared);
 
-    let curve_texture_width = curve_texels.len().max(1) as u32;
+    // Curve texture: fixed width, wrap into rows (same as library's text_atlas.rs)
+    let curve_w = CURVE_TEXTURE_WIDTH;
+    let curve_count = curve_texels.len().max(1) as u32;
+    let curve_h = (curve_count + curve_w - 1) / curve_w;
+    let mut padded_curve_texels = curve_texels;
+    padded_curve_texels.resize((curve_w * curve_h) as usize, [0.0; 4]);
 
-    // Pad band texture to BAND_TEXTURE_WIDTH and wrap into rows to match
-    // the shader's addressing: x wraps at BAND_TEXTURE_WIDTH, y increments.
+    // Band texture: fixed width, wrap into rows
     let band_w = sluggrs::BAND_TEXTURE_WIDTH;
     let band_count = band_texels.len().max(1) as u32;
     let band_h = (band_count + band_w - 1) / band_w;
@@ -351,11 +502,9 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     padded_band_texels.resize((band_w * band_h) as usize, [0u32; 4]);
 
     log::info!(
-        "Curve texture: {} texels, Band texture: {}x{} ({} used)",
-        curve_texture_width,
-        band_w,
-        band_h,
-        band_count
+        "Curve texture: {}x{} ({} used), Band texture: {}x{} ({} used)",
+        curve_w, curve_h, curve_count,
+        band_w, band_h, band_count
     );
 
     let curve_texture = device.create_texture_with_data(
@@ -363,8 +512,8 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
         &wgpu::TextureDescriptor {
             label: Some("curve texture"),
             size: wgpu::Extent3d {
-                width: curve_texture_width,
-                height: 1,
+                width: curve_w,
+                height: curve_h,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -375,7 +524,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
             view_formats: &[],
         },
         wgpu::util::TextureDataOrder::LayerMajor,
-        bytemuck::cast_slice(&curve_texels),
+        bytemuck::cast_slice(&padded_curve_texels),
     );
 
     let band_texture = device.create_texture_with_data(
@@ -483,8 +632,8 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
         ],
     });
 
-    let instance_data = if instances.is_empty() {
-        // Need at least one dummy instance for buffer creation
+    let instance_count = all_instances.len() as u32;
+    let instance_data = if all_instances.is_empty() {
         vec![GlyphInstance {
             screen_rect: [0.0; 4],
             em_rect: [0.0; 4],
@@ -493,12 +642,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
             color: [0.0; 4],
         }]
     } else {
-        instances
-    };
-    let instance_count = if instance_data[0].color[3] == 0.0 && instance_data.len() == 1 {
-        0
-    } else {
-        instance_data.len() as u32
+        all_instances
     };
 
     let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -558,7 +702,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format: config.format,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -589,6 +733,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
         texture_bind_group,
         instance_buffer,
         instance_count,
+        zoom: 1.0,
     }
 }
 

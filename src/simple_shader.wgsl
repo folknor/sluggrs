@@ -46,8 +46,14 @@ fn vs_main(instance: GlyphInstance, @builtin(vertex_index) vid: u32) -> VertexOu
         f32((vid >> 1u) & 1u) // 0, 0, 1, 1
     );
 
-    // Screen-space position
-    let screen_pos = instance.screen_rect.xy + corner * instance.screen_rect.zw;
+    // Outward normal for this corner: (-1,-1), (1,-1), (-1,1), (1,1)
+    let normal = corner * 2.0 - 1.0;
+
+    // Undilated screen-space position
+    let base_pos = instance.screen_rect.xy + corner * instance.screen_rect.zw;
+
+    // Dilate: push each corner outward by 1 pixel in screen space
+    let screen_pos = base_pos + normal;
 
     // Convert to NDC: [0, screen_size] → [-1, 1], flip Y
     let ndc = vec2<f32>(
@@ -57,12 +63,22 @@ fn vs_main(instance: GlyphInstance, @builtin(vertex_index) vid: u32) -> VertexOu
 
     output.position = vec4<f32>(ndc, 0.0, 1.0);
 
-    // Interpolate em-space coordinates across the quad
-    output.texcoord = vec2<f32>(
+    // Undilated em-space texcoord at this corner
+    let base_texcoord = vec2<f32>(
         mix(instance.em_rect.x, instance.em_rect.z, corner.x),
         // Flip Y for em-space (font coords are Y-up, screen is Y-down)
         mix(instance.em_rect.w, instance.em_rect.y, corner.y),
     );
+
+    // Convert 1-pixel dilation to em-space offset
+    let em_size = vec2<f32>(
+        instance.em_rect.z - instance.em_rect.x,
+        instance.em_rect.w - instance.em_rect.y,
+    );
+    let ems_per_pixel = em_size / max(instance.screen_rect.zw, vec2<f32>(1.0, 1.0));
+
+    // Adjust texcoord for dilation (Y negated: em Y-up, screen Y-down)
+    output.texcoord = base_texcoord + vec2<f32>(normal.x, -normal.y) * ems_per_pixel;
 
     output.banding = instance.band_transform;
     output.glyph = vec4<i32>(instance.glyph_data);
@@ -165,11 +181,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     var xcov = 0.0;
     var xwgt = 0.0;
 
-    let hband_data = textureLoad(band_texture, vec2<i32>(glyph_loc.x + band_index.y, glyph_loc.y), 0).xy;
+    let hband_header_loc = calc_band_loc(glyph_loc, u32(band_index.y));
+    let hband_data = textureLoad(band_texture, hband_header_loc, 0).xy;
     let hband_loc = calc_band_loc(glyph_loc, hband_data.y);
 
     for (var ci = 0; ci < i32(hband_data.x); ci++) {
-        let curve_ref = textureLoad(band_texture, vec2<i32>(hband_loc.x + ci, hband_loc.y), 0).xy;
+        let curve_ref_loc = calc_band_loc(glyph_loc, hband_data.y + u32(ci));
+        let curve_ref = textureLoad(band_texture, curve_ref_loc, 0).xy;
         let curve_loc = vec2<i32>(curve_ref);
         let p12 = textureLoad(curve_texture, curve_loc, 0) - vec4<f32>(render_coord, render_coord);
         let p3 = textureLoad(curve_texture, vec2<i32>(curve_loc.x + 1, curve_loc.y), 0).xy - render_coord;
@@ -197,11 +215,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     var ycov = 0.0;
     var ywgt = 0.0;
 
-    let vband_data = textureLoad(band_texture, vec2<i32>(glyph_loc.x + band_max.y + 1 + band_index.x, glyph_loc.y), 0).xy;
+    let vband_header_loc = calc_band_loc(glyph_loc, u32(band_max.y + 1 + band_index.x));
+    let vband_data = textureLoad(band_texture, vband_header_loc, 0).xy;
     let vband_loc = calc_band_loc(glyph_loc, vband_data.y);
 
     for (var ci = 0; ci < i32(vband_data.x); ci++) {
-        let curve_ref = textureLoad(band_texture, vec2<i32>(vband_loc.x + ci, vband_loc.y), 0).xy;
+        let curve_ref_loc = calc_band_loc(glyph_loc, vband_data.y + u32(ci));
+        let curve_ref = textureLoad(band_texture, curve_ref_loc, 0).xy;
         let curve_loc = vec2<i32>(curve_ref);
         let p12 = textureLoad(curve_texture, curve_loc, 0) - vec4<f32>(render_coord, render_coord);
         let p3 = textureLoad(curve_texture, vec2<i32>(curve_loc.x + 1, curve_loc.y), 0).xy - render_coord;

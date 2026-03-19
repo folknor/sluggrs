@@ -215,7 +215,7 @@ impl Cache {
                         entry_point: Some("fs_main"),
                         targets: &[Some(ColorTargetState {
                             format,
-                            blend: Some(BlendState::ALPHA_BLENDING),
+                            blend: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                             write_mask: ColorWrites::default(),
                         })],
                         compilation_options: PipelineCompilationOptions::default(),
