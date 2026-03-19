@@ -125,7 +125,7 @@ fn prepare_text(
                     .unwrap_or(units_per_em * 0.5)
             });
 
-        let outline = match extract_outline(FONT_BYTES, glyph_id) {
+        let outline = match extract_outline(FONT_BYTES, 0, glyph_id, &[]) {
             Some(o) => o,
             None => {
                 // Space or non-drawing glyph — just advance

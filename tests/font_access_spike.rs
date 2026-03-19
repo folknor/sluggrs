@@ -43,7 +43,7 @@ fn extract_outline_from_cosmic_text_layout() {
             assert!(units_per_em > 0, "units_per_em should be positive");
 
             // Extract outline
-            match extract_outline(font_data, glyph.glyph_id) {
+            match extract_outline(font_data, 0, glyph.glyph_id, &[]) {
                 Some(outline) => {
                     assert!(!outline.curves.is_empty(), "Outline should have curves");
                     assert!(

@@ -6,6 +6,8 @@ use crate::types::{PrepareError, RenderError, TextArea};
 use crate::viewport::Viewport;
 use crate::GlyphInstance;
 
+use skrifa::setting::VariationSetting;
+
 use wgpu::{
     Buffer, BufferDescriptor, BufferUsages, CommandEncoder, DepthStencilState, Device,
     MultisampleState, Queue, RenderPass, RenderPipeline, COPY_BUFFER_ALIGNMENT,
@@ -93,9 +95,18 @@ impl TextRenderer {
                     // Cache lookup or extract
                     if !atlas.glyphs.contains_key(&key) {
                         let font = font_system.get_font(glyph.font_id, glyph.font_weight);
+                        // Get face index from fontdb for font collections (TTC)
+                        let face_index = font_system
+                            .db()
+                            .face(glyph.font_id)
+                            .map(|info| info.index)
+                            .unwrap_or(0);
                         let entry = match font {
                             Some(font) => {
-                                match extract_outline(font.data(), glyph.glyph_id) {
+                                // Set up variation coordinates (weight axis for variable fonts)
+                                let wght_tag = skrifa::Tag::new(b"wght");
+                                let location = [VariationSetting::new(wght_tag, glyph.font_weight.0 as f32)];
+                                match extract_outline(font.data(), face_index, glyph.glyph_id, &location) {
                                     Some(outline) => {
                                         let mut gpu_outline = prepare_outline(&outline);
                                         if glyph.cache_key_flags.contains(

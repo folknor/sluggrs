@@ -156,13 +156,24 @@ fn mid(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
 
 /// Extract the quadratic bezier outline for a glyph.
 /// Coordinates are in font units (em-space).
-pub fn extract_outline(font_data: &[u8], glyph_id: u16) -> Option<GlyphOutline> {
-    let font = skrifa::FontRef::new(font_data).ok()?;
+///
+/// `font_data`: raw font file bytes
+/// `face_index`: index within a font collection (TTC), 0 for single-face fonts
+/// `glyph_id`: glyph index within the font
+/// `location`: variation coordinates (e.g. weight axis for variable fonts)
+pub fn extract_outline(
+    font_data: &[u8],
+    face_index: u32,
+    glyph_id: u16,
+    location: &[skrifa::setting::VariationSetting],
+) -> Option<GlyphOutline> {
+    let font = skrifa::FontRef::from_index(font_data, face_index).ok()?;
+    let location = font.axes().location(location.iter().copied());
     let outlines = font.outline_glyphs();
     let glyph = outlines.get(skrifa::GlyphId::new(glyph_id.into()))?;
 
     let mut pen = CollectPen::new();
-    let settings = DrawSettings::unhinted(Size::unscaled(), skrifa::instance::LocationRef::default());
+    let settings = DrawSettings::unhinted(Size::unscaled(), &location);
     glyph.draw(settings, &mut pen).ok()?;
 
     if pen.curves.is_empty() {

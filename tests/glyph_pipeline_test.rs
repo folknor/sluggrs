@@ -237,7 +237,7 @@ fn outline_extraction_round_trip() {
         .expect("Font should be available");
     let font_data = font.data();
 
-    let outline = extract_outline(font_data, glyph.glyph_id)
+    let outline = extract_outline(font_data, 0, glyph.glyph_id, &[])
         .expect("Glyph 'A' should have an outline");
 
     assert!(
@@ -301,7 +301,7 @@ fn band_data_sanity() {
         .expect("Font should be available");
     let font_data = font.data();
 
-    let outline = extract_outline(font_data, glyph.glyph_id)
+    let outline = extract_outline(font_data, 0, glyph.glyph_id, &[])
         .expect("Glyph 'B' should have an outline");
     let gpu_outline = prepare_outline(&outline);
 
@@ -379,7 +379,7 @@ fn band_data_single_band() {
         .expect("Font should be available");
     let font_data = font.data();
 
-    let outline = extract_outline(font_data, glyph.glyph_id)
+    let outline = extract_outline(font_data, 0, glyph.glyph_id, &[])
         .expect("Glyph 'O' should have an outline");
     let gpu_outline = prepare_outline(&outline);
 
