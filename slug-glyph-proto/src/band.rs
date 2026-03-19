@@ -60,18 +60,28 @@ pub fn build_bands(
         let curve_min_x = curve.p1[0].min(curve.p2[0]).min(curve.p3[0]);
         let curve_max_x = curve.p1[0].max(curve.p2[0]).max(curve.p3[0]);
 
-        // Horizontal bands: a curve is in a band if its y-range overlaps the band's y-range
-        let hband_min = ((curve_min_y * scale_y + offset_y).floor() as i32).max(0) as u32;
-        let hband_max =
-            ((curve_max_y * scale_y + offset_y).ceil() as i32).min(band_count_y as i32 - 1) as u32;
+        // Horizontal bands: inclusive lower bound, exclusive upper bound (biased by epsilon)
+        const BAND_EPSILON: f32 = 1e-5;
+
+        let hmin = curve_min_y * scale_y + offset_y;
+        let hmax = curve_max_y * scale_y + offset_y;
+        let hband_min = hmin.floor().clamp(0.0, band_count_y as f32 - 1.0) as u32;
+        let hband_max = (hmax - BAND_EPSILON)
+            .floor()
+            .clamp(0.0, band_count_y as f32 - 1.0) as u32;
+
         for b in hband_min..=hband_max {
             hband_curves[b as usize].push(i);
         }
 
-        // Vertical bands: a curve is in a band if its x-range overlaps the band's x-range
-        let vband_min = ((curve_min_x * scale_x + offset_x).floor() as i32).max(0) as u32;
-        let vband_max =
-            ((curve_max_x * scale_x + offset_x).ceil() as i32).min(band_count_x as i32 - 1) as u32;
+        // Vertical bands: inclusive lower bound, exclusive upper bound (biased by epsilon)
+        let vmin = curve_min_x * scale_x + offset_x;
+        let vmax = curve_max_x * scale_x + offset_x;
+        let vband_min = vmin.floor().clamp(0.0, band_count_x as f32 - 1.0) as u32;
+        let vband_max = (vmax - BAND_EPSILON)
+            .floor()
+            .clamp(0.0, band_count_x as f32 - 1.0) as u32;
+
         for b in vband_min..=vband_max {
             vband_curves[b as usize].push(i);
         }

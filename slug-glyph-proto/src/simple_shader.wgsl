@@ -86,12 +86,10 @@ fn solve_horiz_poly(p12: vec4<f32>, p3: vec2<f32>) -> vec2<f32> {
     let a = p12.xy - p12.zw * 2.0 + p3;
     let b = p12.xy - p12.zw;
 
-    // Compute linear solution first (avoids NaN from quadratic path when a≈0)
     var t1: f32;
     var t2: f32;
 
     if abs(a.y) < 1.0 / 65536.0 {
-        // Nearly linear — solve -2bt + c = 0
         let rb = 0.5 / b.y;
         let lin = p12.y * rb;
         t1 = lin;
@@ -224,17 +222,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // DEBUG: visualize which ray direction is failing
-    // Red = horizontal coverage, Green = vertical coverage
-    // Solid red + striped green = vertical ray failing
-    // Striped red + solid green = horizontal ray failing
-    // Both striped = degenerate-line solver is wrong
-    // Both solid = combine logic is wrong
-    return vec4<f32>(abs(xcov), abs(ycov), 0.0, 1.0);
-
-    // // Combine coverage (original Slug formula)
-    // let combined = abs(xcov * xwgt + ycov * ywgt) / max(xwgt + ywgt, 1.0 / 65536.0);
-    // let fallback = min(abs(xcov), abs(ycov));
-    // let final_coverage = clamp(max(combined, fallback), 0.0, 1.0);
-    // return input.color * final_coverage;
+    // Combine coverage (original Slug formula)
+    let combined = abs(xcov * xwgt + ycov * ywgt) / max(xwgt + ywgt, 1.0 / 65536.0);
+    let fallback = min(abs(xcov), abs(ycov));
+    let final_coverage = clamp(max(combined, fallback), 0.0, 1.0);
+    return input.color * final_coverage;
 }
