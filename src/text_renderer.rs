@@ -211,7 +211,12 @@ impl TextRenderer {
                         screen_rect: [screen_x, screen_y, screen_w, screen_h],
                         em_rect: [min_x, min_y, max_x, max_y],
                         band_transform: entry.band_transform,
-                        glyph_data: [entry.band_offset, 0, entry.band_max_x, entry.band_max_y],
+                        glyph_data: [
+                            entry.band_offset % crate::BAND_TEXTURE_WIDTH,
+                            entry.band_offset / crate::BAND_TEXTURE_WIDTH,
+                            entry.band_max_x,
+                            entry.band_max_y,
+                        ],
                         color,
                     });
                 }
