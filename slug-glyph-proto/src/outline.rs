@@ -60,12 +60,13 @@ impl OutlinePen for CollectPen {
     fn line_to(&mut self, x: f32, y: f32) {
         let p1 = self.current;
         let p3 = [x, y];
-        // Perturb p2 slightly off the midpoint along the normal so the
-        // quadratic solver never sees a truly degenerate (collinear) curve.
         let dx = p3[0] - p1[0];
         let dy = p3[1] - p1[1];
         let len = (dx * dx + dy * dy).sqrt().max(1.0);
-        let eps = 0.01;
+        // Tiny normal offset so the GPU quadratic solver never hits the
+        // degenerate (collinear) case, which causes division-by-near-zero
+        // artifacts. Scaled to segment length, clamped to a safe range.
+        let eps = (len * 1e-5).clamp(0.01, 0.1);
         let nx = -dy / len;
         let ny = dx / len;
         let p2 = [
@@ -111,7 +112,10 @@ impl OutlinePen for CollectPen {
             let p1 = self.current;
             let p3 = self.contour_start;
             let len = (dx * dx + dy * dy).sqrt().max(1.0);
-            let eps = 0.01;
+            // Tiny normal offset so the GPU quadratic solver never hits the
+        // degenerate (collinear) case, which causes division-by-near-zero
+        // artifacts. Scaled to segment length, clamped to a safe range.
+        let eps = (len * 1e-5).clamp(0.01, 0.1);
             let nx = -dy / len;
             let ny = dx / len;
             let p2 = [
