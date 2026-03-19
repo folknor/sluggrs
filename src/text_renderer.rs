@@ -276,8 +276,8 @@ impl TextRenderer {
         }
 
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &atlas.bind_group, &[]);
-        pass.set_bind_group(1, &viewport.bind_group, &[]);
+        pass.set_bind_group(0, &viewport.bind_group, &[]);
+        pass.set_bind_group(1, &atlas.bind_group, &[]);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.draw(0..4, 0..self.glyphs_to_render);
 

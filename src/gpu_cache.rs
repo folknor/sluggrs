@@ -125,9 +125,10 @@ impl Cache {
             }],
         });
 
+        // Shader layout: group 0 = params uniform, group 1 = textures
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("sluggrs pipeline layout"),
-            bind_group_layouts: &[&atlas_layout, &uniforms_layout],
+            bind_group_layouts: &[&uniforms_layout, &atlas_layout],
             immediate_size: 0,
         });
 
