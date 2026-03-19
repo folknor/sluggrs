@@ -1,8 +1,5 @@
-mod band;
-mod outline;
-
-use band::{build_bands, CurveLocation};
-use outline::{char_to_glyph_id, extract_outline, GlyphOutline};
+use sluggrs::band::{self, build_bands, CurveLocation};
+use sluggrs::outline::{char_to_glyph_id, extract_outline, GlyphOutline};
 
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -13,7 +10,7 @@ use winit::{
     window::Window,
 };
 
-const FONT_BYTES: &[u8] = include_bytes!("../fonts/InterVariable.ttf");
+const FONT_BYTES: &[u8] = include_bytes!("fonts/InterVariable.ttf");
 
 /// Per-instance vertex data for a glyph (matches GlyphInstance in shader).
 #[repr(C)]
@@ -411,7 +408,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     // --- Shader ---
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("slug shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("simple_shader.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(sluggrs::SIMPLE_SHADER_WGSL.into()),
     });
 
     // --- Bind group layouts ---

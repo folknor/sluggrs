@@ -1,0 +1,23 @@
+[package]
+name = "sluggrs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+
+[dependencies]
+skrifa = "0.40"
+bytemuck = { version = "1", features = ["derive"] }
+log = "0.4"
+
+[dev-dependencies]
+wgpu = "28"
+winit = "0.30"
+pollster = "0.4"
+env_logger = "0.11"
+
+[[example]]
+name = "demo"
+path = "examples/demo.rs"
+
+[lints.clippy]
+unwrap_used = "warn"

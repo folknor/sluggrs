@@ -1626,7 +1626,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "slug-glyph-proto"
+name = "sluggrs"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
