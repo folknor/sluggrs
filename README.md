@@ -27,6 +27,14 @@ Work in progress. The core rendering pipeline is functional:
 
 Not yet implemented: dilation (AA at small sizes), non-vector glyph fallback (emoji), trim/eviction.
 
+## Acknowledgements
+
+- [Eric Lengyel](https://terathon.com/) for the Slug algorithm, the [JCGT paper](http://jcgt.org/published/0006/02/02/), and dedicating the [patent](https://terathon.com/blog/decade-slug.html) to the public domain
+- [Slug reference shaders](https://github.com/EricLengyel/Slug) (MIT license) — the WGSL shaders in this crate are translated from the HLSL reference
+- [iced](https://github.com/iced-rs/iced) and [cryoglyph](https://github.com/iced-rs/cryoglyph) / [glyphon](https://github.com/grovesNL/glyphon) for the text rendering API design that sluggrs targets
+- [cosmic-text](https://github.com/pop-os/cosmic-text) for shaping, layout, and font system integration
+- [skrifa](https://github.com/googlefonts/fontations) (part of Google Fonts' fontations) for glyph outline extraction
+
 ## License
 
 MIT OR Apache-2.0 OR Zlib
