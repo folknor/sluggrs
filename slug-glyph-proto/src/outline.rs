@@ -172,50 +172,6 @@ fn mid(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
     [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
 }
 
-/// Extract outline with debug logging
-pub fn extract_outline_debug(font_data: &[u8], glyph_id: u16) -> Option<GlyphOutline> {
-    let font = skrifa::FontRef::new(font_data).ok()?;
-    let outlines = font.outline_glyphs();
-    let glyph = outlines.get(skrifa::GlyphId::new(glyph_id.into()))?;
-
-    let mut pen = DebugPen(CollectPen::new());
-    let settings = DrawSettings::unhinted(Size::unscaled(), skrifa::instance::LocationRef::default());
-    glyph.draw(settings, &mut pen).ok()?;
-
-    if pen.0.curves.is_empty() {
-        return None;
-    }
-
-    Some(GlyphOutline {
-        curves: pen.0.curves,
-        bounds: [pen.0.min[0], pen.0.min[1], pen.0.max[0], pen.0.max[1]],
-    })
-}
-
-struct DebugPen(CollectPen);
-impl OutlinePen for DebugPen {
-    fn move_to(&mut self, x: f32, y: f32) {
-        println!("    move_to({x}, {y})");
-        self.0.move_to(x, y);
-    }
-    fn line_to(&mut self, x: f32, y: f32) {
-        println!("    line_to({x}, {y})");
-        self.0.line_to(x, y);
-    }
-    fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
-        println!("    quad_to({cx}, {cy}, {x}, {y})");
-        self.0.quad_to(cx, cy, x, y);
-    }
-    fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
-        println!("    curve_to({cx0}, {cy0}, {cx1}, {cy1}, {x}, {y})");
-        self.0.curve_to(cx0, cy0, cx1, cy1, x, y);
-    }
-    fn close(&mut self) {
-        println!("    close()");
-        self.0.close();
-    }
-}
-
 /// Extract the quadratic bezier outline for a glyph.
 /// Coordinates are in font units (em-space).
 pub fn extract_outline(font_data: &[u8], glyph_id: u16) -> Option<GlyphOutline> {
