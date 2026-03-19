@@ -1,4 +1,5 @@
 pub mod band;
+pub mod glyph_cache;
 pub mod gpu_cache;
 pub mod outline;
 pub mod prepare;
