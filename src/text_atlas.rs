@@ -11,7 +11,9 @@ use wgpu::{
     TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor,
 };
 
-const INITIAL_CURVE_WIDTH: u32 = 1024;
+/// Curve texture width. Fixed like the band texture — rows wrap at this boundary.
+const CURVE_TEXTURE_WIDTH: u32 = 4096;
+const INITIAL_CURVE_HEIGHT: u32 = 1;
 const INITIAL_BAND_HEIGHT: u32 = 1;
 
 /// An atlas containing cached glyph curve and band data for GPU rendering.
@@ -25,11 +27,11 @@ pub struct TextAtlas {
     pub(crate) format: TextureFormat,
     pub(crate) color_mode: ColorMode,
 
-    // Texture dimensions
-    curve_width: u32,
+    // Texture dimensions (height grows, width is fixed)
+    curve_height: u32,
     band_height: u32,
 
-    // Write cursors (texel offsets, append-only)
+    // Write cursors (linear texel offsets, append-only)
     curve_cursor: u32,
     band_cursor: u32,
 
@@ -53,10 +55,10 @@ impl TextAtlas {
         format: TextureFormat,
         color_mode: ColorMode,
     ) -> Self {
-        let curve_width = INITIAL_CURVE_WIDTH;
+        let curve_height = INITIAL_CURVE_HEIGHT;
         let band_height = INITIAL_BAND_HEIGHT;
 
-        let curve_texture = create_curve_texture(device, curve_width);
+        let curve_texture = create_curve_texture(device, curve_height);
         let band_texture = create_band_texture(device, band_height);
 
         let curve_view = curve_texture.create_view(&TextureViewDescriptor::default());
@@ -72,7 +74,7 @@ impl TextAtlas {
             bind_group,
             format,
             color_mode,
-            curve_width,
+            curve_height,
             band_height,
             curve_cursor: 0,
             band_cursor: 0,
@@ -83,8 +85,7 @@ impl TextAtlas {
     }
 
     pub fn trim(&mut self) {
-        // Match cryoglyph semantics: retain cached data, just note the
-        // frame boundary. Full eviction only happens when textures are full.
+        // Match cryoglyph semantics: retain cached data.
         // For now this is a no-op since we don't track per-frame usage yet.
     }
 
@@ -100,7 +101,7 @@ impl TextAtlas {
     ) -> GlyphEntry {
         let num_curves = gpu_outline.curves.len() as u32;
 
-        // Build curve texels (2 texels per curve: [p1.x, p1.y, p2.x, p2.y], [p3.x, p3.y, 0, 0])
+        // Build curve texels (2 texels per curve)
         let curve_start = self.curve_cursor;
         let mut curve_texels = Vec::with_capacity(num_curves as usize * 2);
         for curve in &gpu_outline.curves {
@@ -109,15 +110,19 @@ impl TextAtlas {
         }
         let curve_texel_count = curve_texels.len() as u32;
 
-        // Build band texels with absolute curve locations
-        let band_start = self.band_cursor;
+        // Build curve locations as 2D coordinates (wrapping at CURVE_TEXTURE_WIDTH)
         let curve_locations: Vec<CurveLocation> = (0..num_curves)
-            .map(|i| CurveLocation {
-                x: curve_start + i * 2,
-                y: 0,
+            .map(|i| {
+                let linear = curve_start + i * 2;
+                CurveLocation {
+                    x: linear % CURVE_TEXTURE_WIDTH,
+                    y: linear / CURVE_TEXTURE_WIDTH,
+                }
             })
             .collect();
 
+        // Build band data with absolute 2D curve locations
+        let band_start = self.band_cursor;
         let band_data =
             crate::band::build_bands(gpu_outline, &curve_locations, band_count_x, band_count_y);
         let mut band_texels = Vec::new();
@@ -132,8 +137,9 @@ impl TextAtlas {
 
         // Grow textures if needed
         let new_curve_end = self.curve_cursor + curve_texel_count;
-        if new_curve_end > self.curve_width {
-            self.grow_curve_texture(device, queue, new_curve_end);
+        let required_curve_height = (new_curve_end + CURVE_TEXTURE_WIDTH - 1) / CURVE_TEXTURE_WIDTH;
+        if required_curve_height > self.curve_height {
+            self.grow_curve_texture(device, queue, required_curve_height);
         }
 
         let new_band_end = self.band_cursor + band_texel_count;
@@ -146,51 +152,39 @@ impl TextAtlas {
         self.curve_data.extend_from_slice(&curve_texels);
         self.band_data.extend_from_slice(&band_texels);
 
-        // Upload curve texels to GPU
+        // Upload curve texels (handling wrapping across rows)
         if !curve_texels.is_empty() {
-            queue.write_texture(
-                TexelCopyTextureInfo {
-                    texture: &self.curve_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: self.curve_cursor,
-                        y: 0,
-                        z: 0,
-                    },
-                    aspect: TextureAspect::All,
-                },
-                bytemuck::cast_slice(&curve_texels),
-                TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(curve_texel_count * 16), // Rgba32Float = 16 bytes
-                    rows_per_image: None,
-                },
-                Extent3d {
-                    width: curve_texel_count,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
+            self.upload_wrapped_texels_f32(
+                queue,
+                &self.curve_texture,
+                &curve_texels,
+                self.curve_cursor,
+                CURVE_TEXTURE_WIDTH,
             );
         }
 
-        // Upload band texels to GPU (handling wrapping)
+        // Upload band texels (handling wrapping across rows)
         if !band_texels.is_empty() {
-            self.upload_band_texels(queue, &band_texels, self.band_cursor);
+            upload_wrapped_texels_u32(
+                queue,
+                &self.band_texture,
+                &band_texels,
+                self.band_cursor,
+                BAND_TEXTURE_WIDTH,
+            );
         }
 
         // Advance cursors
         self.curve_cursor = new_curve_end;
         self.band_cursor = new_band_end;
 
-        let entry = GlyphEntry {
+        GlyphEntry {
             band_offset: band_start,
             band_max_x: band_data.band_count_x.saturating_sub(1),
             band_max_y: band_data.band_count_y.saturating_sub(1),
             band_transform: band_data.band_transform,
             bounds: gpu_outline.bounds,
-        };
-
-        entry
+        }
     }
 
     /// Mark a glyph as non-vector (no outline available).
@@ -198,22 +192,27 @@ impl TextAtlas {
         self.glyphs.insert(key, NON_VECTOR_GLYPH);
     }
 
-    /// Upload band texels at a linear offset, handling the 2D wrapping.
-    fn upload_band_texels(&self, queue: &Queue, texels: &[[u32; 4]], linear_offset: u32) {
-        // Band texture is BAND_TEXTURE_WIDTH wide, data wraps into rows.
-        // We may need to split the upload across row boundaries.
+    /// Upload f32 texels at a linear offset, handling row wrapping.
+    fn upload_wrapped_texels_f32(
+        &self,
+        queue: &Queue,
+        texture: &wgpu::Texture,
+        texels: &[[f32; 4]],
+        linear_offset: u32,
+        tex_width: u32,
+    ) {
         let mut remaining = texels;
         let mut offset = linear_offset;
 
         while !remaining.is_empty() {
-            let x = offset % BAND_TEXTURE_WIDTH;
-            let y = offset / BAND_TEXTURE_WIDTH;
-            let row_remaining = (BAND_TEXTURE_WIDTH - x) as usize;
+            let x = offset % tex_width;
+            let y = offset / tex_width;
+            let row_remaining = (tex_width - x) as usize;
             let count = remaining.len().min(row_remaining);
 
             queue.write_texture(
                 TexelCopyTextureInfo {
-                    texture: &self.band_texture,
+                    texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d { x, y, z: 0 },
                     aspect: TextureAspect::All,
@@ -221,7 +220,7 @@ impl TextAtlas {
                 bytemuck::cast_slice(&remaining[..count]),
                 TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(count as u32 * 16), // Rgba32Uint = 16 bytes
+                    bytes_per_row: Some(count as u32 * 16),
                     rows_per_image: None,
                 },
                 Extent3d {
@@ -236,43 +235,35 @@ impl TextAtlas {
         }
     }
 
-    fn grow_curve_texture(&mut self, device: &Device, queue: &Queue, min_width: u32) {
-        let mut new_width = self.curve_width;
-        while new_width < min_width {
-            new_width *= 2;
+    fn grow_curve_texture(&mut self, device: &Device, queue: &Queue, min_height: u32) {
+        let mut new_height = self.curve_height;
+        while new_height < min_height {
+            new_height *= 2;
         }
 
         log::debug!(
-            "Growing curve texture: {} → {} (cursor: {})",
-            self.curve_width,
-            new_width,
+            "Growing curve texture: {}x{} → {}x{} (cursor: {})",
+            CURVE_TEXTURE_WIDTH,
+            self.curve_height,
+            CURVE_TEXTURE_WIDTH,
+            new_height,
             self.curve_cursor
         );
 
-        self.curve_texture = create_curve_texture(device, new_width);
-        self.curve_view = self.curve_texture.create_view(&TextureViewDescriptor::default());
-        self.curve_width = new_width;
+        self.curve_texture = create_curve_texture(device, new_height);
+        self.curve_view = self
+            .curve_texture
+            .create_view(&TextureViewDescriptor::default());
+        self.curve_height = new_height;
 
         // Re-upload existing data
         if !self.curve_data.is_empty() {
-            queue.write_texture(
-                TexelCopyTextureInfo {
-                    texture: &self.curve_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: TextureAspect::All,
-                },
-                bytemuck::cast_slice(&self.curve_data),
-                TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(self.curve_data.len() as u32 * 16),
-                    rows_per_image: None,
-                },
-                Extent3d {
-                    width: self.curve_data.len() as u32,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
+            self.upload_wrapped_texels_f32(
+                queue,
+                &self.curve_texture,
+                &self.curve_data,
+                0,
+                CURVE_TEXTURE_WIDTH,
             );
         }
 
@@ -295,12 +286,20 @@ impl TextAtlas {
         );
 
         self.band_texture = create_band_texture(device, new_height);
-        self.band_view = self.band_texture.create_view(&TextureViewDescriptor::default());
+        self.band_view = self
+            .band_texture
+            .create_view(&TextureViewDescriptor::default());
         self.band_height = new_height;
 
-        // Re-upload existing data (respecting the wrapped layout)
+        // Re-upload existing data
         if !self.band_data.is_empty() {
-            self.upload_band_texels(queue, &self.band_data, 0);
+            upload_wrapped_texels_u32(
+                queue,
+                &self.band_texture,
+                &self.band_data,
+                0,
+                BAND_TEXTURE_WIDTH,
+            );
         }
 
         self.rebind(device);
@@ -323,12 +322,53 @@ impl TextAtlas {
     }
 }
 
-fn create_curve_texture(device: &Device, width: u32) -> wgpu::Texture {
+fn upload_wrapped_texels_u32(
+    queue: &Queue,
+    texture: &wgpu::Texture,
+    texels: &[[u32; 4]],
+    linear_offset: u32,
+    tex_width: u32,
+) {
+    let mut remaining = texels;
+    let mut offset = linear_offset;
+
+    while !remaining.is_empty() {
+        let x = offset % tex_width;
+        let y = offset / tex_width;
+        let row_remaining = (tex_width - x) as usize;
+        let count = remaining.len().min(row_remaining);
+
+        queue.write_texture(
+            TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: TextureAspect::All,
+            },
+            bytemuck::cast_slice(&remaining[..count]),
+            TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(count as u32 * 16),
+                rows_per_image: None,
+            },
+            Extent3d {
+                width: count as u32,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        remaining = &remaining[count..];
+        offset += count as u32;
+    }
+}
+
+fn create_curve_texture(device: &Device, height: u32) -> wgpu::Texture {
     device.create_texture(&TextureDescriptor {
         label: Some("sluggrs curve texture"),
         size: Extent3d {
-            width,
-            height: 1,
+            width: CURVE_TEXTURE_WIDTH,
+            height,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
