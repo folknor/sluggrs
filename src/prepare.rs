@@ -66,6 +66,32 @@ fn is_linear(curve: &QuadCurve) -> bool {
     (curve.p2[0] - mid_x).abs() < 1e-6 && (curve.p2[1] - mid_y).abs() < 1e-6
 }
 
+/// Italic shear factor: tan(14°) ≈ 0.2493, matching cosmic_text's
+/// swash integration for FAKE_ITALIC.
+const ITALIC_SHEAR: f32 = 0.2493;
+
+/// Apply a fake-italic shear transform to a GPU outline.
+///
+/// The shear is x' = x + y * tan(14°), y' = y, matching the angle
+/// used by cosmic_text's swash integration. Bounds are recomputed
+/// after the transform.
+pub fn apply_italic_shear(outline: &mut GpuOutline) {
+    let mut min = [f32::MAX, f32::MAX];
+    let mut max = [f32::MIN, f32::MIN];
+
+    for curve in &mut outline.curves {
+        for p in [&mut curve.p1, &mut curve.p2, &mut curve.p3] {
+            p[0] += p[1] * ITALIC_SHEAR;
+            min[0] = min[0].min(p[0]);
+            min[1] = min[1].min(p[1]);
+            max[0] = max[0].max(p[0]);
+            max[1] = max[1].max(p[1]);
+        }
+    }
+
+    outline.bounds = [min[0], min[1], max[0], max[1]];
+}
+
 /// Offset the midpoint of a line segment along the edge normal.
 /// This turns the degenerate quadratic into a tiny but genuine curve,
 /// preventing division-by-near-zero in the shader's quadratic solver.

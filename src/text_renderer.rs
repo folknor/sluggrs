@@ -1,7 +1,6 @@
-use crate::band::build_bands;
 use crate::glyph_cache::GlyphKey;
 use crate::outline::extract_outline;
-use crate::prepare::prepare_outline;
+use crate::prepare::{apply_italic_shear, prepare_outline};
 use crate::text_atlas::TextAtlas;
 use crate::types::{PrepareError, RenderError, TextArea};
 use crate::viewport::Viewport;
@@ -65,6 +64,10 @@ impl TextRenderer {
 
         let resolution = viewport.resolution();
 
+        // Cache units_per_em per font to avoid redundant skrifa lookups
+        let mut units_per_em_cache: std::collections::HashMap<cosmic_text::fontdb::ID, f32> =
+            std::collections::HashMap::new();
+
         for text_area in text_areas {
             let bounds_min_x = text_area.bounds.left.max(0);
             let bounds_min_y = text_area.bounds.top.max(0);
@@ -94,7 +97,12 @@ impl TextRenderer {
                             Some(font) => {
                                 match extract_outline(font.data(), glyph.glyph_id) {
                                     Some(outline) => {
-                                        let gpu_outline = prepare_outline(&outline);
+                                        let mut gpu_outline = prepare_outline(&outline);
+                                        if glyph.cache_key_flags.contains(
+                                            cosmic_text::CacheKeyFlags::FAKE_ITALIC,
+                                        ) {
+                                            apply_italic_shear(&mut gpu_outline);
+                                        }
                                         let num_curves = gpu_outline.curves.len();
                                         let band_count = if num_curves < 10 {
                                             4
@@ -103,21 +111,7 @@ impl TextRenderer {
                                         } else {
                                             12
                                         };
-                                        // Build bands with dummy locations — upload_glyph
-                                        // will rebuild with absolute locations
-                                        let dummy_locs: Vec<_> = (0..num_curves)
-                                            .map(|i| crate::band::CurveLocation {
-                                                x: (i as u32) * 2,
-                                                y: 0,
-                                            })
-                                            .collect();
-                                        let band_data = build_bands(
-                                            &gpu_outline,
-                                            &dummy_locs,
-                                            band_count,
-                                            band_count,
-                                        );
-                                        atlas.upload_glyph(device, queue, &gpu_outline, &band_data)
+                                        atlas.upload_glyph(device, queue, &gpu_outline, band_count, band_count)
                                     }
                                     None => {
                                         // Non-vector glyph
@@ -139,18 +133,25 @@ impl TextRenderer {
                         _ => continue, // Skip non-vector or missing
                     };
 
-                    // Get font metrics for scaling
-                    let font = match font_system.get_font(glyph.font_id, glyph.font_weight) {
-                        Some(f) => f,
-                        None => continue,
-                    };
-                    let units_per_em = {
-                        let skrifa_font = match skrifa::FontRef::new(font.data()) {
-                            Ok(f) => f,
-                            Err(_) => continue,
-                        };
-                        use skrifa::raw::TableProvider;
-                        skrifa_font.head().map(|h| h.units_per_em() as f32).unwrap_or(1000.0)
+                    // Get font metrics for scaling (cached per font_id)
+                    let units_per_em = match units_per_em_cache.get(&glyph.font_id) {
+                        Some(&v) => v,
+                        None => {
+                            let font = match font_system.get_font(glyph.font_id, glyph.font_weight) {
+                                Some(f) => f,
+                                None => continue,
+                            };
+                            let v = {
+                                let skrifa_font = match skrifa::FontRef::new(font.data()) {
+                                    Ok(f) => f,
+                                    Err(_) => continue,
+                                };
+                                use skrifa::raw::TableProvider;
+                                skrifa_font.head().map(|h| h.units_per_em() as f32).unwrap_or(1000.0)
+                            };
+                            units_per_em_cache.insert(glyph.font_id, v);
+                            v
+                        }
                     };
 
                     let scale = glyph.font_size * text_area.scale / units_per_em;

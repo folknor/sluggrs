@@ -1,4 +1,4 @@
-use crate::band::{BandData, CurveLocation};
+use crate::band::CurveLocation;
 use crate::glyph_cache::{GlyphEntry, GlyphKey, GlyphMap, NON_VECTOR_GLYPH};
 use crate::gpu_cache::Cache;
 use crate::prepare::GpuOutline;
@@ -95,7 +95,8 @@ impl TextAtlas {
         device: &Device,
         queue: &Queue,
         gpu_outline: &GpuOutline,
-        band_data: &BandData,
+        band_count_x: u32,
+        band_count_y: u32,
     ) -> GlyphEntry {
         let num_curves = gpu_outline.curves.len() as u32;
 
@@ -108,23 +109,8 @@ impl TextAtlas {
         }
         let curve_texel_count = curve_texels.len() as u32;
 
-        // Build band texels (already packed as u32 quads by build_bands)
+        // Build band texels with absolute curve locations
         let band_start = self.band_cursor;
-        let mut band_texels = Vec::new();
-        for chunk in band_data.entries.chunks(4) {
-            let mut texel = [0u32; 4];
-            for (i, &val) in chunk.iter().enumerate() {
-                texel[i] = val;
-            }
-            band_texels.push(texel);
-        }
-        let band_texel_count = band_texels.len() as u32;
-
-        // Fixup band offsets: build_bands produces offsets relative to 0,
-        // but in the atlas they start at band_start. The curve locations
-        // also need to be absolute.
-        // Actually, we need to rebuild with absolute curve locations.
-        // Let's recompute:
         let curve_locations: Vec<CurveLocation> = (0..num_curves)
             .map(|i| CurveLocation {
                 x: curve_start + i * 2,
@@ -132,10 +118,9 @@ impl TextAtlas {
             })
             .collect();
 
-        // Re-build bands with absolute curve locations
         let band_data =
-            crate::band::build_bands(&gpu_outline, &curve_locations, band_data.band_count_x, band_data.band_count_y);
-        band_texels.clear();
+            crate::band::build_bands(gpu_outline, &curve_locations, band_count_x, band_count_y);
+        let mut band_texels = Vec::new();
         for chunk in band_data.entries.chunks(4) {
             let mut texel = [0u32; 4];
             for (i, &val) in chunk.iter().enumerate() {
