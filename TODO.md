@@ -1,25 +1,32 @@
 # TODO
 
-## Pre-integration
+## Done
 
-- [ ] Centralize shared shader constants (BAND_TEXTURE_WIDTH, texture layout
-  assumptions) so `simple_shader.wgsl` and `shader.wgsl` cannot drift
-- [ ] Update `docs/slug-glyph-investigation.md` with comma bug resolution
-- [ ] Update `docs/slug-glyph-design.md` to reflect `sluggrs` naming
+- [x] Centralize shared shader constants (BAND_TEXTURE_WIDTH exported from lib.rs)
+- [x] Update investigation doc with comma bug resolution
+- [x] Update design doc to reflect sluggrs naming
+- [x] Build the crate API surface (Cache, TextAtlas, TextRenderer, Viewport)
+- [x] Wire into iced's `iced_wgpu/src/text.rs` as a cryoglyph replacement
+- [x] FAKE_ITALIC shear transform support
 
-## Integration (Phase 2–3)
+## Before shipping
 
-- [ ] Implement dilation in vertex packing — expand glyph quads by ~1px so
-  the fragment shader has room for full AA coverage ramp at edges. The full
-  shader (`src/shader.wgsl`) already has dilation support translated from
-  the Slug reference; the simplified shader does not. Dilation matters at
-  small sizes and for thin glyph features.
-- [ ] Build the crate API surface (Cache, TextAtlas, TextRenderer, Viewport)
-  matching the contract in `docs/slug-glyph-design.md`
-- [ ] Wire into iced's `iced_wgpu/src/text.rs` as a cryoglyph replacement
-- [ ] Color emoji fallback (bitmap hybrid for non-vector glyphs)
+- [ ] Visual testing in ratatoskr — verify text renders correctly
+- [ ] Dilation — expand glyph quads by ~1px so the fragment shader has room
+  for full AA coverage ramp at edges. Matters at small sizes and thin
+  features. The full shader (`src/shader.wgsl`) has dilation support; the
+  simplified shader does not.
+- [ ] Non-vector glyph fallback — color emoji and bitmap-only fonts currently
+  produce no output. Required before the iced swap ships. See integration
+  spec for strategy options.
+- [ ] Texture growth under load — verify curve/band textures grow correctly
+  when rendering large amounts of diverse text (CJK, mixed fonts)
+- [ ] Trim/eviction — currently trim() is a no-op. Implement usage tracking
+  and LRU eviction to match cryoglyph's frame-boundary semantics.
 
-## Cleanup
+## Polish
 
-- [ ] Band texture width should eventually be configurable rather than a
-  hardcoded 4096 constant shared between Rust and WGSL
+- [ ] Band texture width configurable rather than hardcoded 4096
+- [ ] Shader constant centralization between simple_shader.wgsl and shader.wgsl
+- [ ] Performance profiling against cryoglyph
+- [ ] ColorMode handling (currently stubbed — Slug renders in linear space)
