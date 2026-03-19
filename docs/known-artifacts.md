@@ -33,6 +33,10 @@ meet at a sharp angle.
 
 ## Pattern
 
+All reported artifacts are on **bold weight** glyphs only. Bold weights
+have thicker strokes with tighter curve joins, producing shorter
+connecting segments with smaller `a` coefficients.
+
 All artifacts so far have been at curve joins or small features where:
 - Line segments meet curves at shallow angles
 - The perturbation produces near-degenerate quadratics
