@@ -341,12 +341,21 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     let band_texels = build_band_texture(&prepared_glyphs);
 
     let curve_texture_width = curve_texels.len().max(1) as u32;
-    let band_texture_width = band_texels.len().max(1) as u32;
+
+    // Pad band texture to BAND_TEXTURE_WIDTH and wrap into rows to match
+    // the shader's addressing: x wraps at BAND_TEXTURE_WIDTH, y increments.
+    let band_w = sluggrs::BAND_TEXTURE_WIDTH;
+    let band_count = band_texels.len().max(1) as u32;
+    let band_h = (band_count + band_w - 1) / band_w;
+    let mut padded_band_texels = band_texels;
+    padded_band_texels.resize((band_w * band_h) as usize, [0u32; 4]);
 
     log::info!(
-        "Curve texture: {} texels, Band texture: {} texels",
+        "Curve texture: {} texels, Band texture: {}x{} ({} used)",
         curve_texture_width,
-        band_texture_width
+        band_w,
+        band_h,
+        band_count
     );
 
     let curve_texture = device.create_texture_with_data(
@@ -374,8 +383,8 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
         &wgpu::TextureDescriptor {
             label: Some("band texture"),
             size: wgpu::Extent3d {
-                width: band_texture_width,
-                height: 1,
+                width: band_w,
+                height: band_h,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -386,7 +395,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
             view_formats: &[],
         },
         wgpu::util::TextureDataOrder::LayerMajor,
-        bytemuck::cast_slice(&band_texels),
+        bytemuck::cast_slice(&padded_band_texels),
     );
 
     let curve_view = curve_texture.create_view(&wgpu::TextureViewDescriptor::default());
