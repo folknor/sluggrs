@@ -1,5 +1,6 @@
 use sluggrs::band::{self, build_bands, CurveLocation};
-use sluggrs::outline::{char_to_glyph_id, extract_outline, GlyphOutline};
+use sluggrs::outline::{char_to_glyph_id, extract_outline};
+use sluggrs::prepare::{self, GpuOutline};
 
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -32,12 +33,8 @@ struct Params {
 
 /// Prepared glyph data ready for GPU upload.
 struct PreparedGlyph {
-    outline: GlyphOutline,
+    gpu_outline: GpuOutline,
     band_data: band::BandData,
-    /// Where this glyph's curves start in the curve texture (texel x offset).
-    curve_offset: u32,
-    /// Where this glyph's band data starts in the band texture (texel x offset).
-    band_offset: u32,
 }
 
 /// Build curve texture data from glyph outlines.
@@ -45,7 +42,7 @@ fn build_curve_texture(glyphs: &[PreparedGlyph]) -> Vec<[f32; 4]> {
     let mut texels: Vec<[f32; 4]> = Vec::new();
 
     for glyph in glyphs {
-        for curve in &glyph.outline.curves {
+        for curve in &glyph.gpu_outline.curves {
             // Texel 1: p1.x, p1.y, p2.x, p2.y
             texels.push([curve.p1[0], curve.p1[1], curve.p2[0], curve.p2[1]]);
             // Texel 2: p3.x, p3.y, 0, 0
@@ -137,7 +134,8 @@ fn prepare_text(
             }
         };
 
-        let num_curves = outline.curves.len();
+        let gpu_outline = prepare::prepare_outline(&outline);
+        let num_curves = gpu_outline.curves.len();
 
         // Build curve locations (each curve takes 2 texels in the curve texture)
         let curve_locations: Vec<CurveLocation> = (0..num_curves)
@@ -148,26 +146,17 @@ fn prepare_text(
             .collect();
 
         // Choose band counts based on glyph complexity
-        // Use 1 band for very simple shapes (all straight lines) to avoid
-        // band coverage gaps, higher counts for complex curves
-        let all_linear = outline.curves.iter().all(|c| {
-            let mid_x = (c.p1[0] + c.p3[0]) * 0.5;
-            let mid_y = (c.p1[1] + c.p3[1]) * 0.5;
-            (c.p2[0] - mid_x).abs() < 0.01 && (c.p2[1] - mid_y).abs() < 0.01
-        });
         let band_count =
-            if all_linear {
-                1
-            } else if num_curves < 10 {
+            if num_curves < 10 {
                 4
             } else if num_curves < 30 {
                 8
             } else {
                 12
             };
-        let band_data = build_bands(&outline, &curve_locations, band_count, band_count);
+        let band_data = build_bands(&gpu_outline, &curve_locations, band_count, band_count);
 
-        let [min_x, min_y, max_x, max_y] = outline.bounds;
+        let [min_x, min_y, max_x, max_y] = gpu_outline.bounds;
 
         // Screen-space rectangle for this glyph
         let screen_x = cursor_x + min_x * scale;
@@ -191,10 +180,8 @@ fn prepare_text(
         });
 
         prepared.push(PreparedGlyph {
-            outline,
+            gpu_outline,
             band_data,
-            curve_offset,
-            band_offset,
         });
 
         curve_offset += (num_curves as u32) * 2; // 2 texels per curve
@@ -341,11 +328,11 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
         log::info!(
             "  glyph {}: {} curves, bounds [{:.0}, {:.0}, {:.0}, {:.0}]",
             i,
-            g.outline.curves.len(),
-            g.outline.bounds[0],
-            g.outline.bounds[1],
-            g.outline.bounds[2],
-            g.outline.bounds[3]
+            g.gpu_outline.curves.len(),
+            g.gpu_outline.bounds[0],
+            g.gpu_outline.bounds[1],
+            g.gpu_outline.bounds[2],
+            g.gpu_outline.bounds[3]
         );
     }
 

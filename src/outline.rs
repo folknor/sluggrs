@@ -60,19 +60,7 @@ impl OutlinePen for CollectPen {
     fn line_to(&mut self, x: f32, y: f32) {
         let p1 = self.current;
         let p3 = [x, y];
-        let dx = p3[0] - p1[0];
-        let dy = p3[1] - p1[1];
-        let len = (dx * dx + dy * dy).sqrt().max(1.0);
-        // Tiny normal offset so the GPU quadratic solver never hits the
-        // degenerate (collinear) case, which causes division-by-near-zero
-        // artifacts. Scaled to segment length, clamped to a safe range.
-        let eps = (len * 1e-5).clamp(0.01, 0.1);
-        let nx = -dy / len;
-        let ny = dx / len;
-        let p2 = [
-            (p1[0] + p3[0]) * 0.5 + nx * eps,
-            (p1[1] + p3[1]) * 0.5 + ny * eps,
-        ];
+        let p2 = [(p1[0] + p3[0]) * 0.5, (p1[1] + p3[1]) * 0.5];
         self.curves.push(QuadCurve { p1, p2, p3 });
         self.current = p3;
         self.update_bounds(p3);
@@ -111,17 +99,7 @@ impl OutlinePen for CollectPen {
         if dx * dx + dy * dy > 1e-6 {
             let p1 = self.current;
             let p3 = self.contour_start;
-            let len = (dx * dx + dy * dy).sqrt().max(1.0);
-            // Tiny normal offset so the GPU quadratic solver never hits the
-        // degenerate (collinear) case, which causes division-by-near-zero
-        // artifacts. Scaled to segment length, clamped to a safe range.
-        let eps = (len * 1e-5).clamp(0.01, 0.1);
-            let nx = -dy / len;
-            let ny = dx / len;
-            let p2 = [
-                (p1[0] + p3[0]) * 0.5 + nx * eps,
-                (p1[1] + p3[1]) * 0.5 + ny * eps,
-            ];
+            let p2 = [(p1[0] + p3[0]) * 0.5, (p1[1] + p3[1]) * 0.5];
             self.curves.push(QuadCurve { p1, p2, p3 });
             self.current = self.contour_start;
         }

@@ -3,7 +3,7 @@
 /// Divides the glyph bounding box into horizontal and vertical bands,
 /// recording which curves intersect each band. This lets the fragment
 /// shader skip curves that can't affect the current pixel.
-use crate::outline::GlyphOutline;
+use crate::prepare::GpuOutline;
 
 /// Band data ready for GPU upload.
 pub struct BandData {
@@ -29,9 +29,10 @@ pub struct CurveLocation {
 
 /// Build the band acceleration structure for a glyph.
 ///
+/// Operates on GPU-prepared geometry (with perturbed line segments).
 /// `curve_locations` maps each curve index to its (x, y) position in the curve texture.
 pub fn build_bands(
-    outline: &GlyphOutline,
+    outline: &GpuOutline,
     curve_locations: &[CurveLocation],
     band_count_x: u32,
     band_count_y: u32,
