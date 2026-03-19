@@ -182,6 +182,60 @@ fn prepare_text(
             }
             println!("  bounds: {:?}", outline.bounds);
             println!("  curve_offset={}, band_offset={}", curve_offset, band_offset);
+            println!("  band_transform={:?}", band_data.band_transform);
+
+            let band_texels: Vec<[u32; 4]> = band_data
+                .entries
+                .chunks(4)
+                .map(|chunk| {
+                    let mut texel = [0u32; 4];
+                    for (i, &v) in chunk.iter().enumerate() {
+                        texel[i] = v;
+                    }
+                    texel
+                })
+                .collect();
+
+            println!("  band texels (relative to glyph start):");
+            for (i, texel) in band_texels.iter().enumerate() {
+                println!("    {:>2}: {:?}", i, texel);
+            }
+
+            let hcount = band_count as usize;
+            let vcount = band_count as usize;
+
+            println!("  horizontal headers:");
+            for i in 0..hcount {
+                let header = band_texels[i];
+                println!("    h{}: count={} offset={}", i, header[0], header[1]);
+                for ci in 0..header[0] as usize {
+                    let cref = band_texels[header[1] as usize + ci];
+                    println!(
+                        "      ci={}: curve_tex=({}, {}), curve_idx={}",
+                        ci,
+                        cref[0],
+                        cref[1],
+                        (cref[0] - curve_offset) / 2
+                    );
+                }
+            }
+
+            println!("  vertical headers:");
+            for i in 0..vcount {
+                let header = band_texels[hcount + i];
+                println!("    v{}: count={} offset={}", i, header[0], header[1]);
+                for ci in 0..header[0] as usize {
+                    let cref = band_texels[header[1] as usize + ci];
+                    println!(
+                        "      ci={}: curve_tex=({}, {}), curve_idx={}",
+                        ci,
+                        cref[0],
+                        cref[1],
+                        (cref[0] - curve_offset) / 2
+                    );
+                }
+            }
+
             println!("===================");
         }
 

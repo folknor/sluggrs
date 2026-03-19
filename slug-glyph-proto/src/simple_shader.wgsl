@@ -224,9 +224,17 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // Combine coverage (original Slug formula)
-    let combined = abs(xcov * xwgt + ycov * ywgt) / max(xwgt + ywgt, 1.0 / 65536.0);
-    let fallback = min(abs(xcov), abs(ycov));
-    let final_coverage = clamp(max(combined, fallback), 0.0, 1.0);
-    return input.color * final_coverage;
+    // DEBUG: visualize which ray direction is failing
+    // Red = horizontal coverage, Green = vertical coverage
+    // Solid red + striped green = vertical ray failing
+    // Striped red + solid green = horizontal ray failing
+    // Both striped = degenerate-line solver is wrong
+    // Both solid = combine logic is wrong
+    return vec4<f32>(abs(xcov), abs(ycov), 0.0, 1.0);
+
+    // // Combine coverage (original Slug formula)
+    // let combined = abs(xcov * xwgt + ycov * ywgt) / max(xwgt + ywgt, 1.0 / 65536.0);
+    // let fallback = min(abs(xcov), abs(ycov));
+    // let final_coverage = clamp(max(combined, fallback), 0.0, 1.0);
+    // return input.color * final_coverage;
 }

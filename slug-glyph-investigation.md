@@ -43,13 +43,67 @@ This requires BOTH directions to detect the pixel as "inside." The **band accele
 | `max(abs(xcov), abs(ycov))` when weights ≈ 0 | Comma fills correctly, but false fills leak outside the shape to the bounding box |
 | 1 band per direction (disable banding) | Untested (shader compile error from leftover duplicate, session ended) |
 
-### Most promising next step
+### Revised diagnosis (2026-03-19, external review)
 
-The **1-band approach** (effectively disabling the band optimization for all-linear glyphs) should confirm the diagnosis. If the comma renders correctly with 1 band, the fix is to improve the band builder — either:
+The original theory — "the comma needs 1 band" — is **invalidated**. The all-linear detection in `main.rs:156-170` is already setting `band_count=1` for the comma. The 1-band path executes, and the comma still stripes. This means the bug is **not in band splitting** but downstream in the fragment shader.
 
-1. **Detect all-linear glyphs** and use 1 band (simple, already coded, just needs the shader duplicate fixed)
-2. **Expand curve assignment** in the band builder — add padding to the x/y range when assigning curves to bands, so curves near band boundaries appear in adjacent bands
-3. **Use a smarter coverage formula** — when both weights are near zero, use `max` for the direction that has nonzero weight, and `min` only when both have weight
+The new primary suspects:
+
+1. **The degenerate-quadratic solver paths** — `simple_shader.wgsl:93` (`solve_horiz_poly`) and `simple_shader.wgsl:119` (`solve_vert_poly`). The comma's curves are degenerate quadratics (control point at midpoint of endpoints, so `a = p1 - 2*p2 + p3 ≈ 0`). The `abs(a) < 1/65536` threshold gates whether the linear or quadratic path runs. If floating point puts `a` just above the threshold, it falls into the quadratic path and computes `1.0 / a` with a near-zero denominator — producing garbage roots. Alternatively, the linear path itself may have issues when `b` is near-zero in the solving component (e.g. a near-horizontal or near-vertical edge).
+
+2. **The coverage combine logic** — `simple_shader.wgsl:228-230`. Even if both ray casts produce correct individual coverage, the `min(abs(xcov), abs(ycov))` fallback zeros out coverage when one direction happens to produce zero for geometric reasons unrelated to inside/outside.
+
+3. **`calc_root_code`** — `simple_shader.wgsl:76-83`. For degenerate quadratics where all three y-values (or x-values) are very close, sign classification could be unstable. A control point at exactly the midpoint means `p2` is always between `p1` and `p3`, so its sign should agree with one of them — but floating point edge cases could produce wrong root counts.
+
+### Revised plan
+
+#### Step 1: Verify band data (CPU, already instrumented)
+
+Debug dumps have been added to `main.rs` (extended comma/period debug block). Run and check:
+
+- `h0.count == 4` and `v0.count == 4` for the comma
+- Both lists reference curve indices 0,1,2,3
+
+If either count is less than 4, the bug is still in `band.rs` despite `band_count=1`. If both are 4, the builder is confirmed correct and the problem is purely in the shader.
+
+#### Step 2: Isolate failing ray direction (shader, already instrumented)
+
+The shader return has been changed to `vec4(abs(xcov), abs(ycov), 0.0, 1.0)`. Run and interpret:
+
+| Red channel (xcov) | Green channel (ycov) | Diagnosis |
+|---------------------|----------------------|-----------|
+| Solid | Striped | Vertical ray solver is failing |
+| Striped | Solid | Horizontal ray solver is failing |
+| Both striped | Both striped | Degenerate-quadratic solver itself is broken |
+| Both solid | Both solid | Combine logic (`min`/`combined`) is the problem |
+
+**Bonus probe**: swap to `vec4(xwgt, ywgt, 0.0, 1.0)` to check whether coverage values are nonzero but weights are zero (which would also zero out the `combined` path).
+
+#### Step 3: Fix the identified component
+
+Based on step 2 results:
+
+**If a solver is failing** (one channel striped): The `1/65536` threshold in `solve_horiz_poly` / `solve_vert_poly` is likely too tight for degenerate quadratics. Try:
+- Raising the threshold (e.g. `1/256` or `1/64`)
+- Or restructuring: compute both linear and quadratic solutions, then select based on `abs(a)` magnitude (blend or hard switch with a safer threshold)
+- Check whether `b` can also be near-zero for certain edge orientations, which would make the linear path (`0.5 / b`) equally unstable
+
+**If both solvers are fine but combine is wrong**: The `min(abs(xcov), abs(ycov))` fallback is fundamentally problematic for shapes where one ray direction has legitimate zero coverage at certain pixels. Consider:
+- Using `max` when one weight is zero: `if xwgt < epsilon { abs(ycov) } else if ywgt < epsilon { abs(xcov) } else { original formula }`
+- Or weight-only combination: skip `fallback` entirely and rely on `combined` when weights are available
+
+**If `calc_root_code` is unstable**: For degenerate quadratics, the sign bits of near-zero values are unreliable. Could add an epsilon-band: treat values within `±epsilon` as zero and handle those curves specially.
+
+#### Step 4: Validate fix against more all-linear glyphs
+
+The comma is one case. Other glyphs to test:
+- Pipe `|`, underscore `_`, box-drawing characters, dash `—`
+- Any glyph that is a pure polygon with no true curves
+- Glyphs with mixed linear and curved segments (should still work after fix)
+
+#### Secondary issue: band texture width assumption
+
+`simple_shader.wgsl:137` (`calc_band_loc`) assumes a 4096-wide wrapped texture, but the PoC uploads a 1-row texture sized to content (`main.rs:382`). This works now because data fits in one row but is fragile. Not the current bug, but should be fixed before scaling up — either pad the texture to 4096 width or remove the wrapping logic.
 
 ## Architecture validated
 
@@ -64,7 +118,7 @@ Despite the comma issue, the session validated the core architecture:
 ## Files
 
 ```
-docs/research/slug-glyph-proto/
+slug-glyph-proto/
 ├── Cargo.toml
 ├── fonts/InterVariable.ttf
 └── src/
@@ -72,10 +126,5 @@ docs/research/slug-glyph-proto/
     ├── outline.rs         # skrifa outline extraction (with debug tracing)
     ├── band.rs            # band acceleration structure builder
     ├── shader.wgsl        # full Slug shader (unused — has dilation)
-    └── simple_shader.wgsl # simplified shader used by the PoC
-
-docs/research/
-├── slug-font-rendering.md   # background research (Slug + Loop-Blinn patents)
-├── slug-glyph-design.md     # design doc for iced integration
-└── slug-glyph-investigation.md  # this file
+    └── simple_shader.wgsl # simplified shader used by the PoC (currently has debug output)
 ```
