@@ -121,17 +121,19 @@ impl TextAtlas {
     /// memory has expanded (texture growth happened) AND the working set
     /// has shifted does eviction fire.
     pub fn trim(&mut self) {
-        let textures_grew = self.curve_height > INITIAL_CURVE_HEIGHT
-            || self.band_height > INITIAL_BAND_HEIGHT;
+        // Only consider reset when textures have grown substantially.
+        // Minimum 16 rows means ~1MB+ of GPU memory before we bother
+        // with eviction — avoids churn for modest working sets.
+        let substantial_growth = self.curve_height >= 16 || self.band_height >= 16;
 
-        if textures_grew {
+        if substantial_growth {
             let cached = self.glyphs.len();
             let in_use = self.glyphs.in_use_count();
 
-            if cached > 0 && in_use < cached / 2 {
+            if cached > 0 && in_use < cached / 4 {
                 self.reset_atlas();
             } else {
-                log::debug!(
+                log::trace!(
                     "trim: retained ({in_use}/{cached} glyphs in use, \
                      curve={}x{} band={}x{})",
                     CURVE_TEXTURE_WIDTH, self.curve_height,
