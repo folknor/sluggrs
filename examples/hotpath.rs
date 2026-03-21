@@ -8,6 +8,8 @@
 //! Run via brokkr:  brokkr sluggrs hotpath [--alloc]
 //! Run standalone:  cargo run --release --example hotpath --features hotpath
 
+use std::time::Instant;
+
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
 use sluggrs::{
     Cache, ColorMode, Resolution, SwashCache, TextArea, TextBounds, TextAtlas, TextRenderer,
@@ -22,7 +24,6 @@ fn main() {
 
     let (device, queue) = create_device();
 
-    // -- Cold path: first prepare with empty cache --
     let mut harness = RenderHarness::new(&device, &queue);
 
     // A paragraph of mixed Latin text to exercise many distinct glyphs
@@ -34,25 +35,56 @@ fn main() {
         "How vexingly quick daft zebras jump!",
     );
 
+    // -- Cold path: first prepare with empty cache --
+    let cold_start = Instant::now();
     harness
         .prepare_text(cold_text)
         .expect("Cold prepare should succeed");
+    let cold_us = cold_start.elapsed().as_micros();
+
+    let distinct_glyphs = harness.atlas.glyph_count();
 
     // -- Warm path: re-prepare with fully populated cache --
-    // Run multiple iterations to capture cache-hit performance
-    for _ in 0..20 {
+    let warm_iterations = 20u32;
+    let warm_start = Instant::now();
+    for _ in 0..warm_iterations {
         harness
             .prepare_text(cold_text)
             .expect("Warm prepare should succeed");
     }
+    let warm_avg_us = warm_start.elapsed().as_micros() / warm_iterations as u128;
 
     // -- Mixed path: partially overlapping text --
     let mixed_text = "Sphinx of black quartz, judge my vow. 0123456789";
-    for _ in 0..10 {
+    let mixed_iterations = 10u32;
+    let mixed_start = Instant::now();
+    for _ in 0..mixed_iterations {
         harness
             .prepare_text(mixed_text)
             .expect("Mixed prepare should succeed");
     }
+    let mixed_avg_us = mixed_start.elapsed().as_micros() / mixed_iterations as u128;
+
+    let final_glyphs = harness.atlas.glyph_count();
+    let final_curve_texels = harness.atlas.curve_texels_used();
+    let final_band_texels = harness.atlas.band_texels_used();
+
+    // -- Emit KV pairs to stderr for brokkr capture --
+    eprintln!("distinct_glyphs={distinct_glyphs}");
+    eprintln!("final_glyphs={final_glyphs}");
+    eprintln!("curve_texels={final_curve_texels}");
+    eprintln!("band_texels={final_band_texels}");
+    eprintln!("cold_prepare_us={cold_us}");
+    eprintln!("warm_prepare_avg_us={warm_avg_us}");
+    eprintln!("mixed_prepare_avg_us={mixed_avg_us}");
+    eprintln!("warm_iterations={warm_iterations}");
+    eprintln!("mixed_iterations={mixed_iterations}");
+
+    // Texture memory: each texel is 16 bytes (rgba32float / rgba32uint)
+    let curve_bytes = final_curve_texels as u64 * 16;
+    let band_bytes = final_band_texels as u64 * 16;
+    eprintln!("curve_texture_bytes={curve_bytes}");
+    eprintln!("band_texture_bytes={band_bytes}");
 }
 
 fn create_device() -> (wgpu::Device, wgpu::Queue) {
@@ -99,8 +131,6 @@ impl RenderHarness {
             },
         );
 
-        // Clone device/queue handles for prepare calls
-        // (wgpu Device and Queue are internally Arc'd)
         Self {
             renderer,
             atlas,

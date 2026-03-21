@@ -85,6 +85,21 @@ impl TextAtlas {
         }
     }
 
+    /// Number of cached glyph entries (including non-vector sentinels).
+    pub fn glyph_count(&self) -> usize {
+        self.glyphs.len()
+    }
+
+    /// Linear texel offset into the curve texture (append-only cursor).
+    pub fn curve_texels_used(&self) -> u32 {
+        self.curve_cursor
+    }
+
+    /// Linear texel offset into the band texture (append-only cursor).
+    pub fn band_texels_used(&self) -> u32 {
+        self.band_cursor
+    }
+
     pub fn trim(&mut self) {
         // Match cryoglyph semantics: retain cached data.
         // For now this is a no-op since we don't track per-frame usage yet.
