@@ -208,6 +208,72 @@ fn glyph_map_get_missing_key_returns_none() {
 }
 
 // ---------------------------------------------------------------------------
+// 4b. GlyphMap usage tracking
+// ---------------------------------------------------------------------------
+
+#[test]
+fn glyph_map_usage_tracking_basic() {
+    let mut map = GlyphMap::new();
+    let k1 = make_key(0, 1, 400, 0);
+    let k2 = make_key(0, 2, 400, 0);
+    map.insert(k1, make_dummy_entry(0));
+    map.insert(k2, make_dummy_entry(1));
+
+    assert_eq!(map.in_use_count(), 0);
+
+    map.mark_used(k1);
+    assert_eq!(map.in_use_count(), 1);
+
+    map.mark_used(k2);
+    assert_eq!(map.in_use_count(), 2);
+
+    // Marking same key again doesn't increase count
+    map.mark_used(k1);
+    assert_eq!(map.in_use_count(), 2);
+}
+
+#[test]
+fn glyph_map_clear_usage_resets_in_use() {
+    let mut map = GlyphMap::new();
+    let k1 = make_key(0, 1, 400, 0);
+    map.insert(k1, make_dummy_entry(0));
+    map.mark_used(k1);
+    assert_eq!(map.in_use_count(), 1);
+
+    map.clear_usage();
+    assert_eq!(map.in_use_count(), 0);
+    // Glyph is still cached
+    assert!(map.contains_key(&k1));
+}
+
+#[test]
+fn glyph_map_clear_resets_both_map_and_usage() {
+    let mut map = GlyphMap::new();
+    let k1 = make_key(0, 1, 400, 0);
+    map.insert(k1, make_dummy_entry(0));
+    map.mark_used(k1);
+
+    map.clear();
+    assert_eq!(map.len(), 0);
+    assert_eq!(map.in_use_count(), 0);
+}
+
+#[test]
+fn non_vector_glyph_can_be_marked_in_use() {
+    let mut map = GlyphMap::new();
+    let k1 = make_key(0, 1, 400, 0);
+    map.insert(k1, NON_VECTOR_GLYPH);
+    map.mark_used(k1);
+    assert_eq!(map.in_use_count(), 1);
+
+    // Non-vector and vector glyphs both count toward in_use
+    let k2 = make_key(0, 2, 400, 0);
+    map.insert(k2, make_dummy_entry(42));
+    map.mark_used(k2);
+    assert_eq!(map.in_use_count(), 2);
+}
+
+// ---------------------------------------------------------------------------
 // 5. Outline extraction round-trip (via cosmic_text)
 // ---------------------------------------------------------------------------
 
