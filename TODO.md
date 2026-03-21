@@ -22,8 +22,20 @@
 ## Before shipping
 
 - [ ] Non-vector glyph fallback — color emoji and bitmap-only fonts currently
-  produce no output. Required before the iced swap ships. See integration
-  spec (docs/integration-spec.md) for strategy options.
+  produce no output. Required before the iced swap ships.
+
+  **Dual-render-all spike failed** (repos/iced branch): rendering all text
+  through both sluggrs and cryoglyph produces 1-2px vertical offset between
+  the two renderers at small sizes (different rounding strategies for em-space
+  vs pixel-snapped positioning). Not shippable.
+
+  **Next approach: selective routing.** Requires glyph-level or run-segment-level
+  partitioning so cryoglyph only renders non-vector glyphs. The hard part is
+  constructing fallback-only draw inputs without disturbing text.rs's batching
+  model — preserving layout positions, glyph advances, and run boundaries while
+  routing only specific glyphs to cryoglyph. Likely needs a classification API
+  from sluggrs and a two-pass approach in text.rs. See spike plan in
+  .plans/effervescent-chasing-metcalfe.md for full context.
 - [x] Trim/eviction — per-frame usage tracking via glyphs_in_use HashSet.
   Pressure-based reset when <50% of cached glyphs are in use (threshold 256).
   Matches cryoglyph frame-boundary semantics.
