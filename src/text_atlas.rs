@@ -44,6 +44,10 @@ pub struct TextAtlas {
     scratch_curve_texels: Vec<[f32; 4]>,
     scratch_curve_locations: Vec<CurveLocation>,
 
+    // Set by trim() when textures should be recreated at initial size.
+    // Deferred because trim() doesn't have device/queue access.
+    needs_texture_reset: bool,
+
     // Glyph cache
     pub(crate) glyphs: GlyphMap,
 }
@@ -87,6 +91,7 @@ impl TextAtlas {
             band_data: Vec::new(),
             scratch_curve_texels: Vec::new(),
             scratch_curve_locations: Vec::new(),
+            needs_texture_reset: false,
             glyphs: GlyphMap::new(),
         }
     }
@@ -108,35 +113,52 @@ impl TextAtlas {
 
     /// End-of-frame cache management.
     ///
-    /// Clears per-frame usage tracking. If the cache has grown far beyond
-    /// what's actively in use, resets all texture data — the next prepare()
-    /// call will re-extract and re-upload only the glyphs that are needed.
+    /// Clears per-frame usage tracking. When the textures have grown beyond
+    /// their initial size AND fewer than half the cached glyphs are in use,
+    /// performs a full reset: recreates textures at initial size, clears the
+    /// glyph cache. The next prepare() re-extracts only the visible glyphs.
     ///
-    /// This matches cryoglyph's trim() semantics: glyphs persist across
-    /// frames, but texture pressure triggers eviction.
+    /// This is pressure-based: a stable document with many glyphs will not
+    /// trigger reset as long as the textures haven't grown. Only when GPU
+    /// memory has expanded (texture growth happened) AND the working set
+    /// has shifted does eviction fire.
     pub fn trim(&mut self) {
-        let cached = self.glyphs.len();
-        let in_use = self.glyphs.in_use_count();
+        let textures_grew = self.curve_height > INITIAL_CURVE_HEIGHT
+            || self.band_height > INITIAL_BAND_HEIGHT;
 
-        // Reset when cache has at least 256 glyphs and fewer than half are
-        // in use — the working set has shifted significantly (e.g. scrolling
-        // through an email thread). The threshold avoids churn during startup
-        // when glyphs are being discovered.
-        if cached >= 256 && in_use < cached / 2 {
-            log::debug!(
-                "trim: resetting atlas ({in_use}/{cached} glyphs in use, \
-                 curve={} band={} texels)",
-                self.curve_cursor,
-                self.band_cursor,
-            );
-            self.glyphs.clear();
-            self.curve_cursor = 0;
-            self.band_cursor = 0;
-            self.curve_data.clear();
-            self.band_data.clear();
+        if textures_grew {
+            let cached = self.glyphs.len();
+            let in_use = self.glyphs.in_use_count();
+
+            if cached > 0 && in_use < cached / 2 {
+                self.reset_atlas();
+            }
         }
 
         self.glyphs.clear_usage();
+    }
+
+    /// Full atlas reset: clear all caches, mark textures for recreation.
+    /// The actual GPU texture recreation is deferred to the next
+    /// upload_glyph() call which has device/queue access.
+    fn reset_atlas(&mut self) {
+        log::debug!(
+            "trim: resetting atlas ({}/{} glyphs in use, \
+             curve={}x{} band={}x{} texels)",
+            self.glyphs.in_use_count(),
+            self.glyphs.len(),
+            CURVE_TEXTURE_WIDTH,
+            self.curve_height,
+            BAND_TEXTURE_WIDTH,
+            self.band_height,
+        );
+
+        self.glyphs.clear();
+        self.curve_cursor = 0;
+        self.band_cursor = 0;
+        self.curve_data.clear();
+        self.band_data.clear();
+        self.needs_texture_reset = true;
     }
 
     /// Upload a glyph's GPU-prepared outline and band data into the textures.
@@ -150,6 +172,18 @@ impl TextAtlas {
         band_count_x: u32,
         band_count_y: u32,
     ) -> GlyphEntry {
+        // Deferred texture reset from trim() — recreate at initial size
+        if self.needs_texture_reset {
+            self.curve_height = INITIAL_CURVE_HEIGHT;
+            self.band_height = INITIAL_BAND_HEIGHT;
+            self.curve_texture = create_curve_texture(device, self.curve_height);
+            self.band_texture = create_band_texture(device, self.band_height);
+            self.curve_view = self.curve_texture.create_view(&TextureViewDescriptor::default());
+            self.band_view = self.band_texture.create_view(&TextureViewDescriptor::default());
+            self.rebind(device);
+            self.needs_texture_reset = false;
+        }
+
         let num_curves = gpu_outline.curves.len() as u32;
 
         // Build curve texels (2 texels per curve) — reuse scratch buffer
