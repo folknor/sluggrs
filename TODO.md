@@ -34,25 +34,21 @@
 
 Baseline: 92 glyphs, cold_prepare 1.9ms, warm_prepare 0.7ms, 9.7 MB total alloc.
 
-### 1. Eliminate band_texels + add atlas scratch buffers
+### Done
 
-Remove the intermediate `band_texels: Vec<[u32; 4]>` in upload_glyph (text_atlas.rs:145)
-by passing `band_data.entries` directly to upload_wrapped_texels_u32 via bytemuck::cast_slice.
-Eliminates ~1.8 KB allocation per glyph.
+- [x] Eliminate band_texels + add atlas scratch buffers — scratch_curve_texels and
+  scratch_curve_locations on TextAtlas, band_texels eliminated via bytemuck::cast_slice.
+  Result: upload_glyph alloc -37.5%, timing -23.8%.
 
-Add `scratch_curve_texels: Vec<[f32; 4]>` and `scratch_curve_locations: Vec<CurveLocation>`
-to TextAtlas. Clear+reuse across upload_glyph() calls instead of allocating fresh per glyph
-(text_atlas.rs:121, text_atlas.rs:130). Eliminates ~180 allocations (2 per glyph × 91 glyphs).
+- [x] Persist units_per_em_cache on TextRenderer — HashMap moved from local to field.
+  Result: prepare_with_depth alloc -33.3%.
 
-Expected: ~90% reduction in upload_glyph per-call alloc (currently 18.1 KB/call, 1.6 MB total).
+- [x] Cheap capacity fixes in build_bands — inner vectors pre-sized with heuristic,
+  offset vectors and entries with exact capacity. Result: build_bands alloc -43.3%.
 
-### 2. Persist units_per_em_cache on TextRenderer
+Cumulative: 9.7 MB → 9.1 MB total alloc (-6.2%).
 
-Move the `HashMap<fontdb::ID, f32>` from a local in prepare_with_depth (text_renderer.rs:71)
-to a field on TextRenderer. Avoids HashMap allocation per frame and avoids re-parsing skrifa
-FontRef + head table on warm frames. Real warm-frame improvement.
-
-### 3. Cheap capacity fixes in build_bands
+### 4. Reusable band-builder context
 
 - `hband_offsets` and `vband_offsets` (band.rs:142): use Vec::with_capacity — sizes are
   known (band_count_y and band_count_x).
