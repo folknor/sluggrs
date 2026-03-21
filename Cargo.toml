@@ -5,12 +5,17 @@ edition = "2024"
 rust-version = "1.92"
 license = "MIT OR Apache-2.0 OR Zlib"
 
+[features]
+hotpath = ["hotpath/hotpath"]
+hotpath-alloc = ["hotpath/hotpath", "hotpath/hotpath-alloc"]
+
 [dependencies]
 cosmic-text = "0.18"
 wgpu = "28"
 skrifa = "0.40"
 bytemuck = { version = "1", features = ["derive"] }
 log = "0.4"
+hotpath = "0.14"
 
 [dev-dependencies]
 winit = "0.30"
@@ -20,6 +25,10 @@ env_logger = "0.11"
 [[example]]
 name = "demo"
 path = "examples/demo.rs"
+
+[[example]]
+name = "hotpath"
+path = "examples/hotpath.rs"
 
 [lints.clippy]
 # Style: modern idiomatic Rust

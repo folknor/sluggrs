@@ -161,6 +161,7 @@ fn mid(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
 /// `face_index`: index within a font collection (TTC), 0 for single-face fonts
 /// `glyph_id`: glyph index within the font
 /// `location`: variation coordinates (e.g. weight axis for variable fonts)
+#[hotpath::measure]
 pub fn extract_outline(
     font_data: &[u8],
     face_index: u32,

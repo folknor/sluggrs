@@ -51,6 +51,7 @@ impl TextRenderer {
 
     /// Prepares all of the provided text areas for rendering, with depth.
     #[allow(clippy::too_many_arguments)] // matches cryoglyph's API
+    #[hotpath::measure]
     pub fn prepare_with_depth<'a>(
         &mut self,
         device: &Device,

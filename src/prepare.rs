@@ -24,6 +24,7 @@ pub struct GpuOutline {
 /// Line segments (degenerate quadratics where p2 is the midpoint of p1–p3)
 /// are perturbed slightly along the edge normal so the Slug shader's
 /// quadratic solver always has a nonzero second-degree coefficient.
+#[hotpath::measure]
 pub fn prepare_outline(outline: &GlyphOutline) -> GpuOutline {
     let mut curves = Vec::with_capacity(outline.curves.len());
     let mut min = [f32::MAX, f32::MAX];

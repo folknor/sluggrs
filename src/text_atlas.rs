@@ -92,6 +92,7 @@ impl TextAtlas {
 
     /// Upload a glyph's GPU-prepared outline and band data into the textures.
     /// Returns the GlyphEntry for vertex packing.
+    #[hotpath::measure]
     pub(crate) fn upload_glyph(
         &mut self,
         device: &Device,

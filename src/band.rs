@@ -31,6 +31,7 @@ pub struct CurveLocation {
 ///
 /// Operates on GPU-prepared geometry (with perturbed line segments).
 /// `curve_locations` maps each curve index to its (x, y) position in the curve texture.
+#[hotpath::measure]
 pub fn build_bands(
     outline: &GpuOutline,
     curve_locations: &[CurveLocation],
