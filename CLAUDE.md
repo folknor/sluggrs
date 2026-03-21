@@ -64,7 +64,7 @@ brokkr history                                # browse command history
 Five functions are instrumented with `#[hotpath::measure]`:
 - `extract_outline()`, `prepare_outline()`, `build_bands()`, `upload_glyph()`, `prepare_with_depth()`
 
-`.brokkr/results.db` is committed to git — always commit it after profiling runs so performance data is tracked alongside the code.
+`.brokkr/results.db` is committed to git — always commit it after profiling runs so performance data is tracked alongside the code. Brokkr requires a clean git tree to store results, but allows a dirty `results.db` or markdown file changes — so you don't need to commit CLAUDE.md edits before running profiling.
 
 The hotpath example emits KV pairs to stderr (captured by brokkr):
 `distinct_glyphs`, `curve_texels`, `band_texels`, `cold_prepare_us`,
