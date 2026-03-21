@@ -25,22 +25,46 @@ GPU-based vector text rendering using the Slug algorithm. Drop-in replacement fo
 - `docs/` — Design docs, investigation log, integration spec
 - `repos/` — gitignored checkouts of iced, cosmic-text, cryoglyph for reference
 
-## Build, test & lint
+## Bash rules
+- Never use sed, find, awk, or complex bash commands
+- Never chain commands with &&
+- Never chain commands with ;
+- Never pipe commands with |
+- Never read or write from /tmp. All data lives in the project.
+- Never run raw cargo, curl, pkill. Use `brokkr`. Exception: non-sluggrs projects (iced, etc.).
 
+## brokkr commands
+
+### Available in sluggrs
 ```sh
-brokkr check                        # clippy + tests
+brokkr check                                  # clippy + tests
+brokkr check -- --test glyph_pipeline_test    # run one test file
+brokkr check -- -- --ignored                  # run ignored (GPU-only) tests
+brokkr sluggrs hotpath                        # timing profile, stored in results.db
+brokkr sluggrs hotpath --alloc                # allocation profile
+brokkr sluggrs hotpath --runs 5               # best-of-5
+brokkr sluggrs hotpath --commit abc123        # benchmark an old commit via worktree
+brokkr sluggrs hotpath --force                # run on dirty tree (results not stored)
+brokkr results                                # last 20 results
+brokkr results <uuid>                         # look up by UUID prefix
+brokkr results --compare-last --command hotpath  # compare two most recent hotpath runs
+brokkr results --commit abc1                  # filter by commit prefix
+brokkr env                                    # show environment info
+brokkr clean                                  # clean build artifacts and scratch data
+brokkr history                                # browse command history
 ```
+
+### Not yet available in sluggrs
+- `brokkr run` — no main binary (sluggrs is a library)
+- `brokkr bench` — no benchmark suite configured
+- `brokkr sluggrs test/list/approve/status` — visual snapshot testing (no snapshots defined yet)
 
 ## Profiling
 
 Five functions are instrumented with `#[hotpath::measure]`:
 - `extract_outline()`, `prepare_outline()`, `build_bands()`, `upload_glyph()`, `prepare_with_depth()`
 
-```sh
-brokkr sluggrs hotpath              # timing profile, stored in results.db
-brokkr sluggrs hotpath --alloc      # allocation profile
-brokkr results <uuid>               # view stored results
-```
+`.brokkr/results.db` is committed to git — always commit it after profiling runs so performance data is tracked alongside the code.
 
 The hotpath example emits KV pairs to stderr (captured by brokkr):
 `distinct_glyphs`, `curve_texels`, `band_texels`, `cold_prepare_us`,

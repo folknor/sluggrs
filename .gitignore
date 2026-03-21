@@ -1,4 +1,7 @@
 repos/
 target
+data/
+.brokkr/*
+!.brokkr/results.db
 examples/fonts/TisaPro-Regular.otf
 examples/fonts/BerlingskeSerif-Regular.ttf
