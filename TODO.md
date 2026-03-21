@@ -24,8 +24,9 @@
 - [ ] Non-vector glyph fallback — color emoji and bitmap-only fonts currently
   produce no output. Required before the iced swap ships. See integration
   spec (docs/integration-spec.md) for strategy options.
-- [ ] Trim/eviction — currently trim() is a no-op. Implement usage tracking
-  and LRU eviction to match cryoglyph's frame-boundary semantics.
+- [x] Trim/eviction — per-frame usage tracking via glyphs_in_use HashSet.
+  Pressure-based reset when <50% of cached glyphs are in use (threshold 256).
+  Matches cryoglyph frame-boundary semantics.
 - [ ] Depth plumbing — prepare_with_depth accepts the callback but discards
   the depth value. Any iced path relying on layered text depth will render
   incorrectly. Either implement or document as unsupported.
