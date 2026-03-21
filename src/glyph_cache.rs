@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 /// Cache key for a glyph's outline geometry.
@@ -65,10 +65,11 @@ impl GlyphEntry {
     }
 }
 
-/// The glyph cache maps GlyphKey → GlyphEntry.
+/// The glyph cache maps GlyphKey → GlyphEntry, with per-frame usage tracking.
 #[derive(Default)]
 pub struct GlyphMap {
     map: HashMap<GlyphKey, GlyphEntry>,
+    in_use: HashSet<GlyphKey>,
 }
 
 impl GlyphMap {
@@ -90,6 +91,7 @@ impl GlyphMap {
 
     pub fn clear(&mut self) {
         self.map.clear();
+        self.in_use.clear();
     }
 
     pub fn len(&self) -> usize {
@@ -98,5 +100,20 @@ impl GlyphMap {
 
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
+    }
+
+    /// Mark a glyph as used this frame.
+    pub fn mark_used(&mut self, key: GlyphKey) {
+        self.in_use.insert(key);
+    }
+
+    /// Clear the per-frame usage set (called from trim).
+    pub fn clear_usage(&mut self) {
+        self.in_use.clear();
+    }
+
+    /// Number of glyphs used this frame.
+    pub fn in_use_count(&self) -> usize {
+        self.in_use.len()
     }
 }

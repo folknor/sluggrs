@@ -143,9 +143,11 @@ impl TextRenderer {
                     }
 
                     let entry = match atlas.glyphs.get(&key) {
-                        Some(e) if !e.is_non_vector() => e,
+                        Some(&e) if !e.is_non_vector() => e,
                         _ => continue, // Skip non-vector or missing
                     };
+
+                    atlas.glyphs.mark_used(key);
 
                     // Get font metrics for scaling (cached per font_id)
                     let units_per_em = match self.units_per_em_cache.get(&glyph.font_id) {

@@ -106,9 +106,37 @@ impl TextAtlas {
         self.band_cursor
     }
 
+    /// End-of-frame cache management.
+    ///
+    /// Clears per-frame usage tracking. If the cache has grown far beyond
+    /// what's actively in use, resets all texture data — the next prepare()
+    /// call will re-extract and re-upload only the glyphs that are needed.
+    ///
+    /// This matches cryoglyph's trim() semantics: glyphs persist across
+    /// frames, but texture pressure triggers eviction.
     pub fn trim(&mut self) {
-        // Match cryoglyph semantics: retain cached data.
-        // For now this is a no-op since we don't track per-frame usage yet.
+        let cached = self.glyphs.len();
+        let in_use = self.glyphs.in_use_count();
+
+        // Reset when cache has at least 256 glyphs and fewer than half are
+        // in use — the working set has shifted significantly (e.g. scrolling
+        // through an email thread). The threshold avoids churn during startup
+        // when glyphs are being discovered.
+        if cached >= 256 && in_use < cached / 2 {
+            log::debug!(
+                "trim: resetting atlas ({in_use}/{cached} glyphs in use, \
+                 curve={} band={} texels)",
+                self.curve_cursor,
+                self.band_cursor,
+            );
+            self.glyphs.clear();
+            self.curve_cursor = 0;
+            self.band_cursor = 0;
+            self.curve_data.clear();
+            self.band_data.clear();
+        }
+
+        self.glyphs.clear_usage();
     }
 
     /// Upload a glyph's GPU-prepared outline and band data into the textures.
