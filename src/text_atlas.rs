@@ -121,16 +121,21 @@ impl TextAtlas {
     /// memory has expanded (texture growth happened) AND the working set
     /// has shifted does eviction fire.
     pub fn trim(&mut self) {
+        let cached = self.glyphs.len();
+        let in_use = self.glyphs.in_use_count();
         let textures_grew = self.curve_height > INITIAL_CURVE_HEIGHT
             || self.band_height > INITIAL_BAND_HEIGHT;
 
-        if textures_grew {
-            let cached = self.glyphs.len();
-            let in_use = self.glyphs.in_use_count();
+        log::debug!(
+            "trim: {in_use}/{cached} glyphs in use, \
+             curve={}x{} band={}x{}, grew={}",
+            CURVE_TEXTURE_WIDTH, self.curve_height,
+            BAND_TEXTURE_WIDTH, self.band_height,
+            textures_grew,
+        );
 
-            if cached > 0 && in_use < cached / 2 {
-                self.reset_atlas();
-            }
+        if textures_grew && cached > 0 && in_use < cached / 2 {
+            self.reset_atlas();
         }
 
         self.glyphs.clear_usage();
