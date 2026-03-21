@@ -30,7 +30,7 @@
   the depth value. Any iced path relying on layered text depth will render
   incorrectly. Either implement or document as unsupported.
 
-## Optimization — allocation reduction
+## Optimization — CPU allocation reduction
 
 Baseline: 92 glyphs, cold_prepare 1.9ms, warm_prepare 0.7ms, 9.7 MB total alloc.
 
@@ -46,6 +46,10 @@ Baseline: 92 glyphs, cold_prepare 1.9ms, warm_prepare 0.7ms, 9.7 MB total alloc.
 - [x] Cheap capacity fixes in build_bands — inner vectors pre-sized with heuristic,
   offset vectors and entries with exact capacity. Result: build_bands alloc -43.3%.
 
+- [x] Pre-compute band sort keys + sort_unstable_by — avoids redundant max() in
+  comparators, avoids sort temp allocation. Minimal timing impact (sort is cheap
+  at 3-8 elements/band), but cleaner code.
+
 Cumulative: 9.7 MB → 9.1 MB total alloc (-6.2%).
 
 The remaining 8.5 MB is dominated by cosmic_text shaping, wgpu buffer management,
@@ -57,25 +61,73 @@ partly compute/sort bound (per-band sorting in band.rs), not just allocator boun
 
 ### Parked — pursue only if profiling points here again
 
-- [ ] Reusable band-builder context — store scratch vectors on TextAtlas or a
-  BandBuilder struct. Requires API change: build_bands currently owns all temporaries
-  and returns owned BandData. Real refactor, not a drop-in change.
-
-- [ ] Flatten band Vec<Vec<usize>> — 2-pass flat allocation with exact capacity.
-  Better cache locality. Only worth it if band assignment + sorting remain a hotspot.
+- [ ] Band builder algorithmic work — build_bands is partly compute-bound. Targets:
+  - Temporary data layout: Vec<Vec<usize>> has poor locality; flat layout may help.
+  - Reusable context: store scratch vectors on TextAtlas or BandBuilder struct.
+    Requires API change (build_bands currently returns owned BandData).
 
 - [ ] Color multiplication constant — replace `/ 255.0` with `* INV_255`. Cleanup
   win, not priority perf. Same for pre-computing default_color per text area.
+
+## Optimization — GPU shader
+
+### Profiling infrastructure (do first)
+
+- [ ] Add wgpu-profiler to demo — wraps wgpu timestamp queries, outputs Chrome
+  trace format. Gives per-frame GPU time for the text render pass. Currently we
+  only measure CPU-side prep, not actual shader execution cost. Requires
+  `Features::TIMESTAMP_QUERY` + `Features::TIMESTAMP_QUERY_INSIDE_PASSES`.
+
+- [ ] RenderDoc inspection — capture a frame via Vulkan backend
+  (`WGPU_BACKEND=vulkan`), verify early-exit is triggering, check per-pixel
+  loop iteration counts. The `renderdoc` crate provides programmatic capture.
+
+### Shader correctness / sync with reference
+
+- [ ] Diff against Slug reference — our shaders were originally translated from
+  the Slug HLSL reference (github.com/EricLengyel/Slug, MIT). Check for any
+  upstream changes since our translation. Key areas:
+  - CalcRootCode: reference uses bitwise sign extraction (`asuint(y) >> 31`)
+    which reduces to a single LOP3 on NVIDIA. Ours uses `select()`. Verify
+    naga produces equivalent SPIR-V, or switch to bitcast if it doesn't.
+  - Band split (dual-sort) was removed from reference — we never had it, good.
+  - Supersampling was removed — we never had it, good.
+  - Dilation: reference uses dynamic vertex-shader dilation via inverse
+    Jacobian. We use fixed 1px expansion — compare quality and performance.
+
+### Shader optimization targets
+
+- [ ] Texture fetch audit — each curve costs 2 textureLoad (p12, p3) + 1 for
+  band ref. With ~8 curves/band, that's ~24 fetches per ray direction. Our
+  2-texels-per-curve layout is already optimal for RGBA32Float. Verify we're
+  not doing redundant loads.
+
+- [ ] Branch divergence assessment — the `if abs(a.y) < 0.5` branch in
+  solve_horiz_poly causes warp divergence between linear and quadratic paths.
+  The linear case only fires for perturbed line segments (rare), so the branch
+  should predict well. Confirm with Nsight or RGP if available.
+
+- [ ] Band bounding-box pre-check — if a band's y-range doesn't intersect the
+  current pixel (within half a pixel), skip the entire band loop. Could
+  eliminate the band header textureLoad for edge pixels.
+
+### Not worth pursuing
+
+- Band split (dual-sort) — Lengyel removed it; hurts small text more than
+  it helps large text. We never had it.
+- Supersampling — removed from reference; dilation handles it.
+- Compute shader rewrite — osor.io's wave-level approach is impressive but
+  requires fundamentally different architecture (compute dispatch, tile-based
+  curve caching). Not compatible with our render-pass integration.
 
 ## Future / long-term
 
 - [ ] Unbounded retained memory — curve_data and band_data in TextAtlas
   (text_atlas.rs:39-40) grow with each uploaded glyph and are never compacted.
-  This is intentional: they exist so texture growth can re-upload prior contents
-  (text_atlas.rs:103). Not a leak (memory is reachable and purposeful), but
-  unbounded retained memory until eviction/compaction exists. Fix options:
-  GPU texture-to-texture copy on growth, or LRU eviction that compacts the
-  staging buffers.
+  This is intentional: they exist so texture growth can re-upload prior contents.
+  Not a leak (memory is reachable and purposeful), but unbounded retained memory
+  until eviction/compaction exists. Fix options: GPU texture-to-texture copy on
+  growth, or LRU eviction that compacts the staging buffers.
 
 - [ ] Store units_per_em on GlyphEntry — capture during atlas upload, eliminates the
   second get_font() call and skrifa re-parse entirely. Adds 4 bytes to GlyphEntry.
@@ -90,7 +142,9 @@ partly compute/sort bound (per-band sorting in band.rs), not just allocator boun
 
 ## Polish
 
+- [ ] naga_oil for shader dedup — share fragment shader code between
+  simple_shader.wgsl and shader.wgsl via `#import`. Eliminates copy-paste
+  divergence risk. Alternative: WESL (wesl-rs) is newer but less mature.
 - [ ] Band texture width configurable rather than hardcoded 4096
-- [ ] Shader constant centralization between simple_shader.wgsl and shader.wgsl
 - [ ] ColorMode handling (currently stubbed — Slug renders in linear space)
 - [ ] Texture growth under heavy load — stress test with CJK, mixed fonts

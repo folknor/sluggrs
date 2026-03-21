@@ -105,9 +105,9 @@ fn solve_horiz_poly(p12: vec4<f32>, p3: vec2<f32>) -> vec2<f32> {
     var t1: f32;
     var t2: f32;
 
-    // Threshold must exceed the perturbation applied to line segments
-    // on the CPU side (|a| ≤ 0.2 for perturbed lines, genuine curves
-    // have |a| in the tens+). 0.5 safely catches all near-linear cases.
+    // Intentional divergence from Slug reference (1/65536): our CPU-side
+    // perturbation in prepare.rs produces |a| = 0.02–0.2. See
+    // docs/slug-glyph-investigation.md for full rationale.
     if abs(a.y) < 0.5 {
         let rb = 0.5 / b.y;
         let lin = p12.y * rb;
@@ -133,6 +133,7 @@ fn solve_vert_poly(p12: vec4<f32>, p3: vec2<f32>) -> vec2<f32> {
     var t1: f32;
     var t2: f32;
 
+    // Same threshold divergence as solve_horiz_poly — see above.
     if abs(a.x) < 0.5 {
         let rb = 0.5 / b.x;
         let lin = p12.x * rb;

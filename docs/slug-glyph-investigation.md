@@ -30,6 +30,46 @@ The proof-of-concept successfully renders text using GPU-evaluated bezier curves
 
 6. **Band texture width mismatch** — The shaders hardcode a 4096-wide band texture with row wrapping (`calc_band_loc`), but the demo was uploading a single row sized to content. Fixed by padding to `BAND_TEXTURE_WIDTH` and computing correct row count.
 
+## Intentional shader divergences from Slug reference
+
+Our WGSL shaders are translated from the Slug HLSL reference
+(github.com/EricLengyel/Slug, MIT). As of March 2026 the reference
+has had no functional changes since our translation — only comment
+additions and license header updates. Two intentional divergences
+exist:
+
+### 1. Linearity threshold: 0.5 vs 1/65536
+
+The reference solver uses `abs(a) < 1.0 / 65536.0` to detect
+near-linear curves and fall back to a linear solver. Our shader
+uses `abs(a) < 0.5`.
+
+**Why**: Our CPU-side perturbation in `prepare.rs::perturb_midpoint()`
+produces curves with `|a|` values of 0.02–0.2. The reference threshold
+(~0.00002) doesn't catch these, so they enter the quadratic solver with
+a near-zero denominator, producing unstable roots — visible as unfilled
+regions in glyphs with short horizontal features (e.g. bold 'r' arm in
+Inter Variable). See commit b7bf831.
+
+The 0.5 threshold safely catches all perturbed line segments (`|a| ≤ 0.2`)
+while leaving genuine curves (`|a|` in the tens or hundreds) on the
+quadratic path. The gap between 0.2 and "tens" is wide.
+
+**Coupling**: The shader threshold and `perturb_midpoint()` eps range
+(currently `(len * 1e-5).clamp(0.01, 0.1)`) are coupled. If the
+perturbation magnitude changes, the shader threshold must track it.
+The reference doesn't need this because Lengyel's pipeline presumably
+doesn't perturb line segments.
+
+### 2. CalcRootCode: select() vs bitcast sign extraction
+
+The reference uses `asuint(y) >> 31U` (bitcast to uint, extract sign
+bit) which reduces to a single `LOP3` instruction on NVIDIA. Our
+translation uses `select(0u, 1u, y < 0.0)` which generates conditional
+moves. Both produce identical results; the reference version may
+produce better codegen on some GPUs. See TODO.md for planned
+investigation.
+
 ## Architecture
 
 The crate separates concerns into three stages:
