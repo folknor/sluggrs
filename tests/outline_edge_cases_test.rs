@@ -311,3 +311,69 @@ fn comma_line_only_glyph_regression() {
         "Comma regression test passed: {num_curves} curves, all present in both bands"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test 4: TTC units_per_em uses correct face index
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ttc_units_per_em_face_index() {
+    let font_data = match find_ttc_font() {
+        Some(d) => d,
+        None => {
+            eprintln!("No TTC font found on system — skipping test");
+            return;
+        }
+    };
+
+    use skrifa::raw::TableProvider;
+
+    // Parse both faces and extract units_per_em
+    let face_0 = skrifa::FontRef::from_index(&font_data, 0)
+        .expect("Face 0 should parse");
+    let face_1 = skrifa::FontRef::from_index(&font_data, 1)
+        .expect("Face 1 should parse");
+
+    let upem_0 = face_0.head().expect("face 0 head").units_per_em();
+    let upem_1 = face_1.head().expect("face 1 head").units_per_em();
+
+    eprintln!("TTC face 0 units_per_em={upem_0}, face 1 units_per_em={upem_1}");
+
+    // Both values must be valid (non-zero, reasonable range)
+    assert!(upem_0 > 0 && upem_0 <= 16384, "face 0 upem out of range: {upem_0}");
+    assert!(upem_1 > 0 && upem_1 <= 16384, "face 1 upem out of range: {upem_1}");
+
+    // Verify that FontRef::new() would have returned face 0's value,
+    // demonstrating why from_index() is necessary for face 1.
+    let face_default = skrifa::FontRef::new(&font_data)
+        .expect("Default face should parse");
+    let upem_default = face_default.head().expect("default head").units_per_em();
+    assert_eq!(
+        upem_default, upem_0,
+        "FontRef::new() should return face 0's units_per_em"
+    );
+
+    // The bug: if we used FontRef::new() for face 1, we'd get face 0's
+    // upem value. With from_index(), we get the correct one.
+    let upem_1_via_index = skrifa::FontRef::from_index(&font_data, 1)
+        .expect("from_index face 1")
+        .head()
+        .expect("face 1 head via index")
+        .units_per_em();
+    assert_eq!(
+        upem_1_via_index, upem_1,
+        "from_index(1) should return face 1's units_per_em, not face 0's"
+    );
+
+    if upem_0 != upem_1 {
+        eprintln!(
+            "TTC faces have DIFFERENT units_per_em ({upem_0} vs {upem_1}) — \
+             using FontRef::new() for face 1 would have produced wrong scaling"
+        );
+    } else {
+        eprintln!(
+            "TTC faces have same units_per_em ({upem_0}) — bug would be \
+             latent but from_index() is still correct"
+        );
+    }
+}
