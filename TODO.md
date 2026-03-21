@@ -48,39 +48,24 @@ Baseline: 92 glyphs, cold_prepare 1.9ms, warm_prepare 0.7ms, 9.7 MB total alloc.
 
 Cumulative: 9.7 MB → 9.1 MB total alloc (-6.2%).
 
-### 4. Reusable band-builder context
+The remaining 8.5 MB is dominated by cosmic_text shaping, wgpu buffer management,
+and font system internals — areas outside our control. Further micro-allocation
+cleanup in upload_glyph/build_bands/prepare_with_depth would be diminishing returns.
 
-- `hband_offsets` and `vband_offsets` (band.rs:142): use Vec::with_capacity — sizes are
-  known (band_count_y and band_count_x).
-- `entries` (band.rs:132): reserve up front. The final size is known after the offset pass
-  (`current_offset` gives the total texel count), so entries can be allocated with exact
-  capacity before writing headers + curve refs. Avoids growth reallocations.
-- Inner vectors in hband_curves/vband_curves (band.rs:54): use capacity hint based on
-  `curves.len() / band_count` as a heuristic.
+build_bands improving less in time (-18.5%) than allocation (-43.3%) confirms it is
+partly compute/sort bound (per-band sorting in band.rs), not just allocator bound.
 
-### 4. Reusable band-builder context
+### Parked — pursue only if profiling points here again
 
-Store reusable scratch vectors for build_bands() on TextAtlas or a dedicated BandBuilder
-struct (hband_curves, vband_curves, offsets, entries). Clear+reuse across glyphs instead
-of allocating Vec<Vec<usize>> fresh per call.
+- [ ] Reusable band-builder context — store scratch vectors on TextAtlas or a
+  BandBuilder struct. Requires API change: build_bands currently owns all temporaries
+  and returns owned BandData. Real refactor, not a drop-in change.
 
-Note: build_bands currently owns all temporaries and returns an owned BandData (band.rs:35).
-The API needs to change to accept a mutable context or move builder logic onto a state object.
-This is a real refactor, not a drop-in change.
+- [ ] Flatten band Vec<Vec<usize>> — 2-pass flat allocation with exact capacity.
+  Better cache locality. Only worth it if band assignment + sorting remain a hotspot.
 
-### 5. Flatten band structure (only if profiling still points here)
-
-Replace nested Vec<Vec<usize>> with a 2-pass flat allocation: count band assignments,
-allocate single Vec<u32> with exact capacity, fill. Better cache locality, eliminates
-inner Vec overhead. Bigger refactor (~50 lines).
-
-### Cleanup wins (not priority perf)
-
-- [ ] Color multiplication constant — replace `/ 255.0` with `* (1.0 / 255.0)` in
-  prepare_with_depth color conversion (text_renderer.rs:192). Fine to do, but on a
-  path measured at 16µs warm, the payoff is cleanup-level, not priority.
-- [ ] Pre-compute default_color — convert text_area.default_color to [f32; 4] once
-  per text area instead of per glyph in the None branch. Same category.
+- [ ] Color multiplication constant — replace `/ 255.0` with `* INV_255`. Cleanup
+  win, not priority perf. Same for pre-computing default_color per text area.
 
 ## Future / long-term
 
