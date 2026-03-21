@@ -95,17 +95,29 @@ impl TextRenderer {
                 for glyph in run.glyphs {
                     let key = GlyphKey::from_layout_glyph(glyph);
 
+                    // Face index within font collections (TTC). Needed for
+                    // both outline extraction and units_per_em lookup.
+                    let face_index = font_system
+                        .db()
+                        .face(glyph.font_id)
+                        .map(|info| info.index)
+                        .unwrap_or(0);
+
                     // Cache lookup or extract
                     if !atlas.glyphs.contains_key(&key) {
                         let font = font_system.get_font(glyph.font_id, glyph.font_weight);
-                        // Get face index from fontdb for font collections (TTC)
-                        let face_index = font_system
-                            .db()
-                            .face(glyph.font_id)
-                            .map(|info| info.index)
-                            .unwrap_or(0);
                         let entry = match font {
                             Some(font) => {
+                                // Populate units_per_em cache while we have the font ref,
+                                // avoiding a second get_font() call on the hot path below.
+                                if !self.units_per_em_cache.contains_key(&glyph.font_id) {
+                                    if let Ok(skrifa_font) = skrifa::FontRef::from_index(font.data(), face_index) {
+                                        use skrifa::raw::TableProvider;
+                                        let v = skrifa_font.head().map(|h| h.units_per_em() as f32).unwrap_or(1000.0);
+                                        self.units_per_em_cache.insert(glyph.font_id, v);
+                                    }
+                                }
+
                                 // Set up variation coordinates (weight axis for variable fonts)
                                 let wght_tag = skrifa::Tag::new(b"wght");
                                 let location = [VariationSetting::new(wght_tag, glyph.font_weight.0 as f32)];
@@ -128,8 +140,9 @@ impl TextRenderer {
                                         atlas.upload_glyph(device, queue, &gpu_outline, band_count, band_count)
                                     }
                                     None => {
-                                        // Non-vector glyph
+                                        // Non-vector glyph — mark cached and in-use
                                         atlas.mark_non_vector(key);
+                                        atlas.glyphs.mark_used(key);
                                         continue;
                                     }
                                 }
@@ -153,7 +166,9 @@ impl TextRenderer {
                         _ => continue,
                     };
 
-                    // Get font metrics for scaling (cached per font_id)
+                    // Get font metrics for scaling (cached per font_id).
+                    // Usually populated in the glyph cache-miss block above;
+                    // this fallback handles glyphs cached from a prior frame.
                     let units_per_em = match self.units_per_em_cache.get(&glyph.font_id) {
                         Some(&v) => v,
                         None => {
@@ -162,7 +177,7 @@ impl TextRenderer {
                                 None => continue,
                             };
                             let v = {
-                                let skrifa_font = match skrifa::FontRef::new(font.data()) {
+                                let skrifa_font = match skrifa::FontRef::from_index(font.data(), face_index) {
                                     Ok(f) => f,
                                     Err(_) => continue,
                                 };
