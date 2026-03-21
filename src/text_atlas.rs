@@ -40,6 +40,10 @@ pub struct TextAtlas {
     curve_data: Vec<[f32; 4]>,
     band_data: Vec<[u32; 4]>,
 
+    // Scratch buffers reused across upload_glyph() calls
+    scratch_curve_texels: Vec<[f32; 4]>,
+    scratch_curve_locations: Vec<CurveLocation>,
+
     // Glyph cache
     pub(crate) glyphs: GlyphMap,
 }
@@ -81,6 +85,8 @@ impl TextAtlas {
             band_cursor: 0,
             curve_data: Vec::new(),
             band_data: Vec::new(),
+            scratch_curve_texels: Vec::new(),
+            scratch_curve_locations: Vec::new(),
             glyphs: GlyphMap::new(),
         }
     }
@@ -118,38 +124,33 @@ impl TextAtlas {
     ) -> GlyphEntry {
         let num_curves = gpu_outline.curves.len() as u32;
 
-        // Build curve texels (2 texels per curve)
+        // Build curve texels (2 texels per curve) — reuse scratch buffer
         let curve_start = self.curve_cursor;
-        let mut curve_texels = Vec::with_capacity(num_curves as usize * 2);
+        self.scratch_curve_texels.clear();
+        self.scratch_curve_texels.reserve(num_curves as usize * 2);
         for curve in &gpu_outline.curves {
-            curve_texels.push([curve.p1[0], curve.p1[1], curve.p2[0], curve.p2[1]]);
-            curve_texels.push([curve.p3[0], curve.p3[1], 0.0, 0.0]);
+            self.scratch_curve_texels.push([curve.p1[0], curve.p1[1], curve.p2[0], curve.p2[1]]);
+            self.scratch_curve_texels.push([curve.p3[0], curve.p3[1], 0.0, 0.0]);
         }
-        let curve_texel_count = curve_texels.len() as u32;
+        let curve_texel_count = self.scratch_curve_texels.len() as u32;
 
-        // Build curve locations as 2D coordinates (wrapping at CURVE_TEXTURE_WIDTH)
-        let curve_locations: Vec<CurveLocation> = (0..num_curves)
-            .map(|i| {
-                let linear = curve_start + i * 2;
-                CurveLocation {
-                    x: linear % CURVE_TEXTURE_WIDTH,
-                    y: linear / CURVE_TEXTURE_WIDTH,
-                }
-            })
-            .collect();
+        // Build curve locations as 2D coordinates — reuse scratch buffer
+        self.scratch_curve_locations.clear();
+        self.scratch_curve_locations.reserve(num_curves as usize);
+        for i in 0..num_curves {
+            let linear = curve_start + i * 2;
+            self.scratch_curve_locations.push(CurveLocation {
+                x: linear % CURVE_TEXTURE_WIDTH,
+                y: linear / CURVE_TEXTURE_WIDTH,
+            });
+        }
 
         // Build band data with absolute 2D curve locations
         let band_start = self.band_cursor;
         let band_data =
-            crate::band::build_bands(gpu_outline, &curve_locations, band_count_x, band_count_y);
-        let mut band_texels = Vec::new();
-        for chunk in band_data.entries.chunks(4) {
-            let mut texel = [0u32; 4];
-            for (i, &val) in chunk.iter().enumerate() {
-                texel[i] = val;
-            }
-            band_texels.push(texel);
-        }
+            crate::band::build_bands(gpu_outline, &self.scratch_curve_locations, band_count_x, band_count_y);
+        // band_data.entries is always a multiple of 4 u32s — reinterpret directly
+        let band_texels: &[[u32; 4]] = bytemuck::cast_slice(&band_data.entries);
         let band_texel_count = band_texels.len() as u32;
 
         // Grow textures if needed
@@ -166,15 +167,15 @@ impl TextAtlas {
         }
 
         // Append to CPU-side copies
-        self.curve_data.extend_from_slice(&curve_texels);
-        self.band_data.extend_from_slice(&band_texels);
+        self.curve_data.extend_from_slice(&self.scratch_curve_texels);
+        self.band_data.extend_from_slice(band_texels);
 
         // Upload curve texels (handling wrapping across rows)
-        if !curve_texels.is_empty() {
+        if !self.scratch_curve_texels.is_empty() {
             self.upload_wrapped_texels_f32(
                 queue,
                 &self.curve_texture,
-                &curve_texels,
+                &self.scratch_curve_texels,
                 self.curve_cursor,
                 CURVE_TEXTURE_WIDTH,
             );
@@ -185,7 +186,7 @@ impl TextAtlas {
             upload_wrapped_texels_u32(
                 queue,
                 &self.band_texture,
-                &band_texels,
+                band_texels,
                 self.band_cursor,
                 BAND_TEXTURE_WIDTH,
             );
