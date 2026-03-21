@@ -274,3 +274,125 @@ fn growth_then_trim_then_more_glyphs() {
     h.prepare_text("Final check")
         .expect("Final prepare should succeed");
 }
+
+// ---------------------------------------------------------------------------
+// Test 6: trim() does not reset when textures haven't grown
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn trim_does_not_reset_without_texture_growth() {
+    let mut h = TestHarness::new();
+
+    // Upload a small number of glyphs — not enough to trigger texture growth
+    h.prepare_text("Hi")
+        .expect("Prepare should succeed");
+
+    let glyph_count_before = h.atlas.glyph_count();
+    assert!(glyph_count_before > 0);
+
+    // Trim with no glyphs marked as in-use (we didn't call prepare again
+    // after the last trim). Even though in_use < cached / 2, the textures
+    // haven't grown beyond initial size, so no reset should happen.
+    h.atlas.trim();
+
+    // Glyphs should still be cached
+    assert_eq!(
+        h.atlas.glyph_count(),
+        glyph_count_before,
+        "trim() should not evict when textures haven't grown"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: trim() resets when textures grew and working set shifted
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn trim_resets_when_textures_grew_and_working_set_shifted() {
+    let mut h = TestHarness::new();
+
+    // Upload enough distinct glyphs to force texture growth.
+    let many_chars = concat!(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        "abcdefghijklmnopqrstuvwxyz",
+        "0123456789",
+        "!@#$%^&*()_+-=[]{}|;':\",./<>?",
+        "\u{00C0}\u{00C1}\u{00C2}\u{00C3}\u{00C4}\u{00C5}\u{00C6}\u{00C7}",
+        "\u{00C8}\u{00C9}\u{00CA}\u{00CB}\u{00CC}\u{00CD}\u{00CE}\u{00CF}",
+        "\u{00D0}\u{00D1}\u{00D2}\u{00D3}\u{00D4}\u{00D5}\u{00D6}\u{00D8}",
+        "\u{00D9}\u{00DA}\u{00DB}\u{00DC}\u{00DD}\u{00DE}\u{00DF}",
+        "\u{00E0}\u{00E1}\u{00E2}\u{00E3}\u{00E4}\u{00E5}\u{00E6}\u{00E7}",
+        "\u{00E8}\u{00E9}\u{00EA}\u{00EB}\u{00EC}\u{00ED}\u{00EE}\u{00EF}",
+    );
+    h.prepare_text(many_chars)
+        .expect("Growth prepare should succeed");
+
+    let cached_after_growth = h.atlas.glyph_count();
+    assert!(cached_after_growth > 50, "Should have cached many glyphs");
+
+    // Now prepare only a small subset — the working set has shifted.
+    // This marks only a few glyphs as in-use.
+    h.prepare_text("AB")
+        .expect("Small prepare should succeed");
+
+    // Trim: textures grew + in_use < cached / 2 → should reset
+    h.atlas.trim();
+
+    // After reset, the glyph cache should be empty (all evicted).
+    assert_eq!(
+        h.atlas.glyph_count(), 0,
+        "trim() should reset when textures grew and working set shifted"
+    );
+
+    // Textures should be back at initial size
+    assert_eq!(h.atlas.curve_texels_used(), 0, "curve cursor should be reset");
+    assert_eq!(h.atlas.band_texels_used(), 0, "band cursor should be reset");
+
+    // The atlas should still be usable — next prepare re-extracts
+    h.prepare_text("AB")
+        .expect("Prepare after reset should succeed");
+    assert!(h.atlas.glyph_count() > 0, "Glyphs should be re-uploaded after reset");
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: trim() does not reset when working set is stable
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn trim_does_not_reset_when_working_set_stable() {
+    let mut h = TestHarness::new();
+
+    // Upload enough to trigger texture growth
+    let many_chars = concat!(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        "abcdefghijklmnopqrstuvwxyz",
+        "0123456789",
+        "!@#$%^&*()_+-=[]{}|;':\",./<>?",
+        "\u{00C0}\u{00C1}\u{00C2}\u{00C3}\u{00C4}\u{00C5}\u{00C6}\u{00C7}",
+        "\u{00C8}\u{00C9}\u{00CA}\u{00CB}\u{00CC}\u{00CD}\u{00CE}\u{00CF}",
+        "\u{00D0}\u{00D1}\u{00D2}\u{00D3}\u{00D4}\u{00D5}\u{00D6}\u{00D8}",
+        "\u{00D9}\u{00DA}\u{00DB}\u{00DC}\u{00DD}\u{00DE}\u{00DF}",
+        "\u{00E0}\u{00E1}\u{00E2}\u{00E3}\u{00E4}\u{00E5}\u{00E6}\u{00E7}",
+        "\u{00E8}\u{00E9}\u{00EA}\u{00EB}\u{00EC}\u{00ED}\u{00EE}\u{00EF}",
+    );
+    h.prepare_text(many_chars)
+        .expect("Growth prepare should succeed");
+
+    let cached_after_growth = h.atlas.glyph_count();
+
+    // Prepare the SAME text again — all glyphs are in-use
+    h.prepare_text(many_chars)
+        .expect("Repeat prepare should succeed");
+
+    // Trim: textures grew, but in_use >= cached / 2 → should NOT reset
+    h.atlas.trim();
+
+    assert_eq!(
+        h.atlas.glyph_count(),
+        cached_after_growth,
+        "trim() should not evict when working set is stable (all glyphs in use)"
+    );
+}

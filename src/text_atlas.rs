@@ -19,6 +19,7 @@ const INITIAL_BAND_HEIGHT: u32 = 1;
 /// An atlas containing cached glyph curve and band data for GPU rendering.
 pub struct TextAtlas {
     pub(crate) cache: Cache,
+    device: Device,
     pub(crate) curve_texture: wgpu::Texture,
     pub(crate) curve_view: TextureView,
     pub(crate) band_texture: wgpu::Texture,
@@ -43,10 +44,6 @@ pub struct TextAtlas {
     // Scratch buffers reused across upload_glyph() calls
     scratch_curve_texels: Vec<[f32; 4]>,
     scratch_curve_locations: Vec<CurveLocation>,
-
-    // Set by trim() when textures should be recreated at initial size.
-    // Deferred because trim() doesn't have device/queue access.
-    needs_texture_reset: bool,
 
     // Glyph cache
     pub(crate) glyphs: GlyphMap,
@@ -76,6 +73,7 @@ impl TextAtlas {
 
         Self {
             cache: cache.clone(),
+            device: device.clone(),
             curve_texture,
             curve_view,
             band_texture,
@@ -91,7 +89,6 @@ impl TextAtlas {
             band_data: Vec::new(),
             scratch_curve_texels: Vec::new(),
             scratch_curve_locations: Vec::new(),
-            needs_texture_reset: false,
             glyphs: GlyphMap::new(),
         }
     }
@@ -115,8 +112,9 @@ impl TextAtlas {
     ///
     /// Clears per-frame usage tracking. When the textures have grown beyond
     /// their initial size AND fewer than half the cached glyphs are in use,
-    /// performs a full reset: recreates textures at initial size, clears the
-    /// glyph cache. The next prepare() re-extracts only the visible glyphs.
+    /// performs a full reset: recreates textures at initial size (reclaiming
+    /// GPU memory immediately), clears the glyph cache. The next prepare()
+    /// re-extracts only the visible glyphs.
     ///
     /// This is pressure-based: a stable document with many glyphs will not
     /// trigger reset as long as the textures haven't grown. Only when GPU
@@ -138,9 +136,8 @@ impl TextAtlas {
         self.glyphs.clear_usage();
     }
 
-    /// Full atlas reset: clear all caches, mark textures for recreation.
-    /// The actual GPU texture recreation is deferred to the next
-    /// upload_glyph() call which has device/queue access.
+    /// Full atlas reset: recreate textures at initial size, clear all caches.
+    /// GPU memory is reclaimed immediately (old textures are dropped).
     fn reset_atlas(&mut self) {
         log::debug!(
             "trim: resetting atlas ({}/{} glyphs in use, \
@@ -158,7 +155,18 @@ impl TextAtlas {
         self.band_cursor = 0;
         self.curve_data.clear();
         self.band_data.clear();
-        self.needs_texture_reset = true;
+
+        // Recreate GPU textures at initial size — old textures are dropped,
+        // freeing their GPU allocations immediately.
+        self.curve_height = INITIAL_CURVE_HEIGHT;
+        self.band_height = INITIAL_BAND_HEIGHT;
+        self.curve_texture = create_curve_texture(&self.device, self.curve_height);
+        self.band_texture = create_band_texture(&self.device, self.band_height);
+        self.curve_view = self.curve_texture.create_view(&TextureViewDescriptor::default());
+        self.band_view = self.band_texture.create_view(&TextureViewDescriptor::default());
+        self.bind_group =
+            self.cache
+                .create_atlas_bind_group(&self.device, &self.curve_view, &self.band_view);
     }
 
     /// Upload a glyph's GPU-prepared outline and band data into the textures.
@@ -172,18 +180,6 @@ impl TextAtlas {
         band_count_x: u32,
         band_count_y: u32,
     ) -> GlyphEntry {
-        // Deferred texture reset from trim() — recreate at initial size
-        if self.needs_texture_reset {
-            self.curve_height = INITIAL_CURVE_HEIGHT;
-            self.band_height = INITIAL_BAND_HEIGHT;
-            self.curve_texture = create_curve_texture(device, self.curve_height);
-            self.band_texture = create_band_texture(device, self.band_height);
-            self.curve_view = self.curve_texture.create_view(&TextureViewDescriptor::default());
-            self.band_view = self.band_texture.create_view(&TextureViewDescriptor::default());
-            self.rebind(device);
-            self.needs_texture_reset = false;
-        }
-
         let num_curves = gpu_outline.curves.len() as u32;
 
         // Build curve texels (2 texels per curve) — reuse scratch buffer
