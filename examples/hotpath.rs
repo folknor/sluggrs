@@ -15,7 +15,6 @@ use sluggrs::{
 };
 
 fn main() {
-    #[cfg(feature = "hotpath")]
     let _guard = hotpath::HotpathGuardBuilder::new("sluggrs::hotpath")
         .percentiles(&[50, 95, 99])
         .with_functions_limit(0)
