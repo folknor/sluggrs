@@ -100,19 +100,16 @@ fn find_ttc_font() -> Option<Vec<u8>> {
         let entries = std::fs::read_dir(dir).ok()?;
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
-                if let Some(data) = walk(&path) {
+            if path.is_dir() && let Some(data) = walk(&path) {
+                return Some(data);
+            } else if let Some(ext) = path.extension()
+                && ext.eq_ignore_ascii_case("ttc")
+                && let Ok(data) = std::fs::read(&path)
+            {
+                // Verify it actually has at least 2 faces
+                if skrifa::FontRef::from_index(&data, 1).is_ok() {
+                    eprintln!("Found TTC: {}", path.display());
                     return Some(data);
-                }
-            } else if let Some(ext) = path.extension() {
-                if ext.eq_ignore_ascii_case("ttc") {
-                    if let Ok(data) = std::fs::read(&path) {
-                        // Verify it actually has at least 2 faces
-                        if skrifa::FontRef::from_index(&data, 1).is_ok() {
-                            eprintln!("Found TTC: {}", path.display());
-                            return Some(data);
-                        }
-                    }
                 }
             }
         }
@@ -121,10 +118,8 @@ fn find_ttc_font() -> Option<Vec<u8>> {
 
     for dir in &["/usr/share/fonts", "/usr/local/share/fonts"] {
         let p = std::path::Path::new(dir);
-        if p.is_dir() {
-            if let Some(data) = walk(p) {
-                return Some(data);
-            }
+        if p.is_dir() && let Some(data) = walk(p) {
+            return Some(data);
         }
     }
     None
@@ -313,7 +308,6 @@ fn comma_line_only_glyph_regression() {
     );
 
     eprintln!(
-        "Comma regression test passed: {} curves, all present in both bands",
-        num_curves
+        "Comma regression test passed: {num_curves} curves, all present in both bands"
     );
 }

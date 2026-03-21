@@ -20,7 +20,7 @@ fn extract_outline_from_cosmic_text_layout() {
     let mut glyphs_total = 0;
 
     for run in buffer.layout_runs() {
-        for glyph in run.glyphs.iter() {
+        for glyph in run.glyphs {
             glyphs_total += 1;
 
             // Get font data through cosmic_text
@@ -112,8 +112,8 @@ fn glyph_key_fields_available() {
     let _cache_key_flags: cosmic_text::CacheKeyFlags = glyph.cache_key_flags;
 
     println!("GlyphKey fields available:");
-    println!("  font_id: {:?}", _font_id);
-    println!("  glyph_id: {}", _glyph_id);
+    println!("  font_id: {_font_id:?}");
+    println!("  glyph_id: {_glyph_id}");
     println!("  font_weight: {}", _font_weight.0);
-    println!("  cache_key_flags: {:?}", _cache_key_flags);
+    println!("  cache_key_flags: {_cache_key_flags:?}");
 }

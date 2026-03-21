@@ -50,6 +50,7 @@ impl TextRenderer {
     }
 
     /// Prepares all of the provided text areas for rendering, with depth.
+    #[allow(clippy::too_many_arguments)] // matches cryoglyph's API
     pub fn prepare_with_depth<'a>(
         &mut self,
         device: &Device,
@@ -89,7 +90,7 @@ impl TextRenderer {
                 .take_while(is_run_visible);
 
             for run in layout_runs {
-                for glyph in run.glyphs.iter() {
+                for glyph in run.glyphs {
                     let key = GlyphKey::from_layout_glyph(glyph);
 
                     // Cache lookup or extract
@@ -132,7 +133,7 @@ impl TextRenderer {
                                 }
                             }
                             None => {
-                                log::warn!("Font not found for glyph {:?}", key);
+                                log::warn!("Font not found for glyph {key:?}");
                                 continue;
                             }
                         };
@@ -256,6 +257,7 @@ impl TextRenderer {
     }
 
     /// Prepares all of the provided text areas for rendering.
+    #[allow(clippy::too_many_arguments)] // matches cryoglyph's API
     pub fn prepare<'a>(
         &mut self,
         device: &Device,

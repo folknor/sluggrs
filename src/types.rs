@@ -82,3 +82,68 @@ impl std::fmt::Display for RenderError {
 }
 
 impl std::error::Error for RenderError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_bounds_default_is_unbounded() {
+        let bounds = TextBounds::default();
+        assert_eq!(bounds.left, i32::MIN);
+        assert_eq!(bounds.top, i32::MIN);
+        assert_eq!(bounds.right, i32::MAX);
+        assert_eq!(bounds.bottom, i32::MAX);
+    }
+
+    #[test]
+    fn prepare_error_display() {
+        let err = PrepareError::AtlasFull;
+        let msg = format!("{err}");
+        assert!(msg.contains("atlas"), "Display should mention atlas: {msg}");
+    }
+
+    #[test]
+    fn render_error_display_variants() {
+        let msg1 = format!("{}", RenderError::RemovedFromAtlas);
+        assert!(msg1.contains("atlas"), "Should mention atlas: {msg1}");
+
+        let msg2 = format!("{}", RenderError::ScreenResolutionChanged);
+        assert!(msg2.contains("resolution"), "Should mention resolution: {msg2}");
+    }
+
+    #[test]
+    fn error_types_implement_error_trait() {
+        let pe: Box<dyn std::error::Error> = Box::new(PrepareError::AtlasFull);
+        assert!(pe.to_string().contains("atlas"));
+
+        let re: Box<dyn std::error::Error> = Box::new(RenderError::RemovedFromAtlas);
+        assert!(re.to_string().contains("atlas"));
+    }
+
+    #[test]
+    fn error_types_are_copy() {
+        let e1 = PrepareError::AtlasFull;
+        let e2 = e1; // Copy
+        assert_eq!(e1, e2);
+
+        let r1 = RenderError::RemovedFromAtlas;
+        let r2 = r1; // Copy
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn resolution_equality() {
+        let a = Resolution { width: 1920, height: 1080 };
+        let b = Resolution { width: 1920, height: 1080 };
+        let c = Resolution { width: 1280, height: 720 };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn color_mode_equality() {
+        assert_eq!(ColorMode::Accurate, ColorMode::Accurate);
+        assert_ne!(ColorMode::Accurate, ColorMode::Web);
+    }
+}

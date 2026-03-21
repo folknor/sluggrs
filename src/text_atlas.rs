@@ -25,6 +25,7 @@ pub struct TextAtlas {
     pub(crate) band_view: TextureView,
     pub(crate) bind_group: BindGroup,
     pub(crate) format: TextureFormat,
+    #[allow(dead_code)] // API contract — read by iced integration
     pub(crate) color_mode: ColorMode,
 
     // Texture dimensions (height grows, width is fixed)
@@ -137,13 +138,13 @@ impl TextAtlas {
 
         // Grow textures if needed
         let new_curve_end = self.curve_cursor + curve_texel_count;
-        let required_curve_height = (new_curve_end + CURVE_TEXTURE_WIDTH - 1) / CURVE_TEXTURE_WIDTH;
+        let required_curve_height = new_curve_end.div_ceil(CURVE_TEXTURE_WIDTH);
         if required_curve_height > self.curve_height {
             self.grow_curve_texture(device, queue, required_curve_height);
         }
 
         let new_band_end = self.band_cursor + band_texel_count;
-        let required_band_height = (new_band_end + BAND_TEXTURE_WIDTH - 1) / BAND_TEXTURE_WIDTH;
+        let required_band_height = new_band_end.div_ceil(BAND_TEXTURE_WIDTH);
         if required_band_height > self.band_height {
             self.grow_band_texture(device, queue, required_band_height);
         }

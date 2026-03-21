@@ -29,6 +29,7 @@ struct Inner {
     pub(crate) atlas_layout: BindGroupLayout,
     pub(crate) uniforms_layout: BindGroupLayout,
     pipeline_layout: PipelineLayout,
+    #[allow(clippy::type_complexity)]
     pipelines: Mutex<
         Vec<(
             TextureFormat,

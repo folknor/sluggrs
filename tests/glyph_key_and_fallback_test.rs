@@ -160,10 +160,10 @@ fn non_vector_entry_does_not_shadow_real_entries() {
     map.insert(real_key, real_entry);
 
     // Non-vector entry is still non-vector.
-    assert!(map.get(&non_vector_key).unwrap().is_non_vector());
+    assert!(map.get(&non_vector_key).expect("should have non_vector entry").is_non_vector());
 
     // Real entry is NOT non-vector.
-    let got = map.get(&real_key).unwrap();
+    let got = map.get(&real_key).expect("should have real entry");
     assert!(
         !got.is_non_vector(),
         "A real glyph entry should not be flagged as non-vector"

@@ -192,3 +192,119 @@ pub fn char_to_glyph_id(font_data: &[u8], ch: char) -> Option<u16> {
     let glyph_id = font.charmap().map(ch)?;
     Some(glyph_id.to_u32() as u16)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mid_computes_midpoint() {
+        assert_eq!(mid([0.0, 0.0], [10.0, 20.0]), [5.0, 10.0]);
+        assert_eq!(mid([-5.0, 3.0], [5.0, -3.0]), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn subdivide_cubic_produces_at_least_one_quad() {
+        let mut out = Vec::new();
+        subdivide_cubic(
+            &mut out,
+            [0.0, 0.0],
+            [10.0, 100.0],
+            [90.0, 100.0],
+            [100.0, 0.0],
+            0,
+        );
+        assert!(!out.is_empty(), "subdivision must produce at least one curve");
+        // First curve should start at p0
+        assert_eq!(out[0].p1, [0.0, 0.0]);
+        // Last curve should end at p3
+        assert_eq!(out.last().expect("non-empty").p3, [100.0, 0.0]);
+    }
+
+    #[test]
+    fn subdivide_cubic_chain_is_continuous() {
+        let mut out = Vec::new();
+        subdivide_cubic(
+            &mut out,
+            [0.0, 0.0],
+            [0.0, 100.0],
+            [100.0, 100.0],
+            [100.0, 0.0],
+            0,
+        );
+        // Each curve's p3 should equal the next curve's p1
+        for i in 0..out.len() - 1 {
+            let gap_x = (out[i].p3[0] - out[i + 1].p1[0]).abs();
+            let gap_y = (out[i].p3[1] - out[i + 1].p1[1]).abs();
+            assert!(
+                gap_x < 1e-6 && gap_y < 1e-6,
+                "curve chain not continuous at index {i}: gap=({gap_x}, {gap_y})"
+            );
+        }
+    }
+
+    #[test]
+    fn subdivide_respects_max_depth() {
+        // A highly curved cubic should still terminate (MAX_DEPTH=3 → max 8 quads)
+        let mut out = Vec::new();
+        subdivide_cubic(
+            &mut out,
+            [0.0, 0.0],
+            [0.0, 1000.0],
+            [1000.0, 1000.0],
+            [1000.0, 0.0],
+            0,
+        );
+        assert!(out.len() <= 8, "max depth 3 should produce at most 8 quads, got {}", out.len());
+        assert!(!out.is_empty());
+    }
+
+    #[test]
+    fn collect_pen_line_to_creates_degenerate_quad() {
+        let mut pen = CollectPen::new();
+        pen.move_to(0.0, 0.0);
+        pen.line_to(100.0, 0.0);
+        assert_eq!(pen.curves.len(), 1);
+        let c = &pen.curves[0];
+        // p2 should be the midpoint
+        assert!((c.p2[0] - 50.0).abs() < 1e-6);
+        assert!((c.p2[1] - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn collect_pen_close_emits_closing_segment() {
+        let mut pen = CollectPen::new();
+        pen.move_to(0.0, 0.0);
+        pen.line_to(100.0, 0.0);
+        pen.line_to(100.0, 100.0);
+        pen.close();
+        // 2 line_to + 1 close = 3 curves
+        assert_eq!(pen.curves.len(), 3);
+        // Closing segment should end at contour start
+        let last = &pen.curves[2];
+        assert!((last.p3[0] - 0.0).abs() < 1e-6);
+        assert!((last.p3[1] - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn collect_pen_close_at_start_no_extra_segment() {
+        let mut pen = CollectPen::new();
+        pen.move_to(50.0, 50.0);
+        pen.line_to(100.0, 50.0);
+        pen.line_to(50.0, 50.0); // back to start
+        pen.close();
+        // close() should not emit an extra segment since we're already at start
+        assert_eq!(pen.curves.len(), 2);
+    }
+
+    #[test]
+    fn collect_pen_bounds_track_all_points() {
+        let mut pen = CollectPen::new();
+        pen.move_to(10.0, 20.0);
+        pen.quad_to(5.0, 90.0, 80.0, 30.0);
+        assert!(pen.min[0] <= 5.0);
+        assert!(pen.min[1] <= 20.0);
+        assert!(pen.max[0] >= 80.0);
+        assert!(pen.max[1] >= 90.0);
+    }
+}

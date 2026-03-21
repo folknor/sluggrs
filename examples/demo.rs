@@ -85,6 +85,7 @@ fn build_band_texture(glyphs: &[PreparedGlyph]) -> Vec<[u32; 4]> {
 }
 
 /// Prepare glyphs for a string of text with a given font.
+#[allow(clippy::too_many_arguments)]
 fn prepare_text(
     font_data: &[u8],
     text: &str,
@@ -103,7 +104,7 @@ fn prepare_text(
             match skrifa::FontRef::from_index(font_data, 0) {
                 Ok(f) => f,
                 Err(e) => {
-                    log::error!("Failed to parse font: {:?}", e);
+                    log::error!("Failed to parse font: {e:?}");
                     return (Vec::new(), Vec::new());
                 }
             }
@@ -271,7 +272,7 @@ impl ApplicationHandler for App {
                 .expect("failed to create window"),
         );
 
-        let state = pollster::block_on(init_render_state(window.clone()));
+        let state = pollster::block_on(init_render_state(Arc::clone(&window)));
         self.state = Some(state);
         self.window = Some(window);
     }
@@ -334,7 +335,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     });
 
     let surface = instance
-        .create_surface(window.clone())
+        .create_surface(Arc::clone(&window))
         .expect("failed to create surface");
 
     let adapter = instance
@@ -373,7 +374,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     eprintln!("Adapter: {:?}", adapter.get_info().name);
     eprintln!("Surface format: {:?}", config.format);
     eprintln!("Physical size: {}x{}", config.width, config.height);
-    eprintln!("Scale factor: {}", sf);
+    eprintln!("Scale factor: {sf}");
 
     // --- Optional licensed fonts (not in git, loaded from disk) ---
     let tisa_data = try_load_font("/home/folk/.local/share/fonts/TisaPro-Regular.otf");
@@ -490,21 +491,19 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     // Curve texture: fixed width, wrap into rows (same as library's text_atlas.rs)
     let curve_w = CURVE_TEXTURE_WIDTH;
     let curve_count = curve_texels.len().max(1) as u32;
-    let curve_h = (curve_count + curve_w - 1) / curve_w;
+    let curve_h = curve_count.div_ceil(curve_w);
     let mut padded_curve_texels = curve_texels;
     padded_curve_texels.resize((curve_w * curve_h) as usize, [0.0; 4]);
 
     // Band texture: fixed width, wrap into rows
     let band_w = sluggrs::BAND_TEXTURE_WIDTH;
     let band_count = band_texels.len().max(1) as u32;
-    let band_h = (band_count + band_w - 1) / band_w;
+    let band_h = band_count.div_ceil(band_w);
     let mut padded_band_texels = band_texels;
     padded_band_texels.resize((band_w * band_h) as usize, [0u32; 4]);
 
     log::info!(
-        "Curve texture: {}x{} ({} used), Band texture: {}x{} ({} used)",
-        curve_w, curve_h, curve_count,
-        band_w, band_h, band_count
+        "Curve texture: {curve_w}x{curve_h} ({curve_count} used), Band texture: {band_w}x{band_h} ({band_count} used)"
     );
 
     let curve_texture = device.create_texture_with_data(
@@ -741,7 +740,7 @@ fn render(state: &RenderState) {
     let frame = match state.surface.get_current_texture() {
         Ok(f) => f,
         Err(e) => {
-            log::error!("Failed to get surface texture: {:?}", e);
+            log::error!("Failed to get surface texture: {e:?}");
             return;
         }
     };

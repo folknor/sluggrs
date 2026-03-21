@@ -220,7 +220,7 @@ fn multiple_trim_cycles_stable() {
         };
 
         h.prepare_text(text)
-            .expect(&format!("Prepare at cycle {i} should succeed"));
+            .unwrap_or_else(|_| panic!("Prepare at cycle {i} should succeed"));
         h.atlas.trim();
     }
 

@@ -5,8 +5,8 @@ use skrifa::setting::VariationSetting;
 
 #[test]
 fn dump_bold_r_geometry() {
-    let font_data = std::fs::read("examples/fonts/InterVariable.ttf").unwrap();
-    let glyph_id = sluggrs::outline::char_to_glyph_id(&font_data, 'r').unwrap();
+    let font_data = std::fs::read("examples/fonts/InterVariable.ttf").expect("InterVariable.ttf must be present");
+    let glyph_id = sluggrs::outline::char_to_glyph_id(&font_data, 'r').expect("'r' should be mapped");
 
     let wght = skrifa::Tag::new(b"wght");
     let location = [VariationSetting::new(wght, 700.0)];
@@ -90,7 +90,7 @@ fn dump_bold_r_geometry() {
             }
         }
 
-        println!("  curve {}: h_bands={:?}, v_bands={:?}", target_curve, h_bands, v_bands);
+        println!("  curve {target_curve}: h_bands={h_bands:?}, v_bands={v_bands:?}");
     }
 
     // What are the band y-ranges?
@@ -101,7 +101,7 @@ fn dump_bold_r_geometry() {
     for i in 0..hcount {
         let lo = min_y + i as f32 * band_h;
         let hi = lo + band_h;
-        println!("  h{}: y=[{:.1}, {:.1}]", i, lo, hi);
+        println!("  h{i}: y=[{lo:.1}, {hi:.1}]");
     }
 
     let [min_x, _, max_x, _] = gpu.bounds;
@@ -111,6 +111,6 @@ fn dump_bold_r_geometry() {
     for i in 0..vcount {
         let lo = min_x + i as f32 * band_w;
         let hi = lo + band_w;
-        println!("  v{}: x=[{:.1}, {:.1}]", i, lo, hi);
+        println!("  v{i}: x=[{lo:.1}, {hi:.1}]");
     }
 }
