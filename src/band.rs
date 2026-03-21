@@ -94,33 +94,27 @@ pub fn build_bands(
         }
     }
 
-    // Sort horizontal band curves by descending max x (for early exit in shader)
+    // Pre-compute sort keys to avoid redundant max() calls in comparators.
+    // H-bands sort by descending max x; V-bands sort by descending max y.
+    let num_curves = outline.curves.len();
+    let mut max_x_keys = Vec::with_capacity(num_curves);
+    let mut max_y_keys = Vec::with_capacity(num_curves);
+    for curve in &outline.curves {
+        max_x_keys.push(curve.p1[0].max(curve.p2[0]).max(curve.p3[0]));
+        max_y_keys.push(curve.p1[1].max(curve.p2[1]).max(curve.p3[1]));
+    }
+
+    // Sort horizontal band curves by descending max x (for shader early exit)
     for band in &mut hband_curves {
-        band.sort_by(|&a, &b| {
-            let max_x_a = outline.curves[a]
-                .p1[0]
-                .max(outline.curves[a].p2[0])
-                .max(outline.curves[a].p3[0]);
-            let max_x_b = outline.curves[b]
-                .p1[0]
-                .max(outline.curves[b].p2[0])
-                .max(outline.curves[b].p3[0]);
-            max_x_b.partial_cmp(&max_x_a).unwrap_or(std::cmp::Ordering::Equal)
+        band.sort_unstable_by(|&a, &b| {
+            max_x_keys[b].partial_cmp(&max_x_keys[a]).unwrap_or(std::cmp::Ordering::Equal)
         });
     }
 
     // Sort vertical band curves by descending max y
     for band in &mut vband_curves {
-        band.sort_by(|&a, &b| {
-            let max_y_a = outline.curves[a]
-                .p1[1]
-                .max(outline.curves[a].p2[1])
-                .max(outline.curves[a].p3[1]);
-            let max_y_b = outline.curves[b]
-                .p1[1]
-                .max(outline.curves[b].p2[1])
-                .max(outline.curves[b].p3[1]);
-            max_y_b.partial_cmp(&max_y_a).unwrap_or(std::cmp::Ordering::Equal)
+        band.sort_unstable_by(|&a, &b| {
+            max_y_keys[b].partial_cmp(&max_y_keys[a]).unwrap_or(std::cmp::Ordering::Equal)
         });
     }
 
