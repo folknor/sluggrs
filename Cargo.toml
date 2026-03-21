@@ -30,6 +30,10 @@ path = "examples/demo.rs"
 name = "hotpath"
 path = "examples/hotpath.rs"
 
+[[example]]
+name = "gpu-bench"
+path = "examples/gpu_bench.rs"
+
 [lints.clippy]
 # Style: modern idiomatic Rust
 uninlined_format_args = "deny"
