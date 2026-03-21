@@ -21,6 +21,7 @@ pub struct TextRenderer {
     pipeline: RenderPipeline,
     instances: Vec<GlyphInstance>,
     glyphs_to_render: u32,
+    units_per_em_cache: std::collections::HashMap<cosmic_text::fontdb::ID, f32>,
 }
 
 impl TextRenderer {
@@ -46,6 +47,7 @@ impl TextRenderer {
             pipeline,
             instances: Vec::new(),
             glyphs_to_render: 0,
+            units_per_em_cache: std::collections::HashMap::new(),
         }
     }
 
@@ -68,9 +70,8 @@ impl TextRenderer {
 
         let resolution = viewport.resolution();
 
-        // Cache units_per_em per font to avoid redundant skrifa lookups
-        let mut units_per_em_cache: std::collections::HashMap<cosmic_text::fontdb::ID, f32> =
-            std::collections::HashMap::new();
+        // Persistent cache — avoids HashMap allocation per frame and
+        // avoids re-parsing skrifa FontRef + head table on warm frames.
 
         for text_area in text_areas {
             let bounds_min_x = text_area.bounds.left.max(0);
@@ -147,7 +148,7 @@ impl TextRenderer {
                     };
 
                     // Get font metrics for scaling (cached per font_id)
-                    let units_per_em = match units_per_em_cache.get(&glyph.font_id) {
+                    let units_per_em = match self.units_per_em_cache.get(&glyph.font_id) {
                         Some(&v) => v,
                         None => {
                             let font = match font_system.get_font(glyph.font_id, glyph.font_weight) {
@@ -162,7 +163,7 @@ impl TextRenderer {
                                 use skrifa::raw::TableProvider;
                                 skrifa_font.head().map(|h| h.units_per_em() as f32).unwrap_or(1000.0)
                             };
-                            units_per_em_cache.insert(glyph.font_id, v);
+                            self.units_per_em_cache.insert(glyph.font_id, v);
                             v
                         }
                     };
