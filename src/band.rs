@@ -52,9 +52,14 @@ pub fn build_bands(
     let offset_y = -min_y * scale_y;
 
     // For each horizontal band (indexed by y), collect curves that overlap it
-    let mut hband_curves: Vec<Vec<usize>> = vec![Vec::new(); band_count_y as usize];
+    let curves_per_band_hint = (outline.curves.len() / (band_count_y as usize).max(1)).max(1);
+    let mut hband_curves: Vec<Vec<usize>> = (0..band_count_y as usize)
+        .map(|_| Vec::with_capacity(curves_per_band_hint))
+        .collect();
     // For each vertical band (indexed by x), collect curves that overlap it
-    let mut vband_curves: Vec<Vec<usize>> = vec![Vec::new(); band_count_x as usize];
+    let mut vband_curves: Vec<Vec<usize>> = (0..band_count_x as usize)
+        .map(|_| Vec::with_capacity(curves_per_band_hint))
+        .collect();
 
     for (i, curve) in outline.curves.iter().enumerate() {
         let curve_min_y = curve.p1[1].min(curve.p2[1]).min(curve.p3[1]);
@@ -129,18 +134,11 @@ pub fn build_bands(
     // it's just (curve_loc.x, curve_loc.y) packed as uint2.
 
     let num_headers = band_count_y + band_count_x;
-    let mut entries: Vec<u32> = Vec::new();
-
-    // Reserve space for headers (2 u32s per band: count, offset)
-    // But in the Slug format, each band header is stored as a single texel with
-    // count in .x and offset in .y
-    // We'll pack: each header = 2 values, each curve ref = 2 values
-    // Headers come first, then curve index lists
 
     // Phase 1: calculate offsets
     let curve_lists_start = num_headers; // offset in texels from glyph start
-    let mut hband_offsets: Vec<(u32, u32)> = Vec::new(); // (count, offset)
-    let mut vband_offsets: Vec<(u32, u32)> = Vec::new();
+    let mut hband_offsets: Vec<(u32, u32)> = Vec::with_capacity(band_count_y as usize);
+    let mut vband_offsets: Vec<(u32, u32)> = Vec::with_capacity(band_count_x as usize);
 
     let mut current_offset = curve_lists_start;
     for band in &hband_curves {
@@ -151,6 +149,9 @@ pub fn build_bands(
         vband_offsets.push((band.len() as u32, current_offset));
         current_offset += band.len() as u32;
     }
+
+    // Reserve exact capacity: 4 u32s per header + 4 u32s per curve reference
+    let mut entries: Vec<u32> = Vec::with_capacity(current_offset as usize * 4);
 
     // Phase 2: write headers
     // Horizontal band headers come first (band_count_y of them)
