@@ -1,0 +1,7 @@
+project = "sluggrs"
+
+[sluggrs]
+width = 1920
+height = 1080
+pixel_diff_threshold = 0.1
+snapshot = []
