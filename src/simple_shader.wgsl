@@ -90,13 +90,16 @@ fn vs_main(instance: GlyphInstance, @builtin(vertex_index) vid: u32) -> VertexOu
 // --- Fragment shader: full Slug curve evaluation ---
 
 fn calc_root_code(y1: f32, y2: f32, y3: f32) -> u32 {
-    // Extract sign bits via bitcast (matches Slug reference). On NVIDIA this
-    // reduces to a single LOP3 instruction for the shift composition.
-    let i1 = bitcast<u32>(y1) >> 31u;
-    let i2 = bitcast<u32>(y2) >> 30u;
-    let i3 = bitcast<u32>(y3) >> 29u;
-    var shift = (i2 & 2u) | (i1 & ~2u);
-    shift = (i3 & 4u) | (shift & ~4u);
+    // Comparison-based sign extraction. The Slug reference uses
+    // bitcast(y) >> 31 (sign bit extraction) which is faster on NVIDIA
+    // but treats -0.0 as negative. On Intel Arc, intermediate calculations
+    // can produce -0.0 where NVIDIA produces +0.0, causing wrong root
+    // eligibility and rendering artifacts (unfilled regions). The select()
+    // version handles -0.0 correctly per IEEE 754 (not less than zero).
+    let s1 = select(0u, 1u, y1 < 0.0);
+    let s2 = select(0u, 1u, y2 < 0.0);
+    let s3 = select(0u, 1u, y3 < 0.0);
+    let shift = s1 | (s2 << 1u) | (s3 << 2u);
     return (0x2E74u >> shift) & 0x0101u;
 }
 

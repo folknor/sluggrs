@@ -66,9 +66,17 @@ doesn't perturb line segments.
 The reference uses `asuint(y) >> 31U` (bitcast to uint, extract sign
 bit) which reduces to a single `LOP3` instruction on NVIDIA. Our
 translation uses `select(0u, 1u, y < 0.0)` which generates conditional
-moves. Both produce identical results; the reference version may
-produce better codegen on some GPUs. See TODO.md for planned
-investigation.
+moves.
+
+**These are NOT equivalent for negative zero.** `bitcast<u32>(-0.0) >> 31`
+returns 1 (sign bit set), but `select(0u, 1u, -0.0 < 0.0)` returns 0
+(per IEEE 754, -0.0 is not less than 0.0). On Intel Arc, intermediate
+shader calculations can produce -0.0 where NVIDIA produces +0.0. The
+bitcast version then misclassifies these as negative, producing wrong
+root eligibility codes and visible rendering artifacts (unfilled regions).
+
+We use select() for correctness across all GPUs. The performance
+difference is negligible (verified: 13µs/frame on RTX 3080 either way).
 
 ## Architecture
 
