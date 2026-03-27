@@ -116,7 +116,7 @@
 
 ## Bugs found by deep review (2026-03-27)
 
-- [ ] Premultiplied alpha mismatch — gpu_cache.rs sets
+- [x] Premultiplied alpha mismatch — gpu_cache.rs sets
   `PREMULTIPLIED_ALPHA_BLENDING` but shader outputs straight alpha:
   `input.color * final_coverage`. For text with alpha < 1.0, RGB is not
   multiplied by alpha, so semi-transparent text renders too bright. Fix:
@@ -130,7 +130,7 @@
   Params struct. Public via `SHADER_WGSL` in lib.rs. Either sync it, stop
   exporting it, or delete it. **slug, gpu, wgpu review**
 
-- [ ] Dead ALU in fragment shader — `hband_loc` and `vband_loc` are computed
+- [x] Dead ALU in fragment shader — `hband_loc` and `vband_loc` are computed
   via calc_band_loc but never read; the loop body recomputes per iteration.
   Two wasted calc_band_loc calls per fragment per ray direction. NVIDIA may
   DCE this; Intel and AMD may not. Free to delete. **gpu, wgpu review**

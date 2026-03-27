@@ -209,7 +209,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     let hband_header_loc = calc_band_loc(glyph_loc, u32(band_index.y));
     let hband_data = textureLoad(band_texture, hband_header_loc, 0).xy;
-    let hband_loc = calc_band_loc(glyph_loc, hband_data.y);
 
     for (var ci = 0; ci < i32(hband_data.x); ci++) {
         let curve_ref_loc = calc_band_loc(glyph_loc, hband_data.y + u32(ci));
@@ -243,7 +242,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     let vband_header_loc = calc_band_loc(glyph_loc, u32(band_max.y + 1 + band_index.x));
     let vband_data = textureLoad(band_texture, vband_header_loc, 0).xy;
-    let vband_loc = calc_band_loc(glyph_loc, vband_data.y);
 
     for (var ci = 0; ci < i32(vband_data.x); ci++) {
         let curve_ref_loc = calc_band_loc(glyph_loc, vband_data.y + u32(ci));
@@ -275,5 +273,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let combined = abs(xcov * xwgt + ycov * ywgt) / max(xwgt + ywgt, 1.0 / 65536.0);
     let fallback = min(abs(xcov), abs(ycov));
     let final_coverage = clamp(max(combined, fallback), 0.0, 1.0);
-    return input.color * final_coverage;
+    // Premultiplied alpha output: RGB must be multiplied by alpha for
+    // correct blending with PREMULTIPLIED_ALPHA_BLENDING blend state.
+    let alpha = input.color.a * final_coverage;
+    return vec4<f32>(input.color.rgb * alpha, alpha);
 }
