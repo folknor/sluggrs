@@ -188,8 +188,10 @@ pub fn extract_outline(
 }
 
 /// Map a character to a glyph ID using the font's cmap table.
-pub fn char_to_glyph_id(font_data: &[u8], ch: char) -> Option<u16> {
-    let font = skrifa::FontRef::new(font_data).ok()?;
+///
+/// `face_index`: index within a font collection (TTC), 0 for single-face fonts.
+pub fn char_to_glyph_id(font_data: &[u8], face_index: u32, ch: char) -> Option<u16> {
+    let font = skrifa::FontRef::from_index(font_data, face_index).ok()?;
     let glyph_id = font.charmap().map(ch)?;
     Some(glyph_id.to_u32() as u16)
 }

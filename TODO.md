@@ -21,12 +21,12 @@
 
 ## Bugs found by review (2026-03-27)
 
-- [ ] `char_to_glyph_id` hardcodes face 0 — outline.rs:191 uses
+- [x] `char_to_glyph_id` hardcodes face 0 — outline.rs:191 uses
   `FontRef::new(font_data)` while outline.rs:165 correctly takes face_index
   and calls `from_index`. For TTC collections, glyph mapping can come from a
   different face than the outline/metrics path.
 
-- [ ] Empty outlines produce invalid bounds — prepare.rs:28 and prepare.rs:79
+- [x] Empty outlines produce invalid bounds — prepare.rs:28 and prepare.rs:79
   return `[f32::MAX, f32::MAX, f32::MIN, f32::MIN]` when curves are empty.
   The main path avoids this (outline.rs:180 returns None for empty pens), but
   the invariant is not enforced at the API boundary. Direct callers of

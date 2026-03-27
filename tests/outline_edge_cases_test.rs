@@ -22,7 +22,7 @@ fn load_inter() -> Vec<u8> {
 fn fake_italic_changes_geometry() {
     let font_data = load_inter();
     let glyph_id =
-        char_to_glyph_id(&font_data, 'A').expect("'A' should be mapped in Inter");
+        char_to_glyph_id(&font_data, 0, 'A').expect("'A' should be mapped in Inter");
 
     let outline =
         extract_outline(&font_data, 0, glyph_id, &[]).expect("'A' should have an outline");
@@ -203,7 +203,7 @@ fn ttc_face_index_correctness() {
 fn comma_line_only_glyph_regression() {
     let font_data = load_inter();
     let glyph_id =
-        char_to_glyph_id(&font_data, ',').expect("Comma should be mapped in Inter");
+        char_to_glyph_id(&font_data, 0, ',').expect("Comma should be mapped in Inter");
 
     // Step 1: Extract outline and verify it has curves.
     let outline = extract_outline(&font_data, 0, glyph_id, &[])

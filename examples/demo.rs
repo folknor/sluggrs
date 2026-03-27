@@ -129,7 +129,7 @@ fn prepare_text(
     };
 
     for ch in text.chars() {
-        let glyph_id = match char_to_glyph_id(font_data, ch) {
+        let glyph_id = match char_to_glyph_id(font_data, 0, ch) {
             Some(id) => id,
             None => continue,
         };

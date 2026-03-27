@@ -6,7 +6,7 @@ use skrifa::setting::VariationSetting;
 #[test]
 fn dump_bold_r_geometry() {
     let font_data = std::fs::read("examples/fonts/InterVariable.ttf").expect("InterVariable.ttf must be present");
-    let glyph_id = sluggrs::outline::char_to_glyph_id(&font_data, 'r').expect("'r' should be mapped");
+    let glyph_id = sluggrs::outline::char_to_glyph_id(&font_data, 0, 'r').expect("'r' should be mapped");
 
     let wght = skrifa::Tag::new(b"wght");
     let location = [VariationSetting::new(wght, 700.0)];

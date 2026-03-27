@@ -26,6 +26,13 @@ pub struct GpuOutline {
 /// quadratic solver always has a nonzero second-degree coefficient.
 #[hotpath::measure]
 pub fn prepare_outline(outline: &GlyphOutline) -> GpuOutline {
+    if outline.curves.is_empty() {
+        return GpuOutline {
+            curves: Vec::new(),
+            bounds: [0.0, 0.0, 0.0, 0.0],
+        };
+    }
+
     let mut curves = Vec::with_capacity(outline.curves.len());
     let mut min = [f32::MAX, f32::MAX];
     let mut max = [f32::MIN, f32::MIN];
@@ -77,6 +84,10 @@ const ITALIC_SHEAR: f32 = 0.2493;
 /// used by cosmic_text's swash integration. Bounds are recomputed
 /// after the transform.
 pub fn apply_italic_shear(outline: &mut GpuOutline) {
+    if outline.curves.is_empty() {
+        return;
+    }
+
     let mut min = [f32::MAX, f32::MAX];
     let mut max = [f32::MIN, f32::MIN];
 
@@ -184,6 +195,7 @@ mod tests {
         };
         let gpu = prepare_outline(&outline);
         assert!(gpu.curves.is_empty());
+        assert_eq!(gpu.bounds, [0.0, 0.0, 0.0, 0.0]);
     }
 
     #[test]

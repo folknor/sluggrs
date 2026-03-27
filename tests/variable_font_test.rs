@@ -10,7 +10,7 @@ const INTER_VARIABLE: &[u8] = include_bytes!("../examples/fonts/InterVariable.tt
 #[test]
 fn variable_font_outline_differs_by_weight() {
     // Map 'S' to a glyph ID — a character with curves that visibly change with weight.
-    let glyph_id = char_to_glyph_id(INTER_VARIABLE, 'S')
+    let glyph_id = char_to_glyph_id(INTER_VARIABLE, 0, 'S')
         .expect("Inter Variable should contain glyph for 'S'");
 
     let weight_400 = skrifa::setting::VariationSetting::new(
@@ -62,7 +62,7 @@ fn variable_font_outline_differs_by_weight() {
 #[test]
 fn variable_font_outline_differs_for_lowercase_a() {
     // Test with 'a' as well — another character with clear weight variation.
-    let glyph_id = char_to_glyph_id(INTER_VARIABLE, 'a')
+    let glyph_id = char_to_glyph_id(INTER_VARIABLE, 0, 'a')
         .expect("Inter Variable should contain glyph for 'a'");
 
     let weight_400 = skrifa::setting::VariationSetting::new(
@@ -100,7 +100,7 @@ fn variable_font_outline_differs_for_lowercase_a() {
 #[test]
 fn same_weight_produces_identical_outlines() {
     // Sanity check: same weight should produce identical outlines.
-    let glyph_id = char_to_glyph_id(INTER_VARIABLE, 'S')
+    let glyph_id = char_to_glyph_id(INTER_VARIABLE, 0, 'S')
         .expect("Inter Variable should contain glyph for 'S'");
 
     let weight_400 = skrifa::setting::VariationSetting::new(
