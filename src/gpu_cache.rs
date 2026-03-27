@@ -248,5 +248,5 @@ impl Cache {
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct Params {
     pub screen_size: [f32; 2],
-    pub _pad: [f32; 2],
+    pub scroll_offset: [f32; 2],
 }

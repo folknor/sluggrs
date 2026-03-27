@@ -37,7 +37,7 @@ struct GlyphInstance {
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Params {
     screen_size: [f32; 2],
-    _pad: [f32; 2],
+    scroll_offset: [f32; 2],
 }
 
 /// Prepared glyph data ready for GPU upload.
@@ -233,6 +233,9 @@ struct RenderState {
     instance_buffer: wgpu::Buffer,
     instance_count: u32,
     zoom: f32,
+    scroll: [f32; 2],
+    dragging: bool,
+    last_mouse: [f32; 2],
 }
 
 impl RenderState {
@@ -242,7 +245,7 @@ impl RenderState {
                 self.config.width as f32 / self.zoom,
                 self.config.height as f32 / self.zoom,
             ],
-            _pad: [0.0; 2],
+            scroll_offset: self.scroll,
         };
         self.queue
             .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
@@ -313,6 +316,54 @@ impl ApplicationHandler for App {
                     if let Some(window) = &self.window {
                         window.request_redraw();
                     }
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event: winit::event::KeyEvent {
+                    physical_key: winit::keyboard::PhysicalKey::Code(key),
+                    state: winit::event::ElementState::Pressed,
+                    ..
+                },
+                ..
+            } => {
+                if let Some(state) = &mut self.state {
+                    let step = 50.0 / state.zoom;
+                    match key {
+                        winit::keyboard::KeyCode::ArrowUp => state.scroll[1] += step,
+                        winit::keyboard::KeyCode::ArrowDown => state.scroll[1] -= step,
+                        winit::keyboard::KeyCode::ArrowLeft => state.scroll[0] += step,
+                        winit::keyboard::KeyCode::ArrowRight => state.scroll[0] -= step,
+                        winit::keyboard::KeyCode::Home => {
+                            state.scroll = [0.0, 0.0];
+                            state.zoom = 1.0;
+                        }
+                        _ => return,
+                    }
+                    state.update_params();
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state: btn_state, button: winit::event::MouseButton::Left, .. } => {
+                if let Some(state) = &mut self.state {
+                    state.dragging = btn_state == winit::event::ElementState::Pressed;
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some(state) = &mut self.state {
+                    let pos = [position.x as f32, position.y as f32];
+                    if state.dragging {
+                        let dx = pos[0] - state.last_mouse[0];
+                        let dy = pos[1] - state.last_mouse[1];
+                        state.scroll[0] += dx / state.zoom;
+                        state.scroll[1] += dy / state.zoom;
+                        state.update_params();
+                        if let Some(window) = &self.window {
+                            window.request_redraw();
+                        }
+                    }
+                    state.last_mouse = pos;
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -471,6 +522,34 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     add_line(INTER_VARIABLE, "36px EBH Runes (OTF): decorative outlines", 14.0, left, y, light_gray, None);
     y += 40.0;
 
+    // --- CFF/OTF cubic subdivision test ---
+    let nimbus_roman = try_load_font("/usr/share/fonts/opentype/urw-base35/NimbusRoman-Regular.otf");
+    let nimbus_sans = try_load_font("/usr/share/fonts/opentype/urw-base35/NimbusSans-Regular.otf");
+    let urw_bookman = try_load_font("/usr/share/fonts/opentype/urw-base35/URWBookman-Light.otf");
+    let zapf_chancery = try_load_font("/usr/share/fonts/opentype/urw-base35/Z003-MediumItalic.otf");
+
+    if let Some(ref font) = nimbus_roman {
+        add_line(font, "24px Nimbus Roman (CFF): Sphinx of black quartz, judge my vow", 24.0, left, y, white, None);
+        y += 38.0;
+        add_line(font, "48px Nimbus Roman (CFF): QWERTY &@#", 48.0, left, y, gold, None);
+        y += 68.0;
+    }
+
+    if let Some(ref font) = nimbus_sans {
+        add_line(font, "24px Nimbus Sans (CFF): Pack my box with five dozen liquor jugs", 24.0, left, y, white, None);
+        y += 38.0;
+    }
+
+    if let Some(ref font) = urw_bookman {
+        add_line(font, "24px URW Bookman Light (CFF): Curved serifs test", 24.0, left, y, cyan, None);
+        y += 38.0;
+    }
+
+    if let Some(ref font) = zapf_chancery {
+        add_line(font, "30px Zapf Chancery (CFF italic): Flowing script curves", 30.0, left, y, pink, None);
+        y += 48.0;
+    }
+
     // --- Known artifact glyphs (bold-weight curve joins) ---
     add_line(INTER_VARIABLE, "36px Inter Bold artifact test: a & a & a & a", 36.0, left, y, pink, Some(700.0));
     y += 54.0;
@@ -601,7 +680,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     // --- Buffers + bind groups ---
     let params = Params {
         screen_size: [config.width as f32, config.height as f32],
-        _pad: [0.0; 2],
+        scroll_offset: [0.0, 0.0],
     };
     let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("params buffer"),
@@ -741,6 +820,9 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
         instance_buffer,
         instance_count,
         zoom: 1.0,
+        scroll: [0.0, 0.0],
+        dragging: false,
+        last_mouse: [0.0, 0.0],
     }
 }
 

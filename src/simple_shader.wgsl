@@ -7,7 +7,7 @@ const K_BAND_TEXTURE_WIDTH: u32 = 4096u;
 
 struct Params {
     screen_size: vec2<f32>,
-    _pad: vec2<f32>,
+    scroll_offset: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -54,8 +54,8 @@ fn vs_main(instance: GlyphInstance, @builtin(vertex_index) vid: u32) -> VertexOu
     // Undilated screen-space position
     let base_pos = instance.screen_rect.xy + corner * instance.screen_rect.zw;
 
-    // Dilate: push each corner outward by 1 pixel in screen space
-    let screen_pos = base_pos + normal;
+    // Apply scroll offset and dilate (push each corner outward by 1 pixel)
+    let screen_pos = base_pos + params.scroll_offset + normal;
 
     // Convert to NDC: [0, screen_size] → [-1, 1], flip Y
     let ndc = vec2<f32>(

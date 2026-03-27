@@ -16,7 +16,7 @@ impl Viewport {
     pub fn new(device: &Device, cache: &Cache) -> Self {
         let params = Params {
             screen_size: [0.0, 0.0],
-            _pad: [0.0, 0.0],
+            scroll_offset: [0.0, 0.0],
         };
 
         let params_buffer = device.create_buffer(&BufferDescriptor {

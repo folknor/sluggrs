@@ -46,10 +46,11 @@
   possible today because cosmic-text never generates glyphs differing only
   on a non-weight axis.
 
-- [ ] Cubic-to-quadratic subdivision may be too shallow — outline.rs uses
+- [x] Cubic-to-quadratic subdivision may be too shallow — outline.rs uses
   recursive conversion with MAX_DEPTH = 3 and a simple error heuristic.
-  CFF-heavy fonts with complex cubic outlines may produce visible
-  approximation errors.
+  **Tested** with URW base35 CFF fonts (Nimbus Roman, Nimbus Sans, URW
+  Bookman, Zapf Chancery) at 24-48px — no visible artifacts. MAX_DEPTH=3
+  is sufficient for these real-world CFF outlines.
 
 - [ ] `prepare_with_depth` does too much — text_renderer.rs:57 handles font
   lookup, TTC face resolution, variation setup, outline extraction, fake
