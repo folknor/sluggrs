@@ -114,6 +114,70 @@
   **wgpu review**: confirmed safe. Optimization opportunity: band texture
   only reads .xy, so Rg32Uint would halve texel size. **wgpu review**
 
+## Bugs found by deep review (2026-03-27)
+
+- [ ] Premultiplied alpha mismatch — gpu_cache.rs sets
+  `PREMULTIPLIED_ALPHA_BLENDING` but shader outputs straight alpha:
+  `input.color * final_coverage`. For text with alpha < 1.0, RGB is not
+  multiplied by alpha, so semi-transparent text renders too bright. Fix:
+  `let alpha = input.color.a * final_coverage; return vec4(input.color.rgb * alpha, alpha);`
+  Fully opaque text unaffected. **bugs, slug, gpu, wgpu, arch review**
+
+- [ ] shader.wgsl (full shader) is stale and dangerous — has every bug we
+  fixed in simple_shader.wgsl: bitcast CalcRootCode (-0.0 Intel Arc bug),
+  unclamped fwidth (NaN), no b-guard (div-by-zero), old 1/65536 threshold,
+  no calc_band_loc wrapping (OOB reads), no depth support, incompatible
+  Params struct. Public via `SHADER_WGSL` in lib.rs. Either sync it, stop
+  exporting it, or delete it. **slug, gpu, wgpu review**
+
+- [ ] Dead ALU in fragment shader — `hband_loc` and `vband_loc` are computed
+  via calc_band_loc but never read; the loop body recomputes per iteration.
+  Two wasted calc_band_loc calls per fragment per ray direction. NVIDIA may
+  DCE this; Intel and AMD may not. Free to delete. **gpu, wgpu review**
+
+- [ ] b-guard t1=t2=0.0 may still contribute a crossing — slug/codex argues
+  that when calc_root_code is nonzero and t1=t2=0, the solver returns
+  x-coordinates at p12.x (not zero), so the curve contributes a crossing
+  at the start point instead of nothing. Needs investigation: does the
+  coverage contribution actually change the winding number, or do the
+  +1/-1 from t1/t2 cancel? **slug review**
+
+- [ ] GlyphOutline.bounds too tight for CFF fonts — curve_to() in
+  outline.rs updates bounds from cubic control points, but subdivide_cubic
+  produces quadratic CPs that can extend beyond the cubic hull. Currently
+  harmless because prepare_outline recomputes bounds. Trap for future use
+  of GlyphOutline.bounds directly. **bugs, fonts review**
+
+- [ ] trim() doc comment says "half" but code checks "quarter" —
+  text_atlas.rs:114 comment says "fewer than half" but code uses
+  `in_use < cached / 4`. Documentation-only bug. **bugs review**
+
+- [ ] trim() can invalidate already-prepared draw data — if
+  prepare→trim(reset)→render happens in sequence, render() draws from
+  the old instance buffer against the new (empty) atlas textures.
+  RemovedFromAtlas error variant exists but is never raised due to no
+  generation tracking. **bugs review**
+
+- [ ] Atlas growth unchecked against device limits — grow_curve_texture and
+  grow_band_texture double height without checking
+  `device.limits().max_texture_dimension_2d`. PrepareError::AtlasFull
+  exists but can never fire. Large CJK workloads on mobile/WebGPU devices
+  will produce wgpu validation panic instead of recoverable error.
+  **bugs, gpu, wgpu, arch review**
+
+- [ ] Scroll offset not accounted for in CPU-side culling —
+  text_renderer.rs clips glyphs against screen bounds without scroll_offset,
+  but shader applies scroll_offset to screen position. Dormant while
+  scroll_offset has no public setter on Viewport, but will cause
+  first/last visible glyphs to flicker once scroll API is exposed.
+  **bugs review**
+
+- [ ] Curve texel pair row-straddling invariant undocumented — shader reads
+  p3 at curve_loc.x + 1, same row. If curve_loc.x were 4095, this is OOB.
+  Currently safe because curve_cursor is always even and texture width is
+  even, so x is never 4095. Invariant is implicit. Add debug assertion
+  or document. **gpu, fonts, wgpu review**
+
 ## Before shipping
 
 - [ ] Non-vector glyph fallback — color emoji and bitmap-only fonts currently
@@ -172,6 +236,43 @@ cleanup in upload_glyph/build_bands/prepare_with_depth would be diminishing retu
 build_bands improving less in time (-18.5%) than allocation (-43.3%) confirms it is
 partly compute/sort bound (per-band sorting in band.rs), not just allocator bound.
 
+### Warm-frame waste (found by deep perf review)
+
+- [ ] face_index lookup on every glyph, every frame — text_renderer.rs:100
+  calls `font_system.db().face()` for every glyph including cache hits.
+  Only needed in cache-miss block and units_per_em fallback. Move it inside
+  those blocks. On warm frames this becomes zero lookups. **perf review**
+
+- [ ] Double hash per cache-hit glyph — text_renderer.rs:107+158 does
+  `contains_key` then `get`, hashing GlyphKey twice per warm glyph. Replace
+  with entry API or `get_or_insert_with` on GlyphMap. **perf review**
+
+- [ ] mark_used HashSet insertion per glyph per frame — glyph_cache.rs:106
+  inserts into HashSet<GlyphKey> every frame. trim() only needs a count,
+  not the set. Replace with generation counter on GlyphEntry or simple
+  in_use_count counter. **perf review**
+
+- [ ] Per-glyph color normalization in hot loop — text_renderer.rs:214 does
+  4 byte-to-float divisions for every glyph. The dominant case is
+  default_color which could be precomputed once per TextArea.
+  **perf review**
+
+### Cold-frame waste (found by deep perf review)
+
+- [ ] band_data.entries Vec allocated per cache-miss glyph — build_bands
+  returns owned BandData with fresh Vec. Could use scratch Vec on TextAtlas
+  like scratch_curve_texels. **perf review**
+
+- [ ] Per-glyph write_texture calls — each cache-miss glyph produces 2+
+  write_texture calls. Batching curve uploads for all glyphs into a single
+  write would reduce driver overhead. At 92 glyphs = 184+ wgpu command
+  submissions on cold frame. **perf review**
+
+- [ ] CPU-side texture mirrors only clear() on reset, not shrink — after a
+  large working-set spike, curve_data and band_data keep their capacity
+  indefinitely even though GPU textures are recreated at 1 row. Use
+  `shrink_to_fit()` or `= Vec::new()` in reset_atlas. **perf review**
+
 ### Parked — pursue only if profiling points here again
 
 - [ ] Band builder algorithmic work — build_bands is partly compute-bound. Targets:
@@ -219,12 +320,12 @@ partly compute/sort bound (per-band sorting in band.rs), not just allocator boun
   2-texels-per-curve layout is already optimal for RGBA32Float. Verify we're
   not doing redundant loads.
 
-- [ ] Branch divergence assessment — the `if abs(a.y) < 0.5` branch in
+- [ ] Branch divergence assessment — the `if abs(a.y) < 0.25` branch in
   solve_horiz_poly causes warp divergence between linear and quadratic paths.
-  **slug review** found this threshold is too high: at 0.5, genuine quadratics
-  with modest curvature enter the linear path (see bugs section). The branch
-  prediction assumption ("rare, only perturbed lines") may not hold.
-  Confirm with Nsight or RGP if available.
+  Threshold lowered from 0.5 to 0.25 (see bugs section), reducing the
+  number of genuine quadratics entering the linear path, but some shallow
+  CFF-derived curves may still qualify. Confirm divergence rate with
+  Nsight or RGP if available.
 
 - [ ] Band bounding-box pre-check — if a band's y-range doesn't intersect the
   current pixel (within half a pixel), skip the entire band loop. Could
@@ -261,6 +362,44 @@ partly compute/sort bound (per-band sorting in band.rs), not just allocator boun
 - [ ] Band count heuristic tuning — currently 4/8/12 bands based on curve count
   thresholds (10/30). Profile whether different thresholds or continuous scaling
   improves shader early-exit rates.
+
+## Architecture (found by deep review)
+
+- [ ] Internal modules are pub — lib.rs makes band, glyph_cache, outline,
+  prepare all public. Downstream crates can depend on QuadCurve,
+  GlyphEntry, build_bands etc, locking implementation as semver surface.
+  Change to `pub(crate) mod` for internals. **arch review**
+
+- [ ] GlyphInstance 84-byte stride not 16-byte aligned — depth field makes
+  struct 84 bytes (5×16 + 4). Some GPU architectures fetch vertex data in
+  16-byte chunks, wasting 12 bytes per instance on bus. Pad to 96 bytes
+  (add `_pad: [f32; 3]`) or pack depth into glyph_data.w. Verify
+  84-byte stride works on all backends first. **perf, arch review**
+
+- [ ] Scroll offset has no public API — Viewport::update only accepts
+  Resolution, scroll_offset in Params is always [0,0]. The shader reads
+  it but it's unreachable from the library API. Need
+  `Viewport::set_scroll_offset()` or extend `update()`. **wgpu, arch review**
+
+- [ ] ColorMode has no effect — TextAtlas::color_mode stored with
+  `#[allow(dead_code)]` but never read. Shader always does same blend.
+  May produce wrong results in linear-RGB framebuffers with sRGB colors
+  (the Web mode). **arch review**
+
+- [ ] TextRenderer/TextAtlas coupling — renderer reaches into atlas
+  internals via pub(crate). Policy, cache state, and upload orchestration
+  spread across both types. Any change to classification, eviction, or
+  fallback routing cuts across both modules. **arch review**
+
+- [ ] API doesn't encode TextRenderer↔TextAtlas lifetime relationship —
+  render() accepts any &TextAtlas but the pipeline was baked from a
+  specific atlas at construction. Mispairing is type-correct but
+  produces wrong rendering. **arch review**
+
+- [ ] CommandEncoder parameter is unnecessarily restrictive —
+  prepare_with_depth takes `&mut CommandEncoder` but never uses it.
+  The `&mut` borrow prevents caller from using encoder during prepare.
+  Cryoglyph compatibility constraint. **arch review**
 
 ## Polish
 
