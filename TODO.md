@@ -243,11 +243,11 @@ partly compute/sort bound (per-band sorting in band.rs), not just allocator boun
   Only needed in cache-miss block and units_per_em fallback. Move it inside
   those blocks. On warm frames this becomes zero lookups. **perf review**
 
-- [ ] Double hash per cache-hit glyph — text_renderer.rs:107+158 does
+- [x] Double hash per cache-hit glyph — text_renderer.rs:107+158 does
   `contains_key` then `get`, hashing GlyphKey twice per warm glyph. Replace
   with entry API or `get_or_insert_with` on GlyphMap. **perf review**
 
-- [ ] mark_used HashSet insertion per glyph per frame — glyph_cache.rs:106
+- [x] mark_used HashSet insertion per glyph per frame — glyph_cache.rs:106
   inserts into HashSet<GlyphKey> every frame. trim() only needs a count,
   not the set. Replace with generation counter on GlyphEntry or simple
   in_use_count counter. **perf review**

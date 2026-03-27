@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 /// Cache key for a glyph's outline geometry.
@@ -48,6 +48,8 @@ pub struct GlyphEntry {
     pub band_transform: [f32; 4],
     /// Glyph bounding box in em-space.
     pub bounds: [f32; 4],
+    /// Frame epoch when this glyph was last used (for trim heuristic).
+    pub(crate) last_used_epoch: u32,
 }
 
 /// Sentinel for glyphs that have no vector outline (emoji, bitmap fonts).
@@ -57,19 +59,49 @@ pub const NON_VECTOR_GLYPH: GlyphEntry = GlyphEntry {
     band_max_y: 0,
     band_transform: [0.0; 4],
     bounds: [0.0; 4],
+    last_used_epoch: 0,
 };
 
 impl GlyphEntry {
+    /// Construct a new GlyphEntry. Sets `last_used_epoch` to 0 (not yet used).
+    pub fn new(
+        band_offset: u32,
+        band_max_x: u32,
+        band_max_y: u32,
+        band_transform: [f32; 4],
+        bounds: [f32; 4],
+    ) -> Self {
+        Self {
+            band_offset,
+            band_max_x,
+            band_max_y,
+            band_transform,
+            bounds,
+            last_used_epoch: 0,
+        }
+    }
+
     pub fn is_non_vector(&self) -> bool {
         self.band_offset == u32::MAX
     }
 }
 
-/// The glyph cache maps GlyphKey → GlyphEntry, with per-frame usage tracking.
-#[derive(Default)]
+/// The glyph cache maps GlyphKey → GlyphEntry, with per-frame usage tracking
+/// via epoch counter (no HashSet).
 pub struct GlyphMap {
     map: HashMap<GlyphKey, GlyphEntry>,
-    in_use: HashSet<GlyphKey>,
+    current_epoch: u32,
+    frame_used: usize,
+}
+
+impl Default for GlyphMap {
+    fn default() -> Self {
+        Self {
+            map: HashMap::new(),
+            current_epoch: 1,
+            frame_used: 0,
+        }
+    }
 }
 
 impl GlyphMap {
@@ -77,21 +109,28 @@ impl GlyphMap {
         Self::default()
     }
 
-    pub fn get(&self, key: &GlyphKey) -> Option<&GlyphEntry> {
-        self.map.get(key)
+    /// Look up a glyph and mark it used this frame. Single hash.
+    /// Returns a copy of the entry (GlyphEntry is Copy).
+    pub fn get_and_mark_used(&mut self, key: &GlyphKey) -> Option<GlyphEntry> {
+        let entry = self.map.get_mut(key)?;
+        if entry.last_used_epoch != self.current_epoch {
+            entry.last_used_epoch = self.current_epoch;
+            self.frame_used += 1;
+        }
+        Some(*entry)
     }
 
-    pub fn insert(&mut self, key: GlyphKey, entry: GlyphEntry) {
+    /// Insert a new entry and mark it used. Single hash.
+    pub fn insert_and_mark_used(&mut self, key: GlyphKey, mut entry: GlyphEntry) -> GlyphEntry {
+        entry.last_used_epoch = self.current_epoch;
         self.map.insert(key, entry);
-    }
-
-    pub fn contains_key(&self, key: &GlyphKey) -> bool {
-        self.map.contains_key(key)
+        self.frame_used += 1;
+        entry
     }
 
     pub fn clear(&mut self) {
         self.map.clear();
-        self.in_use.clear();
+        self.frame_used = 0;
     }
 
     pub fn len(&self) -> usize {
@@ -102,18 +141,25 @@ impl GlyphMap {
         self.map.is_empty()
     }
 
-    /// Mark a glyph as used this frame.
-    pub fn mark_used(&mut self, key: GlyphKey) {
-        self.in_use.insert(key);
+    pub fn contains_key(&self, key: &GlyphKey) -> bool {
+        self.map.contains_key(key)
     }
 
-    /// Clear the per-frame usage set (called from trim).
-    pub fn clear_usage(&mut self) {
-        self.in_use.clear();
+    /// Advance to the next frame. Resets per-frame usage counter.
+    pub fn next_frame(&mut self) {
+        self.frame_used = 0;
+        self.current_epoch = self.current_epoch.wrapping_add(1);
+        // Epoch 0 is the sentinel "never used" value
+        if self.current_epoch == 0 {
+            self.current_epoch = 1;
+            for entry in self.map.values_mut() {
+                entry.last_used_epoch = 0;
+            }
+        }
     }
 
     /// Number of glyphs used this frame.
     pub fn in_use_count(&self) -> usize {
-        self.in_use.len()
+        self.frame_used
     }
 }

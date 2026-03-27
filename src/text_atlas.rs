@@ -1,5 +1,5 @@
 use crate::band::CurveLocation;
-use crate::glyph_cache::{GlyphEntry, GlyphKey, GlyphMap, NON_VECTOR_GLYPH};
+use crate::glyph_cache::{GlyphEntry, GlyphMap};
 use crate::gpu_cache::Cache;
 use crate::prepare::GpuOutline;
 use crate::types::ColorMode;
@@ -142,7 +142,7 @@ impl TextAtlas {
             }
         }
 
-        self.glyphs.clear_usage();
+        self.glyphs.next_frame();
     }
 
     /// Full atlas reset: recreate textures at initial size, clear all caches.
@@ -269,13 +269,10 @@ impl TextAtlas {
             band_max_y: band_data.band_count_y.saturating_sub(1),
             band_transform: band_data.band_transform,
             bounds: gpu_outline.bounds,
+            last_used_epoch: 0,
         }
     }
 
-    /// Mark a glyph as non-vector (no outline available).
-    pub(crate) fn mark_non_vector(&mut self, key: GlyphKey) {
-        self.glyphs.insert(key, NON_VECTOR_GLYPH);
-    }
 
     /// Upload f32 texels at a linear offset, handling row wrapping.
     fn upload_wrapped_texels_f32(

@@ -111,11 +111,11 @@ fn non_vector_glyph_tracked_in_glyph_map() {
 
     // Mark it as non-vector (this is the pattern used in the rendering pipeline
     // when outline extraction fails or returns no curves).
-    map.insert(key, NON_VECTOR_GLYPH);
+    map.insert_and_mark_used(key, NON_VECTOR_GLYPH);
 
     // Verify the atlas records it and reports it as non-vector.
     let entry = map
-        .get(&key)
+        .get_and_mark_used(&key)
         .expect("GlyphMap should contain the non-vector entry after insert");
     assert!(
         entry.is_non_vector(),
@@ -148,22 +148,22 @@ fn non_vector_entry_does_not_shadow_real_entries() {
         cache_key_flags: cosmic_text::CacheKeyFlags::empty(),
     };
 
-    let real_entry = GlyphEntry {
-        band_offset: 42,
-        band_max_x: 3,
-        band_max_y: 4,
-        band_transform: [1.0, 2.0, 3.0, 4.0],
-        bounds: [0.0, 0.0, 100.0, 100.0],
-    };
+    let real_entry = GlyphEntry::new(
+        42,
+        3,
+        4,
+        [1.0, 2.0, 3.0, 4.0],
+        [0.0, 0.0, 100.0, 100.0],
+    );
 
-    map.insert(non_vector_key, NON_VECTOR_GLYPH);
-    map.insert(real_key, real_entry);
+    map.insert_and_mark_used(non_vector_key, NON_VECTOR_GLYPH);
+    map.insert_and_mark_used(real_key, real_entry);
 
     // Non-vector entry is still non-vector.
-    assert!(map.get(&non_vector_key).expect("should have non_vector entry").is_non_vector());
+    assert!(map.get_and_mark_used(&non_vector_key).expect("should have non_vector entry").is_non_vector());
 
     // Real entry is NOT non-vector.
-    let got = map.get(&real_key).expect("should have real entry");
+    let got = map.get_and_mark_used(&real_key).expect("should have real entry");
     assert!(
         !got.is_non_vector(),
         "A real glyph entry should not be flagged as non-vector"

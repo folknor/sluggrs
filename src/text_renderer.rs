@@ -1,4 +1,4 @@
-use crate::glyph_cache::GlyphKey;
+use crate::glyph_cache::{GlyphKey, NON_VECTOR_GLYPH};
 use crate::outline::extract_outline;
 use crate::prepare::{apply_italic_shear, prepare_outline};
 use crate::text_atlas::TextAtlas;
@@ -104,74 +104,62 @@ impl TextRenderer {
                 for glyph in run.glyphs {
                     let key = GlyphKey::from_layout_glyph(glyph);
 
-                    // Cache lookup or extract
-                    if !atlas.glyphs.contains_key(&key) {
-                        // Face index within font collections (TTC)
+                    // Single hash: look up + mark used, or fall through to extraction
+                    let entry = if let Some(e) = atlas.glyphs.get_and_mark_used(&key) {
+                        e
+                    } else {
+                        // Cache miss — extract outline and upload
                         let face_index = font_system
                             .db()
                             .face(glyph.font_id)
                             .map(|info| info.index)
                             .unwrap_or(0);
-                        let font = font_system.get_font(glyph.font_id, glyph.font_weight);
-                        let entry = match font {
-                            Some(font) => {
-                                // Populate units_per_em cache while we have the font ref,
-                                // avoiding a second get_font() call on the hot path below.
-                                if !self.units_per_em_cache.contains_key(&glyph.font_id) {
-                                    if let Ok(skrifa_font) = skrifa::FontRef::from_index(font.data(), face_index) {
-                                        use skrifa::raw::TableProvider;
-                                        let v = skrifa_font.head().map(|h| h.units_per_em() as f32).unwrap_or(1000.0);
-                                        self.units_per_em_cache.insert(glyph.font_id, v);
-                                    }
-                                }
-
-                                // Set up variation coordinates (weight axis for variable fonts)
-                                let wght_tag = skrifa::Tag::new(b"wght");
-                                let location = [VariationSetting::new(wght_tag, glyph.font_weight.0 as f32)];
-                                match extract_outline(font.data(), face_index, glyph.glyph_id, &location) {
-                                    Some(outline) => {
-                                        let mut gpu_outline = prepare_outline(&outline);
-                                        if glyph.cache_key_flags.contains(
-                                            cosmic_text::CacheKeyFlags::FAKE_ITALIC,
-                                        ) {
-                                            apply_italic_shear(&mut gpu_outline);
-                                        }
-                                        let num_curves = gpu_outline.curves.len();
-                                        let band_count = if num_curves < 10 {
-                                            4
-                                        } else if num_curves < 30 {
-                                            8
-                                        } else {
-                                            12
-                                        };
-                                        atlas.upload_glyph(device, queue, &gpu_outline, band_count, band_count)
-                                    }
-                                    None => {
-                                        // Non-vector glyph — mark cached and in-use
-                                        atlas.mark_non_vector(key);
-                                        atlas.glyphs.mark_used(key);
-                                        continue;
-                                    }
-                                }
-                            }
+                        let font = match font_system.get_font(glyph.font_id, glyph.font_weight) {
+                            Some(f) => f,
                             None => {
                                 log::warn!("Font not found for glyph {key:?}");
                                 continue;
                             }
                         };
-                        atlas.glyphs.insert(key, entry);
-                    }
 
-                    let entry = match atlas.glyphs.get(&key) {
-                        Some(&e) => {
-                            atlas.glyphs.mark_used(key);
-                            if e.is_non_vector() {
-                                continue;
+                        if let std::collections::hash_map::Entry::Vacant(e) = self.units_per_em_cache.entry(glyph.font_id) {
+                            if let Ok(skrifa_font) = skrifa::FontRef::from_index(font.data(), face_index) {
+                                use skrifa::raw::TableProvider;
+                                let v = skrifa_font.head().map(|h| h.units_per_em() as f32).unwrap_or(1000.0);
+                                e.insert(v);
                             }
-                            e
                         }
-                        _ => continue,
+
+                        let wght_tag = skrifa::Tag::new(b"wght");
+                        let location = [VariationSetting::new(wght_tag, glyph.font_weight.0 as f32)];
+
+                        let entry = match extract_outline(font.data(), face_index, glyph.glyph_id, &location) {
+                            Some(outline) => {
+                                let mut gpu_outline = prepare_outline(&outline);
+                                if glyph.cache_key_flags.contains(
+                                    cosmic_text::CacheKeyFlags::FAKE_ITALIC,
+                                ) {
+                                    apply_italic_shear(&mut gpu_outline);
+                                }
+                                let num_curves = gpu_outline.curves.len();
+                                let band_count = if num_curves < 10 {
+                                    4
+                                } else if num_curves < 30 {
+                                    8
+                                } else {
+                                    12
+                                };
+                                atlas.upload_glyph(device, queue, &gpu_outline, band_count, band_count)
+                            }
+                            None => NON_VECTOR_GLYPH,
+                        };
+
+                        atlas.glyphs.insert_and_mark_used(key, entry)
                     };
+
+                    if entry.is_non_vector() {
+                        continue;
+                    }
 
                     // Get font metrics for scaling (cached per font_id).
                     // Usually populated in the glyph cache-miss block above;

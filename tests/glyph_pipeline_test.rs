@@ -37,13 +37,13 @@ fn make_key(font_id_val: u32, glyph_id: u16, weight: u16, flags_bits: u32) -> Gl
 }
 
 fn make_dummy_entry(band_offset: u32) -> GlyphEntry {
-    GlyphEntry {
+    GlyphEntry::new(
         band_offset,
-        band_max_x: 3,
-        band_max_y: 4,
-        band_transform: [1.0, 2.0, 3.0, 4.0],
-        bounds: [0.0, 0.0, 100.0, 100.0],
-    }
+        3,
+        4,
+        [1.0, 2.0, 3.0, 4.0],
+        [0.0, 0.0, 100.0, 100.0],
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -166,10 +166,10 @@ fn glyph_map_insert_and_get() {
     let key = make_key(0, 42, 400, 0);
     let entry = make_dummy_entry(100);
 
-    map.insert(key, entry);
+    map.insert_and_mark_used(key, entry);
 
     assert!(map.contains_key(&key));
-    let got = map.get(&key).expect("Should find inserted key");
+    let got = map.get_and_mark_used(&key).expect("Should find inserted key");
     assert_eq!(got.band_offset, 100);
 }
 
@@ -178,22 +178,22 @@ fn glyph_map_len() {
     let mut map = GlyphMap::new();
     assert_eq!(map.len(), 0);
 
-    map.insert(make_key(0, 1, 400, 0), make_dummy_entry(0));
+    map.insert_and_mark_used(make_key(0, 1, 400, 0), make_dummy_entry(0));
     assert_eq!(map.len(), 1);
 
-    map.insert(make_key(0, 2, 400, 0), make_dummy_entry(1));
+    map.insert_and_mark_used(make_key(0, 2, 400, 0), make_dummy_entry(1));
     assert_eq!(map.len(), 2);
 
     // Re-insert same key should overwrite, not increase length
-    map.insert(make_key(0, 1, 400, 0), make_dummy_entry(99));
+    map.insert_and_mark_used(make_key(0, 1, 400, 0), make_dummy_entry(99));
     assert_eq!(map.len(), 2);
 }
 
 #[test]
 fn glyph_map_clear() {
     let mut map = GlyphMap::new();
-    map.insert(make_key(0, 1, 400, 0), make_dummy_entry(0));
-    map.insert(make_key(0, 2, 400, 0), make_dummy_entry(1));
+    map.insert_and_mark_used(make_key(0, 1, 400, 0), make_dummy_entry(0));
+    map.insert_and_mark_used(make_key(0, 2, 400, 0), make_dummy_entry(1));
     assert_eq!(map.len(), 2);
 
     map.clear();
@@ -203,8 +203,8 @@ fn glyph_map_clear() {
 
 #[test]
 fn glyph_map_get_missing_key_returns_none() {
-    let map = GlyphMap::new();
-    assert!(map.get(&make_key(0, 999, 400, 0)).is_none());
+    let mut map = GlyphMap::new();
+    assert!(map.get_and_mark_used(&make_key(0, 999, 400, 0)).is_none());
 }
 
 // ---------------------------------------------------------------------------
@@ -216,31 +216,32 @@ fn glyph_map_usage_tracking_basic() {
     let mut map = GlyphMap::new();
     let k1 = make_key(0, 1, 400, 0);
     let k2 = make_key(0, 2, 400, 0);
-    map.insert(k1, make_dummy_entry(0));
-    map.insert(k2, make_dummy_entry(1));
+    map.insert_and_mark_used(k1, make_dummy_entry(0));
+    map.insert_and_mark_used(k2, make_dummy_entry(1));
 
+    // Start a new frame so usage counts reset
+    map.next_frame();
     assert_eq!(map.in_use_count(), 0);
 
-    map.mark_used(k1);
+    map.get_and_mark_used(&k1);
     assert_eq!(map.in_use_count(), 1);
 
-    map.mark_used(k2);
+    map.get_and_mark_used(&k2);
     assert_eq!(map.in_use_count(), 2);
 
     // Marking same key again doesn't increase count
-    map.mark_used(k1);
+    map.get_and_mark_used(&k1);
     assert_eq!(map.in_use_count(), 2);
 }
 
 #[test]
-fn glyph_map_clear_usage_resets_in_use() {
+fn glyph_map_next_frame_resets_in_use() {
     let mut map = GlyphMap::new();
     let k1 = make_key(0, 1, 400, 0);
-    map.insert(k1, make_dummy_entry(0));
-    map.mark_used(k1);
+    map.insert_and_mark_used(k1, make_dummy_entry(0));
     assert_eq!(map.in_use_count(), 1);
 
-    map.clear_usage();
+    map.next_frame();
     assert_eq!(map.in_use_count(), 0);
     // Glyph is still cached
     assert!(map.contains_key(&k1));
@@ -250,8 +251,7 @@ fn glyph_map_clear_usage_resets_in_use() {
 fn glyph_map_clear_resets_both_map_and_usage() {
     let mut map = GlyphMap::new();
     let k1 = make_key(0, 1, 400, 0);
-    map.insert(k1, make_dummy_entry(0));
-    map.mark_used(k1);
+    map.insert_and_mark_used(k1, make_dummy_entry(0));
 
     map.clear();
     assert_eq!(map.len(), 0);
@@ -262,14 +262,16 @@ fn glyph_map_clear_resets_both_map_and_usage() {
 fn non_vector_glyph_can_be_marked_in_use() {
     let mut map = GlyphMap::new();
     let k1 = make_key(0, 1, 400, 0);
-    map.insert(k1, NON_VECTOR_GLYPH);
-    map.mark_used(k1);
+    map.insert_and_mark_used(k1, NON_VECTOR_GLYPH);
+
+    // Start a new frame so we can test mark-used via get_and_mark_used
+    map.next_frame();
+    map.get_and_mark_used(&k1);
     assert_eq!(map.in_use_count(), 1);
 
     // Non-vector and vector glyphs both count toward in_use
     let k2 = make_key(0, 2, 400, 0);
-    map.insert(k2, make_dummy_entry(42));
-    map.mark_used(k2);
+    map.insert_and_mark_used(k2, make_dummy_entry(42));
     assert_eq!(map.in_use_count(), 2);
 }
 
