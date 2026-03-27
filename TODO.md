@@ -238,7 +238,7 @@ partly compute/sort bound (per-band sorting in band.rs), not just allocator boun
 
 ### Warm-frame waste (found by deep perf review)
 
-- [ ] face_index lookup on every glyph, every frame — text_renderer.rs:100
+- [x] face_index lookup on every glyph, every frame — text_renderer.rs:100
   calls `font_system.db().face()` for every glyph including cache hits.
   Only needed in cache-miss block and units_per_em fallback. Move it inside
   those blocks. On warm frames this becomes zero lookups. **perf review**
@@ -252,7 +252,7 @@ partly compute/sort bound (per-band sorting in band.rs), not just allocator boun
   not the set. Replace with generation counter on GlyphEntry or simple
   in_use_count counter. **perf review**
 
-- [ ] Per-glyph color normalization in hot loop — text_renderer.rs:214 does
+- [x] Per-glyph color normalization in hot loop — text_renderer.rs:214 does
   4 byte-to-float divisions for every glyph. The dominant case is
   default_color which could be precomputed once per TextArea.
   **perf review**

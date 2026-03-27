@@ -91,20 +91,27 @@ impl TextRenderer {
                 .skip_while(|run| !is_run_visible(run))
                 .take_while(is_run_visible);
 
+            // Precompute default color for this text area (avoids per-glyph division)
+            let dc = text_area.default_color;
+            let default_color = [
+                dc.r() as f32 / 255.0,
+                dc.g() as f32 / 255.0,
+                dc.b() as f32 / 255.0,
+                dc.a() as f32 / 255.0,
+            ];
+
             for run in layout_runs {
                 for glyph in run.glyphs {
                     let key = GlyphKey::from_layout_glyph(glyph);
 
-                    // Face index within font collections (TTC). Needed for
-                    // both outline extraction and units_per_em lookup.
-                    let face_index = font_system
-                        .db()
-                        .face(glyph.font_id)
-                        .map(|info| info.index)
-                        .unwrap_or(0);
-
                     // Cache lookup or extract
                     if !atlas.glyphs.contains_key(&key) {
+                        // Face index within font collections (TTC)
+                        let face_index = font_system
+                            .db()
+                            .face(glyph.font_id)
+                            .map(|info| info.index)
+                            .unwrap_or(0);
                         let font = font_system.get_font(glyph.font_id, glyph.font_weight);
                         let entry = match font {
                             Some(font) => {
@@ -172,6 +179,11 @@ impl TextRenderer {
                     let units_per_em = match self.units_per_em_cache.get(&glyph.font_id) {
                         Some(&v) => v,
                         None => {
+                            let face_index = font_system
+                                .db()
+                                .face(glyph.font_id)
+                                .map(|info| info.index)
+                                .unwrap_or(0);
                             let font = match font_system.get_font(glyph.font_id, glyph.font_weight) {
                                 Some(f) => f,
                                 None => continue,
@@ -212,21 +224,13 @@ impl TextRenderer {
                     }
 
                     let color = match glyph.color_opt {
-                        Some(c) => {
-                            let r = c.r() as f32 / 255.0;
-                            let g = c.g() as f32 / 255.0;
-                            let b = c.b() as f32 / 255.0;
-                            let a = c.a() as f32 / 255.0;
-                            [r, g, b, a]
-                        }
-                        None => {
-                            let c = text_area.default_color;
-                            let r = c.r() as f32 / 255.0;
-                            let g = c.g() as f32 / 255.0;
-                            let b = c.b() as f32 / 255.0;
-                            let a = c.a() as f32 / 255.0;
-                            [r, g, b, a]
-                        }
+                        Some(c) => [
+                            c.r() as f32 / 255.0,
+                            c.g() as f32 / 255.0,
+                            c.b() as f32 / 255.0,
+                            c.a() as f32 / 255.0,
+                        ],
+                        None => default_color,
                     };
 
                     let depth = metadata_to_depth(glyph.metadata);
