@@ -19,6 +19,51 @@
 - [x] Hotpath instrumentation + brokkr integration (timing + alloc profiling)
 - [x] KV metric emissions (glyph counts, texture usage, cold/warm timings)
 
+## Bugs found by review (2026-03-27)
+
+- [ ] `char_to_glyph_id` hardcodes face 0 — outline.rs:191 uses
+  `FontRef::new(font_data)` while outline.rs:165 correctly takes face_index
+  and calls `from_index`. For TTC collections, glyph mapping can come from a
+  different face than the outline/metrics path.
+
+- [ ] Empty outlines produce invalid bounds — prepare.rs:28 and prepare.rs:79
+  return `[f32::MAX, f32::MAX, f32::MIN, f32::MIN]` when curves are empty.
+  The main path avoids this (outline.rs:180 returns None for empty pens), but
+  the invariant is not enforced at the API boundary. Direct callers of
+  `prepare_outline` or `apply_italic_shear` can produce nonsensical bounds.
+
+- [ ] Variation handling is narrow — text_renderer.rs synthesizes only a `wght`
+  axis from `glyph.font_weight`. Arbitrary variation coordinates from
+  cosmic-text are not propagated. Fonts with width, slant, optical size, or
+  custom axes will render with default values.
+
+- [ ] Glyph cache key doesn't cover full variation space — glyph_cache.rs keys
+  on font_id, glyph_id, weight, and cache_key_flags. Two glyphs that differ
+  only in a non-weight variation axis will hash to the same entry.
+
+- [ ] Cubic-to-quadratic subdivision may be too shallow — outline.rs uses
+  recursive conversion with MAX_DEPTH = 3 and a simple error heuristic.
+  CFF-heavy fonts with complex cubic outlines may produce visible
+  approximation errors.
+
+- [ ] `prepare_with_depth` does too much — text_renderer.rs:57 handles font
+  lookup, TTC face resolution, variation setup, outline extraction, fake
+  italic, cache insertion, non-vector classification, instance packing, and
+  vertex upload. Renderer and atlas are tightly coupled through pub(crate)
+  internals.
+
+- [ ] Dead API surface — `prepare_with_depth` accepts depth mapping but
+  discards it (local `_depth` at text_renderer.rs:232). `RenderError`
+  variants `RemovedFromAtlas` and `ScreenResolutionChanged` are public but
+  `render()` always returns `Ok(())`. `SwashCache` and `CommandEncoder` are
+  in the compatibility signature but unused.
+
+- [ ] Emoji classification should be an explicit API — non-vector glyphs are
+  currently a sentinel `GlyphEntry` in glyph_cache.rs:53, skipped as a side
+  effect of prepare(). For clean two-pass routing (sluggrs + cryoglyph
+  fallback), classification needs to be a separate step, not incidental to
+  prepare().
+
 ## Before shipping
 
 - [ ] Non-vector glyph fallback — color emoji and bitmap-only fonts currently

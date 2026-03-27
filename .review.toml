@@ -1,0 +1,32 @@
+[bugs.plantasjen]
+claude = "40a0006f-1ed3-49f8-a872-a4026b7e5afa"
+codex = "019d2de6-8032-7973-8110-98bab46bf735"
+
+[perf.plantasjen]
+claude = "49f8a04b-4e60-4869-80ed-1cdaa366e452"
+codex = "019d2deb-50f9-7982-b696-80307772c3fa"
+
+[slug.plantasjen]
+claude = "5c91ddae-23a7-46af-ae43-da6c8aa76af3"
+codex = "019d2dee-44c3-7c81-8d2b-07a0fd15559e"
+
+[gpu.plantasjen]
+claude = "4297b691-6a8e-4f8c-b6f4-f8dce88d6319"
+codex = "019d2dfe-d5b5-77d2-a442-ce6bb88cbf84"
+
+[fonts.plantasjen]
+claude = "7aa9ec83-bca2-49a1-8d2e-11ee5986b26f"
+codex = "019d2e0a-2f34-7a83-bdeb-49325387e840"
+
+[wgpu.plantasjen]
+claude = "6163230d-e1cc-4dfd-bd67-e65dfe18dca2"
+codex = "019d2e0c-ea8d-7d00-9597-75e0a97efabe"
+
+[arch.plantasjen]
+claude = "42378adb-8a7b-494b-8e85-542767f9836e"
+codex = "019d2e0f-e767-7f92-9908-269f0f47e00d"
+
+[_groups]
+sweep = ["bugs", "perf", "slug", "gpu"]
+design = ["fonts", "wgpu", "arch"]
+everything = ["bugs", "perf", "slug", "gpu", "fonts", "wgpu", "arch"]

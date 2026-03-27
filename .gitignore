@@ -1,6 +1,9 @@
-repos/
+repos
+research
 target
-data/
+data
+.plans
+.claude
 .brokkr/*
 !.brokkr/results.db
 examples/fonts/TisaPro-Regular.otf
