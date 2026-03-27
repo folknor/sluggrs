@@ -52,11 +52,10 @@
   vertex upload. Renderer and atlas are tightly coupled through pub(crate)
   internals.
 
-- [ ] Dead API surface — `prepare_with_depth` accepts depth mapping but
-  discards it (local `_depth` at text_renderer.rs:232). `RenderError`
-  variants `RemovedFromAtlas` and `ScreenResolutionChanged` are public but
-  `render()` always returns `Ok(())`. `SwashCache` and `CommandEncoder` are
-  in the compatibility signature but unused.
+- [ ] Dead API surface — `RenderError` variants `RemovedFromAtlas` and
+  `ScreenResolutionChanged` are public but `render()` always returns
+  `Ok(())`. `SwashCache` and `CommandEncoder` are in the compatibility
+  signature but unused.
 
 - [ ] Emoji classification should be an explicit API — non-vector glyphs are
   currently a sentinel `GlyphEntry` in glyph_cache.rs:53, skipped as a side
@@ -122,7 +121,7 @@
 - [x] Trim/eviction — per-frame usage tracking via glyphs_in_use HashSet.
   Pressure-based reset when <50% of cached glyphs are in use (threshold 256).
   Matches cryoglyph frame-boundary semantics.
-- [ ] Depth plumbing — prepare_with_depth accepts the callback but discards
+- [x] Depth plumbing — prepare_with_depth accepts the callback but discards
   the depth value (`_depth` at text_renderer.rs:232), and the vertex shader
   hardcodes `z = 0.0`. All glyphs render at the same depth. When iced uses
   depth-stencil for widget layering, overlapping text (tooltips, dropdowns,

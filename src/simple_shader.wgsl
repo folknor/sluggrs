@@ -26,6 +26,8 @@ struct GlyphInstance {
     @location(3) glyph_data: vec4<u32>,
     // Color
     @location(4) color: vec4<f32>,
+    // Depth for widget layer ordering (from iced's metadata_to_depth)
+    @location(5) depth: f32,
 }
 
 struct VertexOutput {
@@ -61,7 +63,7 @@ fn vs_main(instance: GlyphInstance, @builtin(vertex_index) vid: u32) -> VertexOu
         -(screen_pos.y / params.screen_size.y * 2.0 - 1.0),
     );
 
-    output.position = vec4<f32>(ndc, 0.0, 1.0);
+    output.position = vec4<f32>(ndc, instance.depth, 1.0);
 
     // Undilated em-space texcoord at this corner
     let base_texcoord = vec2<f32>(

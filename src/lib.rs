@@ -37,4 +37,5 @@ pub struct GlyphInstance {
     pub band_transform: [f32; 4],  // scale_x, scale_y, offset_x, offset_y
     pub glyph_data: [u32; 4],      // band_loc_x, band_loc_y, band_max_x, band_max_y
     pub color: [f32; 4],           // RGBA
+    pub depth: f32,                // z-depth for iced widget layering
 }

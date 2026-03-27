@@ -81,6 +81,12 @@ impl Cache {
                     offset: 64,
                     shader_location: 4,
                 },
+                // depth: f32
+                wgpu::VertexAttribute {
+                    format: VertexFormat::Float32,
+                    offset: 80,
+                    shader_location: 5,
+                },
             ],
         };
 

@@ -229,7 +229,7 @@ impl TextRenderer {
                         }
                     };
 
-                    let _depth = metadata_to_depth(glyph.metadata);
+                    let depth = metadata_to_depth(glyph.metadata);
 
                     self.instances.push(GlyphInstance {
                         screen_rect: [screen_x, screen_y, screen_w, screen_h],
@@ -242,6 +242,7 @@ impl TextRenderer {
                             entry.band_max_y,
                         ],
                         color,
+                        depth,
                     });
                 }
             }

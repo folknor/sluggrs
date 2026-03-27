@@ -30,6 +30,7 @@ struct GlyphInstance {
     band_transform: [f32; 4],  // scale_x, scale_y, offset_x, offset_y
     glyph_data: [u32; 4],      // glyph_loc.x, glyph_loc.y, band_max.x, band_max.y
     color: [f32; 4],           // RGBA
+    depth: f32,                // z-depth for widget layering
 }
 
 #[repr(C)]
@@ -199,6 +200,7 @@ fn prepare_text(
                 (band_count - 1) as u32,
             ],
             color,
+            depth: 0.0,
         });
 
         prepared.push(PreparedGlyph {
@@ -639,6 +641,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
             band_transform: [0.0; 4],
             glyph_data: [0; 4],
             color: [0.0; 4],
+            depth: 0.0,
         }]
     } else {
         all_instances
@@ -691,6 +694,11 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
                         format: wgpu::VertexFormat::Float32x4,
                         offset: 64,
                         shader_location: 4,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32,
+                        offset: 80,
+                        shader_location: 5,
                     },
                 ],
             }],
