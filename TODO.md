@@ -123,7 +123,7 @@
   `let alpha = input.color.a * final_coverage; return vec4(input.color.rgb * alpha, alpha);`
   Fully opaque text unaffected. **bugs, slug, gpu, wgpu, arch review**
 
-- [ ] shader.wgsl (full shader) is stale and dangerous — has every bug we
+- [x] shader.wgsl (full shader) is stale and dangerous — has every bug we
   fixed in simple_shader.wgsl: bitcast CalcRootCode (-0.0 Intel Arc bug),
   unclamped fwidth (NaN), no b-guard (div-by-zero), old 1/65536 threshold,
   no calc_band_loc wrapping (OOB reads), no depth support, incompatible

@@ -22,7 +22,9 @@ pub use cosmic_text::{
 
 // Shader sources
 pub const SIMPLE_SHADER_WGSL: &str = include_str!("simple_shader.wgsl");
-pub const SHADER_WGSL: &str = include_str!("shader.wgsl");
+// Full shader (with dilation) is not yet synced with simple_shader fixes.
+// Kept internal until it's brought up to parity.
+const _SHADER_WGSL: &str = include_str!("shader.wgsl");
 
 /// Band texture width assumed by the shaders' wrapping logic.
 /// The uploaded texture must be exactly this wide; rows wrap at this boundary.
