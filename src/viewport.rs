@@ -43,6 +43,12 @@ impl Viewport {
         }
     }
 
+    /// The bind group for the viewport/params uniform buffer.
+    /// Shared with the raster fallback pipeline.
+    pub fn bind_group(&self) -> &BindGroup {
+        &self.bind_group
+    }
+
     pub fn resolution(&self) -> Resolution {
         Resolution {
             width: self.params.screen_size[0] as u32,

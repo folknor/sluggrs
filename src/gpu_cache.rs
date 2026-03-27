@@ -171,6 +171,12 @@ impl Cache {
         })
     }
 
+    /// The bind group layout for the viewport/params uniform buffer.
+    /// Shared with the raster fallback pipeline so both can use the same viewport.
+    pub fn uniforms_layout(&self) -> &BindGroupLayout {
+        &self.0.uniforms_layout
+    }
+
     pub(crate) fn create_uniforms_bind_group(
         &self,
         device: &Device,

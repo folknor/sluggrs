@@ -28,7 +28,7 @@ impl Default for TextBounds {
 }
 
 /// A text area containing text to be rendered along with its overflow behavior.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct TextArea<'a> {
     pub buffer: &'a cosmic_text::Buffer,
     pub left: f32,
