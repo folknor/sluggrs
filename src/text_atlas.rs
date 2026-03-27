@@ -318,9 +318,14 @@ impl TextAtlas {
     }
 
     fn grow_curve_texture(&mut self, device: &Device, queue: &Queue, min_height: u32) {
+        let max_dim = device.limits().max_texture_dimension_2d;
         let mut new_height = self.curve_height;
         while new_height < min_height {
             new_height *= 2;
+        }
+        if new_height > max_dim {
+            log::error!("Curve atlas requires height {new_height} but device max is {max_dim} — clamping");
+            new_height = max_dim;
         }
 
         log::debug!(
@@ -353,9 +358,14 @@ impl TextAtlas {
     }
 
     fn grow_band_texture(&mut self, device: &Device, queue: &Queue, min_height: u32) {
+        let max_dim = device.limits().max_texture_dimension_2d;
         let mut new_height = self.band_height;
         while new_height < min_height {
             new_height *= 2;
+        }
+        if new_height > max_dim {
+            log::error!("Band atlas requires height {new_height} but device max is {max_dim} — clamping");
+            new_height = max_dim;
         }
 
         log::debug!(

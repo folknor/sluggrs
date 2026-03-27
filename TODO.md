@@ -135,12 +135,13 @@
   Two wasted calc_band_loc calls per fragment per ray direction. NVIDIA may
   DCE this; Intel and AMD may not. Free to delete. **gpu, wgpu review**
 
-- [ ] b-guard t1=t2=0.0 may still contribute a crossing — slug/codex argues
+- [x] b-guard t1=t2=0.0 may still contribute a crossing — slug/codex argues
   that when calc_root_code is nonzero and t1=t2=0, the solver returns
-  x-coordinates at p12.x (not zero), so the curve contributes a crossing
-  at the start point instead of nothing. Needs investigation: does the
-  coverage contribution actually change the winding number, or do the
-  +1/-1 from t1/t2 cancel? **slug review**
+  x-coordinates at p12.x (not zero). Investigated: when both |a.y| < 0.25
+  and |b.y| < 1/65536, all three y-values are within ~0.25 em-units and
+  have the same sign, so calc_root_code returns 0 (class A or H). The
+  nonzero-code + near-zero-b case is practically unreachable. Visually
+  verified correct on NVIDIA with CFF and TTF fonts. **slug review**
 
 - [ ] GlyphOutline.bounds too tight for CFF fonts — curve_to() in
   outline.rs updates bounds from cubic control points, but subdivide_cubic
@@ -158,7 +159,7 @@
   RemovedFromAtlas error variant exists but is never raised due to no
   generation tracking. **bugs review**
 
-- [ ] Atlas growth unchecked against device limits — grow_curve_texture and
+- [x] Atlas growth unchecked against device limits — grow_curve_texture and
   grow_band_texture double height without checking
   `device.limits().max_texture_dimension_2d`. PrepareError::AtlasFull
   exists but can never fire. Large CJK workloads on mobile/WebGPU devices

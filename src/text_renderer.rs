@@ -122,12 +122,12 @@ impl TextRenderer {
                             }
                         };
 
-                        if let std::collections::hash_map::Entry::Vacant(e) = self.units_per_em_cache.entry(glyph.font_id) {
-                            if let Ok(skrifa_font) = skrifa::FontRef::from_index(font.data(), face_index) {
-                                use skrifa::raw::TableProvider;
-                                let v = skrifa_font.head().map(|h| h.units_per_em() as f32).unwrap_or(1000.0);
-                                e.insert(v);
-                            }
+                        if let std::collections::hash_map::Entry::Vacant(e) = self.units_per_em_cache.entry(glyph.font_id)
+                            && let Ok(skrifa_font) = skrifa::FontRef::from_index(font.data(), face_index)
+                        {
+                            use skrifa::raw::TableProvider;
+                            let v = skrifa_font.head().map(|h| h.units_per_em() as f32).unwrap_or(1000.0);
+                            e.insert(v);
                         }
 
                         let wght_tag = skrifa::Tag::new(b"wght");
