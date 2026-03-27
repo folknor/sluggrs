@@ -149,7 +149,7 @@ impl TextRenderer {
                                 } else {
                                     12
                                 };
-                                atlas.upload_glyph(device, queue, &gpu_outline, band_count, band_count)
+                                atlas.upload_glyph(device, queue, &gpu_outline, band_count, band_count)?
                             }
                             None => NON_VECTOR_GLYPH,
                         };

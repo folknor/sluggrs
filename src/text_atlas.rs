@@ -188,7 +188,7 @@ impl TextAtlas {
         gpu_outline: &GpuOutline,
         band_count_x: u32,
         band_count_y: u32,
-    ) -> GlyphEntry {
+    ) -> Result<GlyphEntry, crate::types::PrepareError> {
         let num_curves = gpu_outline.curves.len() as u32;
 
         // Build curve texels (2 texels per curve) — reuse scratch buffer
@@ -220,15 +220,21 @@ impl TextAtlas {
         let band_texels: &[[u32; 4]] = bytemuck::cast_slice(&band_data.entries);
         let band_texel_count = band_texels.len() as u32;
 
-        // Grow textures if needed
+        // Check device limits before any mutation
+        let max_dim = device.limits().max_texture_dimension_2d;
         let new_curve_end = self.curve_cursor + curve_texel_count;
         let required_curve_height = new_curve_end.div_ceil(CURVE_TEXTURE_WIDTH);
+        let new_band_end = self.band_cursor + band_texel_count;
+        let required_band_height = new_band_end.div_ceil(BAND_TEXTURE_WIDTH);
+
+        if required_curve_height > max_dim || required_band_height > max_dim {
+            return Err(crate::types::PrepareError::AtlasFull);
+        }
+
+        // Grow textures if needed
         if required_curve_height > self.curve_height {
             self.grow_curve_texture(device, queue, required_curve_height);
         }
-
-        let new_band_end = self.band_cursor + band_texel_count;
-        let required_band_height = new_band_end.div_ceil(BAND_TEXTURE_WIDTH);
         if required_band_height > self.band_height {
             self.grow_band_texture(device, queue, required_band_height);
         }
@@ -263,14 +269,14 @@ impl TextAtlas {
         self.curve_cursor = new_curve_end;
         self.band_cursor = new_band_end;
 
-        GlyphEntry {
+        Ok(GlyphEntry {
             band_offset: band_start,
             band_max_x: band_data.band_count_x.saturating_sub(1),
             band_max_y: band_data.band_count_y.saturating_sub(1),
             band_transform: band_data.band_transform,
             bounds: gpu_outline.bounds,
             last_used_epoch: 0,
-        }
+        })
     }
 
 
@@ -318,14 +324,9 @@ impl TextAtlas {
     }
 
     fn grow_curve_texture(&mut self, device: &Device, queue: &Queue, min_height: u32) {
-        let max_dim = device.limits().max_texture_dimension_2d;
         let mut new_height = self.curve_height;
         while new_height < min_height {
             new_height *= 2;
-        }
-        if new_height > max_dim {
-            log::error!("Curve atlas requires height {new_height} but device max is {max_dim} — clamping");
-            new_height = max_dim;
         }
 
         log::debug!(
@@ -358,14 +359,9 @@ impl TextAtlas {
     }
 
     fn grow_band_texture(&mut self, device: &Device, queue: &Queue, min_height: u32) {
-        let max_dim = device.limits().max_texture_dimension_2d;
         let mut new_height = self.band_height;
         while new_height < min_height {
             new_height *= 2;
-        }
-        if new_height > max_dim {
-            log::error!("Band atlas requires height {new_height} but device max is {max_dim} — clamping");
-            new_height = max_dim;
         }
 
         log::debug!(
