@@ -117,10 +117,18 @@ fn solve_horiz_poly(p12: vec4<f32>, p3: vec2<f32>) -> vec2<f32> {
     // catch perturbed lines but not genuine quadratics (|a| >= 0.3).
     // See docs/slug-glyph-investigation.md for full rationale.
     if abs(a.y) < 0.25 {
-        let rb = 0.5 / b.y;
-        let lin = p12.y * rb;
-        t1 = lin;
-        t2 = lin;
+        if abs(b.y) < (1.0 / 65536.0) {
+            // Both a.y and b.y near zero: curve has negligible y-span,
+            // no meaningful horizontal ray crossing. Zero roots produce
+            // zero net winding contribution.
+            t1 = 0.0;
+            t2 = 0.0;
+        } else {
+            let rb = 0.5 / b.y;
+            let lin = p12.y * rb;
+            t1 = lin;
+            t2 = lin;
+        }
     } else {
         let ra = 1.0 / a.y;
         let d = sqrt(max(b.y * b.y - a.y * p12.y, 0.0));
@@ -143,10 +151,15 @@ fn solve_vert_poly(p12: vec4<f32>, p3: vec2<f32>) -> vec2<f32> {
 
     // Same threshold divergence as solve_horiz_poly — see above.
     if abs(a.x) < 0.25 {
-        let rb = 0.5 / b.x;
-        let lin = p12.x * rb;
-        t1 = lin;
-        t2 = lin;
+        if abs(b.x) < (1.0 / 65536.0) {
+            t1 = 0.0;
+            t2 = 0.0;
+        } else {
+            let rb = 0.5 / b.x;
+            let lin = p12.x * rb;
+            t1 = lin;
+            t2 = lin;
+        }
     } else {
         let ra = 1.0 / a.x;
         let d = sqrt(max(b.x * b.x - a.x * p12.x, 0.0));
