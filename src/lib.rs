@@ -15,6 +15,7 @@ pub mod prepare;
 
 // Public API — matches cryoglyph's interface for iced integration
 pub use gpu_cache::Cache;
+pub use glyph_cache::GlyphKey;
 pub use text_atlas::TextAtlas;
 pub use text_renderer::TextRenderer;
 pub use types::{ColorMode, PrepareError, RenderError, Resolution, TextArea, TextBounds};

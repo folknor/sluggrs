@@ -141,6 +141,11 @@ impl GlyphMap {
         self.map.is_empty()
     }
 
+    /// Read-only lookup. Does NOT mark the glyph as used this frame.
+    pub fn get(&self, key: &GlyphKey) -> Option<GlyphEntry> {
+        self.map.get(key).map(|e| *e)
+    }
+
     pub fn contains_key(&self, key: &GlyphKey) -> bool {
         self.map.contains_key(key)
     }

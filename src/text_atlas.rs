@@ -98,6 +98,11 @@ impl TextAtlas {
         self.glyphs.len()
     }
 
+    /// Read-only access to the glyph cache, for querying non-vector classification.
+    pub fn glyph_map(&self) -> &GlyphMap {
+        &self.glyphs
+    }
+
     /// Linear texel offset into the curve texture (append-only cursor).
     pub fn curve_texels_used(&self) -> u32 {
         self.curve_cursor
