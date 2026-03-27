@@ -32,14 +32,19 @@
   the invariant is not enforced at the API boundary. Direct callers of
   `prepare_outline` or `apply_italic_shear` can produce nonsensical bounds.
 
-- [ ] Variation handling is narrow — text_renderer.rs synthesizes only a `wght`
-  axis from `glyph.font_weight`. Arbitrary variation coordinates from
-  cosmic-text are not propagated. Fonts with width, slant, optical size, or
-  custom axes will render with default values.
+- [x] Variation handling is narrow — text_renderer.rs synthesizes only a `wght`
+  axis from `glyph.font_weight`. **fonts review**: confirmed that cosmic-text
+  0.18 itself only supports `wght` — no other axes are set during shaping,
+  carried on LayoutGlyph, or accessible via API. Our handling matches what
+  cosmic-text can produce. Forward-compatibility concern only: if a future
+  cosmic-text adds axis support, our cache key and extraction would need
+  updating.
 
-- [ ] Glyph cache key doesn't cover full variation space — glyph_cache.rs keys
-  on font_id, glyph_id, weight, and cache_key_flags. Two glyphs that differ
-  only in a non-weight variation axis will hash to the same entry.
+- [x] Glyph cache key doesn't cover full variation space — glyph_cache.rs keys
+  on font_id, glyph_id, weight, and cache_key_flags. **fonts review**:
+  confirmed complete relative to cosmic-text 0.18 (see above). No collision
+  possible today because cosmic-text never generates glyphs differing only
+  on a non-weight axis.
 
 - [ ] Cubic-to-quadratic subdivision may be too shallow — outline.rs uses
   recursive conversion with MAX_DEPTH = 3 and a simple error heuristic.
@@ -90,11 +95,15 @@
   wrong-texel read. Works today because numbers are small, but no safety
   margin or validation. **wgpu review**
 
-- [ ] No atlas cache/texture sync validation — once a `GlyphEntry` is
-  cached, the renderer trusts its band_offset, band_max, band_transform,
-  and bounds indefinitely. No generation check, no version stamp, no
-  cross-check after texture growth or reset. If the invariant breaks, the
-  failure is silent misrendering, not a clean error. **bugs review**
+- [x] No atlas cache/texture sync validation — **bugs review** flagged that
+  cached GlyphEntry offsets are trusted indefinitely with no generation
+  check. Investigated: reset_atlas() clears glyph map AND recreates
+  textures atomically; texture growth re-uploads all data and rebuilds
+  bind group synchronously within prepare_with_depth. The tight coupling
+  (that arch review flagged as a design issue) is actually why this is
+  safe — there's no window for desync. A generation counter would be
+  defensive against bugs that don't currently exist. Revisit if
+  prepare_with_depth is ever refactored to decouple atlas from renderer.
 
 - [x] Hardcoded atlas texture formats — Rgba32Float (curves) and Rgba32Uint
   (bands) are core WebGPU formats, mandatory in Vulkan, universal in DX12,

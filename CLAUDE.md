@@ -79,6 +79,22 @@ Cargo.toml has 27 clippy deny-level rules covering style, error handling, async 
 
 The `repos/iced/` checkout (branch `sluggrs` on `folknor/iced`) has `text.rs` swapped from cryoglyph to sluggrs. To test in ratatoskr, point its iced dependency at the fork.
 
+## Code review
+
+`.review.toml` defines 7 reviewer archetypes with persistent Claude + Codex sessions:
+- **sweep** = bugs, perf, slug, gpu (every change)
+- **design** = fonts, wgpu, arch (structural changes)
+- **everything** = all 7
+
+Usage: `echo "review prompt" | review <archetype|group|all>`
+
+`research/` (gitignored) contains reference repos and docs for reviewer context:
+Slug reference shaders, fontations, cosmic-text, vello, mesa, wgpu-naga, gpuweb spec,
+Vulkan spec, NVIDIA shader guides, JCGT paper, and other Slug implementations.
+
+When adding TODO items from review findings, tag them with `**<archetype> review**`
+to track which reviewer caught what.
+
 ## Tech stack
 
 - Rust (edition 2024, MSRV 1.92)
