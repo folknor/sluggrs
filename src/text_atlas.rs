@@ -111,7 +111,7 @@ impl TextAtlas {
     /// End-of-frame cache management.
     ///
     /// Clears per-frame usage tracking. When the textures have grown beyond
-    /// their initial size AND fewer than half the cached glyphs are in use,
+    /// their initial size AND fewer than a quarter of cached glyphs are in use,
     /// performs a full reset: recreates textures at initial size (reclaiming
     /// GPU memory immediately), clears the glyph cache. The next prepare()
     /// re-extracts only the visible glyphs.

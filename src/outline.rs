@@ -15,10 +15,14 @@ pub struct QuadCurve {
 }
 
 /// Extracted glyph outline.
+///
+/// Note: `bounds` is approximate for CFF fonts — cubic-to-quadratic subdivision
+/// can produce control points outside the original cubic hull. Use
+/// `prepare_outline()` for exact bounds over the actual quadratic geometry.
 #[derive(Debug, Clone)]
 pub struct GlyphOutline {
     pub curves: Vec<QuadCurve>,
-    pub bounds: [f32; 4], // min_x, min_y, max_x, max_y
+    pub bounds: [f32; 4], // min_x, min_y, max_x, max_y (approximate for CFF)
 }
 
 /// Pen that collects quadratic beziers. Converts lines to degenerate quadratics

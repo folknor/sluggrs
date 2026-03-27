@@ -143,13 +143,13 @@
   nonzero-code + near-zero-b case is practically unreachable. Visually
   verified correct on NVIDIA with CFF and TTF fonts. **slug review**
 
-- [ ] GlyphOutline.bounds too tight for CFF fonts — curve_to() in
+- [x] GlyphOutline.bounds too tight for CFF fonts — curve_to() in
   outline.rs updates bounds from cubic control points, but subdivide_cubic
   produces quadratic CPs that can extend beyond the cubic hull. Currently
   harmless because prepare_outline recomputes bounds. Trap for future use
   of GlyphOutline.bounds directly. **bugs, fonts review**
 
-- [ ] trim() doc comment says "half" but code checks "quarter" —
+- [x] trim() doc comment says "half" but code checks "quarter" —
   text_atlas.rs:114 comment says "fewer than half" but code uses
   `in_use < cached / 4`. Documentation-only bug. **bugs review**
 
@@ -366,7 +366,7 @@ partly compute/sort bound (per-band sorting in band.rs), not just allocator boun
 
 ## Architecture (found by deep review)
 
-- [ ] Internal modules are pub — lib.rs makes band, glyph_cache, outline,
+- [x] Internal modules are pub — lib.rs makes band, glyph_cache, outline,
   prepare all public. Downstream crates can depend on QuadCurve,
   GlyphEntry, build_bands etc, locking implementation as semver surface.
   Change to `pub(crate) mod` for internals. **arch review**
