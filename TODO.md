@@ -96,10 +96,13 @@
   cross-check after texture growth or reset. If the invariant breaks, the
   failure is silent misrendering, not a clean error. **bugs review**
 
-- [ ] Hardcoded atlas texture formats with no capability probing —
-  Rgba32Float (curves) and Rgba32Uint (bands) are used with no fallback
-  path and no format abstraction. May not be portable across Metal, GLES,
-  WebGPU, or downlevel configurations. **wgpu review**
+- [x] Hardcoded atlas texture formats — Rgba32Float (curves) and Rgba32Uint
+  (bands) are core WebGPU formats, mandatory in Vulkan, universal in DX12,
+  supported on all Metal device families for textureLoad + write_texture.
+  No fallback needed. Only risk: 4096-wide texture on GLES 3.0 minimum
+  devices (spec floor 2048), but iced targets desktop + modern mobile.
+  **wgpu review**: confirmed safe. Optimization opportunity: band texture
+  only reads .xy, so Rg32Uint would halve texel size. **wgpu review**
 
 ## Before shipping
 
