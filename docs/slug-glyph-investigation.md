@@ -38,11 +38,11 @@ has had no functional changes since our translation — only comment
 additions and license header updates. Two intentional divergences
 exist:
 
-### 1. Linearity threshold: 0.5 vs 1/65536
+### 1. Linearity threshold: 0.25 vs 1/65536
 
 The reference solver uses `abs(a) < 1.0 / 65536.0` to detect
 near-linear curves and fall back to a linear solver. Our shader
-uses `abs(a) < 0.5`.
+uses `abs(a) < 0.25`.
 
 **Why**: Our CPU-side perturbation in `prepare.rs::perturb_midpoint()`
 produces curves with `|a|` values of 0.02–0.2. The reference threshold
@@ -51,9 +51,12 @@ a near-zero denominator, producing unstable roots — visible as unfilled
 regions in glyphs with short horizontal features (e.g. bold 'r' arm in
 Inter Variable). See commit b7bf831.
 
-The 0.5 threshold safely catches all perturbed line segments (`|a| ≤ 0.2`)
-while leaving genuine curves (`|a|` in the tens or hundreds) on the
-quadratic path. The gap between 0.2 and "tens" is wide.
+The threshold was originally set to 0.5, but review found that genuine
+quadratics with modest curvature (`|a|` around 0.3) could enter the
+linear fallback path where `0.5 / b.y` with small `b.y` produces
+garbage roots. Lowered to 0.25 which still catches all perturbed line
+segments (`|a| ≤ 0.2`) with margin, while keeping real quadratics on
+the quadratic path.
 
 **Coupling**: The shader threshold and `perturb_midpoint()` eps range
 (currently `(len * 1e-5).clamp(0.01, 0.1)`) are coupled. If the

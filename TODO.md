@@ -62,7 +62,45 @@
   currently a sentinel `GlyphEntry` in glyph_cache.rs:53, skipped as a side
   effect of prepare(). For clean two-pass routing (sluggrs + cryoglyph
   fallback), classification needs to be a separate step, not incidental to
-  prepare().
+  prepare(). **arch review**: the silent drop with no error/placeholder/signal
+  to iced violates the integration contract — users see missing characters
+  in otherwise normal text with no indication anything is wrong.
+
+- [x] `fwidth()` can return zero at quad edges → NaN propagation — in
+  simple_shader.wgsl, `pixels_per_em = 1.0 / fwidth(render_coord)` produces
+  infinity at helper lane boundaries. When a root lands at exactly 0.0,
+  `0.0 * infinity = NaN`. WGSL spec says `clamp` with NaN returns
+  "implementation-defined value from the range" — NVIDIA returns 0, AMD
+  varies, Intel/Apple have their own behavior. The 1px dilation pushes most
+  affected fragments outside the visible area but doesn't eliminate them.
+  Result: vendor-specific 1px garbage fringe around glyphs. **gpu review**
+
+- [x] Solver threshold 0.5 is too high — the linear fallback threshold in
+  `solve_horiz_poly`/`solve_vert_poly` was raised from reference's ~1/65536
+  to 0.5 to handle perturbed line segments. At 0.5, genuine quadratics with
+  modest curvature (a.y = 0.3) enter the linear path where `0.5 / b.y` with
+  small b.y produces garbage roots that feed into winding accumulation.
+  Perturbed lines need a higher threshold than 1/65536 but 0.5 sweeps in
+  real curves the linear path wasn't designed for. **slug review**
+
+- [ ] Signed/unsigned confusion in shader texture addressing — the shader
+  casts `vec2<u32>` to `vec2<i32>` for textureLoad coordinates, and uses
+  arithmetic right shift on signed `i32` for row calculation. If band_loc.x
+  goes negative (from offset addition wrapping or a bug), the arithmetic
+  shift propagates the sign bit, corrupting row calculation with a silent
+  wrong-texel read. Works today because numbers are small, but no safety
+  margin or validation. **wgpu review**
+
+- [ ] No atlas cache/texture sync validation — once a `GlyphEntry` is
+  cached, the renderer trusts its band_offset, band_max, band_transform,
+  and bounds indefinitely. No generation check, no version stamp, no
+  cross-check after texture growth or reset. If the invariant breaks, the
+  failure is silent misrendering, not a clean error. **bugs review**
+
+- [ ] Hardcoded atlas texture formats with no capability probing —
+  Rgba32Float (curves) and Rgba32Uint (bands) are used with no fallback
+  path and no format abstraction. May not be portable across Metal, GLES,
+  WebGPU, or downlevel configurations. **wgpu review**
 
 ## Before shipping
 
@@ -85,8 +123,13 @@
   Pressure-based reset when <50% of cached glyphs are in use (threshold 256).
   Matches cryoglyph frame-boundary semantics.
 - [ ] Depth plumbing — prepare_with_depth accepts the callback but discards
-  the depth value. Any iced path relying on layered text depth will render
-  incorrectly. Either implement or document as unsupported.
+  the depth value (`_depth` at text_renderer.rs:232), and the vertex shader
+  hardcodes `z = 0.0`. All glyphs render at the same depth. When iced uses
+  depth-stencil for widget layering, overlapping text (tooltips, dropdowns,
+  modals over text) will z-fight or bleed through. Won't show up in simple
+  apps — manifests only when two text-bearing widgets overlap at different
+  depths. Fix: pack depth into GlyphInstance, thread to shader, write to
+  output.position.z. **bugs review**
 
 ## Optimization — CPU allocation reduction
 
@@ -121,6 +164,10 @@ partly compute/sort bound (per-band sorting in band.rs), not just allocator boun
 
 - [ ] Band builder algorithmic work — build_bands is partly compute-bound. Targets:
   - Temporary data layout: Vec<Vec<usize>> has poor locality; flat layout may help.
+    **perf review**: this is 8-24 heap allocations per cache-miss glyph (one inner
+    Vec per band), completely unsalvageable — built, sorted, iterated, dropped.
+    Raising band counts doubles allocator pressure. Fix: single flat Vec<usize>
+    with offset/length slicing (two-pass: count per band, then fill).
   - Reusable context: store scratch vectors on TextAtlas or BandBuilder struct.
     Requires API change (build_bands currently returns owned BandData).
 
@@ -162,8 +209,10 @@ partly compute/sort bound (per-band sorting in band.rs), not just allocator boun
 
 - [ ] Branch divergence assessment — the `if abs(a.y) < 0.5` branch in
   solve_horiz_poly causes warp divergence between linear and quadratic paths.
-  The linear case only fires for perturbed line segments (rare), so the branch
-  should predict well. Confirm with Nsight or RGP if available.
+  **slug review** found this threshold is too high: at 0.5, genuine quadratics
+  with modest curvature enter the linear path (see bugs section). The branch
+  prediction assumption ("rare, only perturbed lines") may not hold.
+  Confirm with Nsight or RGP if available.
 
 - [ ] Band bounding-box pre-check — if a band's y-range doesn't intersect the
   current pixel (within half a pixel), skip the entire band loop. Could
@@ -191,8 +240,11 @@ partly compute/sort bound (per-band sorting in band.rs), not just allocator boun
   second get_font() call and skrifa re-parse entirely. Adds 4 bytes to GlyphEntry.
 
 - [ ] Texture growth batching — if many glyphs are added in frame 1, the texture
-  may grow multiple times sequentially. Predict final size from glyph count and
-  pre-allocate once.
+  may grow multiple times sequentially. Each growth does a full re-upload of all
+  accumulated texture data, so multiple growths in a single prepare() call
+  produce O(n) full re-uploads. On a frame that loads a new script (CJK, Arabic)
+  with 200+ new glyphs across growth boundaries, this is an unbounded stall.
+  Predict final size from glyph count and pre-allocate once. **arch review**
 
 - [ ] Band count heuristic tuning — currently 4/8/12 bands based on curve count
   thresholds (10/30). Profile whether different thresholds or continuous scaling

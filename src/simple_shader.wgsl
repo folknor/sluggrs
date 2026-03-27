@@ -111,9 +111,10 @@ fn solve_horiz_poly(p12: vec4<f32>, p3: vec2<f32>) -> vec2<f32> {
     var t2: f32;
 
     // Intentional divergence from Slug reference (1/65536): our CPU-side
-    // perturbation in prepare.rs produces |a| = 0.02–0.2. See
-    // docs/slug-glyph-investigation.md for full rationale.
-    if abs(a.y) < 0.5 {
+    // perturbation in prepare.rs produces |a| = 0.02–0.2. Threshold must
+    // catch perturbed lines but not genuine quadratics (|a| >= 0.3).
+    // See docs/slug-glyph-investigation.md for full rationale.
+    if abs(a.y) < 0.25 {
         let rb = 0.5 / b.y;
         let lin = p12.y * rb;
         t1 = lin;
@@ -139,7 +140,7 @@ fn solve_vert_poly(p12: vec4<f32>, p3: vec2<f32>) -> vec2<f32> {
     var t2: f32;
 
     // Same threshold divergence as solve_horiz_poly — see above.
-    if abs(a.x) < 0.5 {
+    if abs(a.x) < 0.25 {
         let rb = 0.5 / b.x;
         let lin = p12.x * rb;
         t1 = lin;
@@ -170,7 +171,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let band_transform = input.banding;
     let glyph_data = input.glyph;
 
-    let ems_per_pixel = fwidth(render_coord);
+    // fwidth() can return zero at quad edges (helper lane boundaries),
+    // producing infinity in pixels_per_em. Clamp to avoid NaN propagation
+    // when a root lands at exactly 0.0 (0.0 * inf = NaN). The clamp floor
+    // is tiny enough to not affect real coverage calculations.
+    let ems_per_pixel = max(fwidth(render_coord), vec2<f32>(1.0 / 65536.0));
     let pixels_per_em = 1.0 / ems_per_pixel;
 
     var band_max = glyph_data.zw;
