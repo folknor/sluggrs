@@ -53,7 +53,7 @@ fn dump_bold_r_geometry() {
     let curve_locs: Vec<CurveLocation> = (0..num_curves)
         .map(|i| CurveLocation { x: (i as u32) * 2, y: 0 })
         .collect();
-    let band_data = build_bands(&gpu, &curve_locs, band_count, band_count);
+    let band_data = build_bands(&gpu, &curve_locs, band_count, band_count, Vec::new());
 
     // Dump which bands contain curves 2..5
     let hcount = band_data.band_count_y as usize;

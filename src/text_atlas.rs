@@ -44,6 +44,7 @@ pub struct TextAtlas {
     // Scratch buffers reused across upload_glyph() calls
     scratch_curve_texels: Vec<[f32; 4]>,
     scratch_curve_locations: Vec<CurveLocation>,
+    scratch_band_entries: Vec<u32>,
 
     // Glyph cache
     pub(crate) glyphs: GlyphMap,
@@ -89,6 +90,7 @@ impl TextAtlas {
             band_data: Vec::new(),
             scratch_curve_texels: Vec::new(),
             scratch_curve_locations: Vec::new(),
+            scratch_band_entries: Vec::new(),
             glyphs: GlyphMap::new(),
         }
     }
@@ -220,10 +222,11 @@ impl TextAtlas {
         // Build band data with absolute 2D curve locations
         let band_start = self.band_cursor;
         let band_data =
-            crate::band::build_bands(gpu_outline, &self.scratch_curve_locations, band_count_x, band_count_y);
-        // band_data.entries is always a multiple of 4 u32s — reinterpret directly
-        let band_texels: &[[u32; 4]] = bytemuck::cast_slice(&band_data.entries);
-        let band_texel_count = band_texels.len() as u32;
+            crate::band::build_bands(gpu_outline, &self.scratch_curve_locations, band_count_x, band_count_y, std::mem::take(&mut self.scratch_band_entries));
+        let bd_count_x = band_data.band_count_x;
+        let bd_count_y = band_data.band_count_y;
+        let bd_transform = band_data.band_transform;
+        let band_texel_count = (band_data.entries.len() / 4) as u32;
 
         // Check device limits before any mutation
         let max_dim = device.limits().max_texture_dimension_2d;
@@ -233,6 +236,8 @@ impl TextAtlas {
         let required_band_height = new_band_end.div_ceil(BAND_TEXTURE_WIDTH);
 
         if required_curve_height > max_dim || required_band_height > max_dim {
+            // Reclaim the allocation before returning
+            self.scratch_band_entries = band_data.entries;
             return Err(crate::types::PrepareError::AtlasFull);
         }
 
@@ -243,6 +248,9 @@ impl TextAtlas {
         if required_band_height > self.band_height {
             self.grow_band_texture(device, queue, required_band_height);
         }
+
+        // Access band texels from the returned BandData
+        let band_texels: &[[u32; 4]] = bytemuck::cast_slice(&band_data.entries);
 
         // Append to CPU-side copies
         self.curve_data.extend_from_slice(&self.scratch_curve_texels);
@@ -270,15 +278,18 @@ impl TextAtlas {
             );
         }
 
+        // Reclaim the scratch allocation for reuse (after all borrows of band_data.entries)
+        self.scratch_band_entries = band_data.entries;
+
         // Advance cursors
         self.curve_cursor = new_curve_end;
         self.band_cursor = new_band_end;
 
         Ok(GlyphEntry {
             band_offset: band_start,
-            band_max_x: band_data.band_count_x.saturating_sub(1),
-            band_max_y: band_data.band_count_y.saturating_sub(1),
-            band_transform: band_data.band_transform,
+            band_max_x: bd_count_x.saturating_sub(1),
+            band_max_y: bd_count_y.saturating_sub(1),
+            band_transform: bd_transform,
             bounds: gpu_outline.bounds,
             last_used_epoch: 0,
         })

@@ -178,7 +178,7 @@ fn prepare_text(
         } else {
             12
         };
-        let band_data = build_bands(&gpu_outline, &curve_locations, band_count, band_count);
+        let band_data = build_bands(&gpu_outline, &curve_locations, band_count, band_count, Vec::new());
 
         let [min_x, min_y, max_x, max_y] = gpu_outline.bounds;
 

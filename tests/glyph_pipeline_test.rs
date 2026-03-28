@@ -384,7 +384,7 @@ fn band_data_sanity() {
     let band_count_x = 4u32;
     let band_count_y = 4u32;
 
-    let band_data = build_bands(&gpu_outline, &curve_locations, band_count_x, band_count_y);
+    let band_data = build_bands(&gpu_outline, &curve_locations, band_count_x, band_count_y, Vec::new());
 
     // Band counts should match requested
     assert_eq!(band_data.band_count_x, band_count_x);
@@ -458,7 +458,7 @@ fn band_data_single_band() {
         })
         .collect();
 
-    let band_data = build_bands(&gpu_outline, &curve_locations, 1, 1);
+    let band_data = build_bands(&gpu_outline, &curve_locations, 1, 1, Vec::new());
 
     assert_eq!(band_data.band_count_x, 1);
     assert_eq!(band_data.band_count_y, 1);

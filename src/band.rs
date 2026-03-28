@@ -8,9 +8,7 @@ use crate::prepare::GpuOutline;
 /// Band data ready for GPU upload.
 pub struct BandData {
     /// Entries in the band texture: (curve_count, offset) pairs followed by curve indices.
-    /// Layout: [hband_0_count, hband_0_offset, hband_1_count, hband_1_offset, ...,
-    ///          vband_0_count, vband_0_offset, ...,
-    ///          curve_indices...]
+    /// Pass this Vec back via `build_bands` to reuse its allocation.
     pub entries: Vec<u32>,
     /// Number of horizontal bands
     pub band_count_x: u32,
@@ -37,6 +35,7 @@ pub fn build_bands(
     curve_locations: &[CurveLocation],
     band_count_x: u32,
     band_count_y: u32,
+    mut scratch_entries: Vec<u32>,
 ) -> BandData {
     let [min_x, min_y, max_x, max_y] = outline.bounds;
     let width = max_x - min_x;
@@ -157,39 +156,40 @@ pub fn build_bands(
     let num_headers = band_count_y + band_count_x;
     let curve_lists_start = num_headers;
 
-    // Calculate texel offsets for headers
+    // Reuse scratch buffer for entries
     let total_refs = (htotal + vtotal) as usize;
-    let mut entries: Vec<u32> = Vec::with_capacity((num_headers as usize + total_refs) * 4);
+    scratch_entries.clear();
+    scratch_entries.reserve((num_headers as usize + total_refs) * 4);
 
     // Write horizontal band headers
     let mut texel_offset = curve_lists_start;
     for b in 0..hcount {
-        entries.push(hband_counts[b]);
-        entries.push(texel_offset);
-        entries.push(0);
-        entries.push(0);
+        scratch_entries.push(hband_counts[b]);
+        scratch_entries.push(texel_offset);
+        scratch_entries.push(0);
+        scratch_entries.push(0);
         texel_offset += hband_counts[b];
     }
     // Write vertical band headers
     for b in 0..vcount {
-        entries.push(vband_counts[b]);
-        entries.push(texel_offset);
-        entries.push(0);
-        entries.push(0);
+        scratch_entries.push(vband_counts[b]);
+        scratch_entries.push(texel_offset);
+        scratch_entries.push(0);
+        scratch_entries.push(0);
         texel_offset += vband_counts[b];
     }
 
     // Write curve references from flat array
     for &curve_idx in &flat_indices {
         let loc = curve_locations[curve_idx];
-        entries.push(loc.x);
-        entries.push(loc.y);
-        entries.push(0);
-        entries.push(0);
+        scratch_entries.push(loc.x);
+        scratch_entries.push(loc.y);
+        scratch_entries.push(0);
+        scratch_entries.push(0);
     }
 
     BandData {
-        entries,
+        entries: scratch_entries,
         band_count_x,
         band_count_y,
         band_transform: [scale_x, scale_y, offset_x, offset_y],
@@ -222,6 +222,7 @@ mod tests {
         (0..n).map(|i| CurveLocation { x: i as u32 * 2, y: 0 }).collect()
     }
 
+
     #[test]
     fn degenerate_glyph_zero_size() {
         // A glyph with zero width/height (all points at same location)
@@ -231,7 +232,7 @@ mod tests {
             p3: [50.0, 50.0],
         }]);
         let locs = sequential_locations(1);
-        let data = build_bands(&outline, &locs, 4, 4);
+        let data = build_bands(&outline, &locs, 4, 4, Vec::new());
 
         // Should not panic, should produce valid band data
         assert!(!data.entries.is_empty());
@@ -247,7 +248,7 @@ mod tests {
             p3: [100.0, 0.0],
         }]);
         let locs = sequential_locations(1);
-        let data = build_bands(&outline, &locs, 1, 1);
+        let data = build_bands(&outline, &locs, 1, 1, Vec::new());
 
         // 2 band headers (h + v) * 4 u32 each = 8
         // 1 curve * 2 bands * 4 u32 each = 8
@@ -274,7 +275,7 @@ mod tests {
             },
         ]);
         let locs = sequential_locations(2);
-        let data = build_bands(&outline, &locs, 1, 2);
+        let data = build_bands(&outline, &locs, 1, 2, Vec::new());
 
         // 3 band headers (2 hbands + 1 vband) * 4 u32 = 12
         // h-band 0 (bottom) should contain curve 0
@@ -293,7 +294,7 @@ mod tests {
             p3: [90.0, 20.0],
         }]);
         let locs = sequential_locations(1);
-        let data = build_bands(&outline, &locs, 4, 4);
+        let data = build_bands(&outline, &locs, 4, 4, Vec::new());
 
         let [scale_x, scale_y, offset_x, offset_y] = data.band_transform;
 
@@ -318,7 +319,7 @@ mod tests {
             p3: [100.0, 0.0],
         }]);
         let locs = sequential_locations(1);
-        let data = build_bands(&outline, &locs, 4, 1);
+        let data = build_bands(&outline, &locs, 4, 1, Vec::new());
 
         // 1 h-band header + 4 v-band headers = 5 * 4 = 20 u32s
         // The curve should appear in the h-band (1 ref) and all 4 v-bands (4 refs)
@@ -335,7 +336,7 @@ mod tests {
             QuadCurve { p1: [50.0, 50.0], p2: [75.0, 100.0], p3: [100.0, 50.0] },
         ]);
         let locs = sequential_locations(2);
-        let data = build_bands(&outline, &locs, 3, 3);
+        let data = build_bands(&outline, &locs, 3, 3, Vec::new());
         assert_eq!(data.entries.len() % 4, 0, "entries must be uint4-aligned");
     }
 }

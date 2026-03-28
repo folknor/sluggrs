@@ -259,7 +259,7 @@ fn comma_line_only_glyph_regression() {
         })
         .collect();
 
-    let band_data = build_bands(&gpu_outline, &curve_locations, 1, 1);
+    let band_data = build_bands(&gpu_outline, &curve_locations, 1, 1, Vec::new());
 
     // Band data should be non-empty.
     assert!(
