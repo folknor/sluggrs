@@ -181,7 +181,7 @@
 
 ## Before shipping
 
-- [ ] Non-vector glyph fallback — color emoji and bitmap-only fonts currently
+- [x] Non-vector glyph fallback — color emoji and bitmap-only fonts currently
   produce no output. Required before the iced swap ships.
 
   **Dual-render-all spike failed** (repos/iced branch): rendering all text
