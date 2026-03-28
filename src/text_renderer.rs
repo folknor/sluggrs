@@ -186,7 +186,8 @@ impl TextRenderer {
             Some(f) => f,
             None => {
                 log::warn!("Font not found for glyph {key:?}");
-                return Ok(NON_VECTOR_GLYPH);
+                // Cache as non-vector to avoid re-attempting every frame
+                return Ok(atlas.glyphs.insert_and_mark_used(key, NON_VECTOR_GLYPH));
             }
         };
 
