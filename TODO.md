@@ -292,7 +292,7 @@ partly compute/sort bound (per-band sorting in band.rs), not just allocator boun
 
 ### Profiling infrastructure (do first)
 
-- [ ] Add wgpu-profiler to demo — wraps wgpu timestamp queries, outputs Chrome
+- [x] Add wgpu-profiler to demo — wraps wgpu timestamp queries, outputs Chrome
   trace format. Gives per-frame GPU time for the text render pass. Currently we
   only measure CPU-side prep, not actual shader execution cost. Requires
   `Features::TIMESTAMP_QUERY` + `Features::TIMESTAMP_QUERY_INSIDE_PASSES`.

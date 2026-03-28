@@ -236,6 +236,7 @@ struct RenderState {
     scroll: [f32; 2],
     dragging: bool,
     last_mouse: [f32; 2],
+    gpu_profiler: Option<wgpu_profiler::GpuProfiler>,
 }
 
 impl RenderState {
@@ -367,7 +368,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let Some(state) = &self.state {
+                if let Some(state) = &mut self.state {
                     render(state);
                 }
             }
@@ -402,10 +403,25 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
 
     log::info!("Using adapter: {:?}", adapter.get_info().name);
 
+    let has_timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+    let has_pass_timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES);
+    let mut features = wgpu::Features::empty();
+    if has_timestamps {
+        features |= wgpu::Features::TIMESTAMP_QUERY;
+    }
+    if has_pass_timestamps {
+        features |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
+    }
+    if !has_timestamps {
+        eprintln!("WARNING: TIMESTAMP_QUERY not supported, GPU profiling disabled");
+    } else if !has_pass_timestamps {
+        eprintln!("WARNING: TIMESTAMP_QUERY_INSIDE_PASSES not supported, pass-level profiling unavailable");
+    }
+
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("sluggrs demo device"),
-            required_features: wgpu::Features::empty(),
+            required_features: features,
             required_limits: wgpu::Limits::default(),
             ..Default::default()
         })
@@ -808,6 +824,19 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
         cache: None,
     });
 
+    let gpu_profiler = if has_timestamps {
+        Some(wgpu_profiler::GpuProfiler::new(
+            &device,
+            wgpu_profiler::GpuProfilerSettings {
+                enable_timer_queries: true,
+                enable_debug_groups: false,
+                max_num_pending_frames: 3,
+            },
+        ).expect("Failed to create GPU profiler"))
+    } else {
+        None
+    };
+
     RenderState {
         surface,
         device,
@@ -823,10 +852,11 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
         scroll: [0.0, 0.0],
         dragging: false,
         last_mouse: [0.0, 0.0],
+        gpu_profiler,
     }
 }
 
-fn render(state: &RenderState) {
+fn render(state: &mut RenderState) {
     let frame = match state.surface.get_current_texture() {
         Ok(f) => f,
         Err(e) => {
@@ -868,14 +898,38 @@ fn render(state: &RenderState) {
             occlusion_query_set: None,
         });
 
+        // GPU profiling — measures actual fragment shader execution time
+        let query = state.gpu_profiler.as_ref().map(|p| p.begin_query("text_render", &mut pass));
+
         pass.set_pipeline(&state.pipeline);
         pass.set_bind_group(0, &state.params_bind_group, &[]);
         pass.set_bind_group(1, &state.texture_bind_group, &[]);
         pass.set_vertex_buffer(0, state.instance_buffer.slice(..));
         pass.draw(0..4, 0..state.instance_count);
+
+        if let (Some(profiler), Some(query)) = (&state.gpu_profiler, query) {
+            profiler.end_query(&mut pass, query);
+        }
+    }
+
+    if let Some(profiler) = &mut state.gpu_profiler {
+        profiler.resolve_queries(&mut encoder);
     }
 
     state.queue.submit(std::iter::once(encoder.finish()));
+
+    if let Some(profiler) = &mut state.gpu_profiler {
+        let _ = profiler.end_frame();
+        if let Some(results) = profiler.process_finished_frame(state.queue.get_timestamp_period()) {
+            for r in &results {
+                if let Some(time) = &r.time {
+                    let ms = (time.end - time.start) * 1000.0;
+                    eprintln!("gpu_{}_ms={ms:.3}", r.label);
+                }
+            }
+        }
+    }
+
     frame.present();
 }
 

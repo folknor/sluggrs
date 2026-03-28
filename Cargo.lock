@@ -2133,6 +2133,7 @@ dependencies = [
  "pollster",
  "skrifa 0.40.0",
  "wgpu",
+ "wgpu-profiler",
  "winit",
 ]
 
@@ -2818,6 +2819,17 @@ dependencies = [
  "wgpu-types",
  "windows",
  "windows-core",
+]
+
+[[package]]
+name = "wgpu-profiler"
+version = "0.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54a5d746c6ee80bda321bf99d57cde941fadb69a99b3b1593c2354e5ef4aaa58"
+dependencies = [
+ "parking_lot",
+ "thiserror 2.0.18",
+ "wgpu",
 ]
 
 [[package]]

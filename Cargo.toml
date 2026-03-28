@@ -21,6 +21,7 @@ hotpath = "0.14"
 winit = "0.30"
 pollster = "0.4"
 env_logger = "0.11.10"
+wgpu-profiler = "0.26"
 
 [[example]]
 name = "demo"
