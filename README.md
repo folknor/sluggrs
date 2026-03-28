@@ -18,14 +18,15 @@ Key advantages:
 
 ## Status
 
-Work in progress. The core rendering pipeline is functional:
-- Outline extraction from any font via [skrifa](https://github.com/googlefonts/fontations)
-- Band acceleration structure for efficient curve lookup
+Work in progress. The core rendering pipeline is functional and tested in production via [ratatoskr](https://github.com/folknor/ratatoskr):
+- Outline extraction from any font (TrueType + CFF/OpenType) via [skrifa](https://github.com/googlefonts/fontations)
+- Cubic-to-quadratic subdivision for CFF fonts
+- Band acceleration structure for efficient per-pixel curve lookup
 - WGSL fragment shader with full Slug curve evaluation
+- Raster fallback for non-vector glyphs (color emoji, bitmap fonts) via SwashCache
+- Pressure-based trim/eviction matching cryoglyph's frame-boundary semantics
 - cryoglyph-compatible API (Cache, TextAtlas, TextRenderer, Viewport)
 - Wired into iced's `text.rs` via [forked iced](https://github.com/folknor/iced/tree/sluggrs)
-
-Not yet implemented: dilation (AA at small sizes), non-vector glyph fallback (emoji), trim/eviction.
 
 ## Acknowledgements
 
