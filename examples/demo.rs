@@ -219,6 +219,7 @@ fn prepare_text(
 struct App {
     state: Option<RenderState>,
     window: Option<Arc<Window>>,
+    warmup_frames: u32,
 }
 
 struct RenderState {
@@ -258,6 +259,7 @@ impl App {
         Self {
             state: None,
             window: None,
+            warmup_frames: 5,
         }
     }
 }
@@ -370,6 +372,13 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 if let Some(state) = &mut self.state {
                     render(state);
+                    // Warmup frames to flush GPU profiler pipeline
+                    if self.warmup_frames > 0 {
+                        self.warmup_frames -= 1;
+                        if let Some(window) = &self.window {
+                            window.request_redraw();
+                        }
+                    }
                 }
             }
             _ => {}
