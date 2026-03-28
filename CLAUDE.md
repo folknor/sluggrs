@@ -35,6 +35,9 @@ GPU-based vector text rendering using the Slug algorithm. Drop-in replacement fo
 
 ## brokkr commands
 
+If brokkr reports a lock (`already locked by PID`), another project is using it.
+Wait and retry — the lock exists to prevent concurrent benchmark interference.
+
 ### Available in sluggrs
 ```sh
 brokkr check                                  # clippy + tests
