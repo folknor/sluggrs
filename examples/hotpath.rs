@@ -65,6 +65,20 @@ fn main() {
     }
     let mixed_avg_us = mixed_start.elapsed().as_micros() / mixed_iterations as u128;
 
+    // -- GPU render: measure actual fragment shader time --
+    // Warmup frames to flush the profiler pipeline
+    for _ in 0..5 {
+        harness.render_gpu();
+    }
+    // Collect 10 measurements, take the median
+    let mut gpu_times: Vec<f64> = Vec::new();
+    for _ in 0..10 {
+        if let Some(ms) = harness.render_gpu() {
+            gpu_times.push(ms);
+        }
+    }
+    gpu_times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
     let final_glyphs = harness.atlas.glyph_count();
     let final_curve_texels = harness.atlas.curve_texels_used();
     let final_band_texels = harness.atlas.band_texels_used();
@@ -85,6 +99,10 @@ fn main() {
     let band_bytes = final_band_texels as u64 * 16;
     eprintln!("curve_texture_bytes={curve_bytes}");
     eprintln!("band_texture_bytes={band_bytes}");
+
+    if let Some(median) = gpu_times.get(gpu_times.len() / 2) {
+        eprintln!("gpu_text_render_us={}", (*median * 1000.0) as u64);
+    }
 }
 
 fn create_device() -> (wgpu::Device, wgpu::Queue) {
@@ -96,8 +114,20 @@ fn create_device() -> (wgpu::Device, wgpu::Queue) {
     }))
     .expect("No suitable GPU adapter found");
 
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-        .expect("Failed to create device")
+    let mut features = wgpu::Features::empty();
+    if adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+        features |= wgpu::Features::TIMESTAMP_QUERY;
+    }
+    if adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES) {
+        features |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
+    }
+
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("sluggrs hotpath"),
+        required_features: features,
+        ..Default::default()
+    }))
+    .expect("Failed to create device")
 }
 
 struct RenderHarness {
@@ -108,6 +138,9 @@ struct RenderHarness {
     swash_cache: SwashCache,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    render_target: wgpu::Texture,
+    render_view: wgpu::TextureView,
+    gpu_profiler: Option<wgpu_profiler::GpuProfiler>,
 }
 
 impl RenderHarness {
@@ -131,6 +164,31 @@ impl RenderHarness {
             },
         );
 
+        let render_target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("offscreen render target"),
+            size: wgpu::Extent3d { width: 1920, height: 1080, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let render_view = render_target.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let gpu_profiler = if device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+            Some(wgpu_profiler::GpuProfiler::new(
+                device,
+                wgpu_profiler::GpuProfilerSettings {
+                    enable_timer_queries: true,
+                    enable_debug_groups: false,
+                    max_num_pending_frames: 8,
+                },
+            ).expect("Failed to create GPU profiler"))
+        } else {
+            None
+        };
+
         Self {
             renderer,
             atlas,
@@ -139,7 +197,57 @@ impl RenderHarness {
             swash_cache: SwashCache::new(),
             device: device.clone(),
             queue: queue.clone(),
+            render_target,
+            render_view,
+            gpu_profiler,
         }
+    }
+
+    /// Run an actual GPU render pass and measure fragment shader time.
+    fn render_gpu(&mut self) -> Option<f64> {
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("gpu profiling pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.render_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                ..Default::default()
+            });
+
+            let query = self.gpu_profiler.as_ref().map(|p| p.begin_query("text_render", &mut pass));
+
+            self.renderer.render(&self.atlas, &self.viewport, &mut pass).unwrap();
+
+            if let (Some(profiler), Some(query)) = (&self.gpu_profiler, query) {
+                profiler.end_query(&mut pass, query);
+            }
+        }
+
+        if let Some(profiler) = &mut self.gpu_profiler {
+            profiler.resolve_queries(&mut encoder);
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        if let Some(profiler) = &mut self.gpu_profiler {
+            let _ = profiler.end_frame();
+            if let Some(results) = profiler.process_finished_frame(self.queue.get_timestamp_period()) {
+                for r in &results {
+                    if let Some(time) = &r.time {
+                        return Some((time.end - time.start) * 1000.0);
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn prepare_text(&mut self, text: &str) -> Result<(), sluggrs::PrepareError> {
