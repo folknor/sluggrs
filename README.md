@@ -4,6 +4,9 @@ GPU vector text rendering using the [Slug algorithm](https://terathon.com/blog/d
 
 Drop-in replacement for [cryoglyph](https://github.com/iced-rs/cryoglyph) in the [iced](https://github.com/iced-rs/iced) GUI framework's wgpu text rendering pipeline.
 
+Built with LLMs. See [LLM.md](LLM.md).
+
+
 ## How it works
 
 Traditional text renderers (cryoglyph, glyphon) rasterize glyphs to bitmaps on the CPU, pack them into a GPU texture atlas, and draw textured quads. This works but has downsides: atlas memory pressure, re-rasterization on scale changes, and pixel-locked rendering.
