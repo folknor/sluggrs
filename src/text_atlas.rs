@@ -219,7 +219,10 @@ impl TextAtlas {
             });
         }
 
-        // Build band data with absolute 2D curve locations
+        // Build band data with absolute 2D curve locations.
+        // NOTE: scratch_band_entries is moved out here and must be reclaimed
+        // (self.scratch_band_entries = band_data.entries) on ALL return paths
+        // to avoid losing the allocation.
         let band_start = self.band_cursor;
         let band_data =
             crate::band::build_bands(gpu_outline, &self.scratch_curve_locations, band_count_x, band_count_y, std::mem::take(&mut self.scratch_band_entries));
