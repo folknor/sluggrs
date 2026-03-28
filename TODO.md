@@ -276,7 +276,7 @@ partly compute/sort bound (per-band sorting in band.rs), not just allocator boun
 
 ### Parked — pursue only if profiling points here again
 
-- [ ] Band builder algorithmic work — build_bands is partly compute-bound. Targets:
+- [x] Band builder algorithmic work — build_bands is partly compute-bound. Targets:
   - Temporary data layout: Vec<Vec<usize>> has poor locality; flat layout may help.
     **perf review**: this is 8-24 heap allocations per cache-miss glyph (one inner
     Vec per band), completely unsalvageable — built, sorted, iterated, dropped.

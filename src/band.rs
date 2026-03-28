@@ -51,15 +51,61 @@ pub fn build_bands(
     let offset_x = -min_x * scale_x;
     let offset_y = -min_y * scale_y;
 
-    // For each horizontal band (indexed by y), collect curves that overlap it
-    let curves_per_band_hint = (outline.curves.len() / (band_count_y as usize).max(1)).max(1);
-    let mut hband_curves: Vec<Vec<usize>> = (0..band_count_y as usize)
-        .map(|_| Vec::with_capacity(curves_per_band_hint))
-        .collect();
-    // For each vertical band (indexed by x), collect curves that overlap it
-    let mut vband_curves: Vec<Vec<usize>> = (0..band_count_x as usize)
-        .map(|_| Vec::with_capacity(curves_per_band_hint))
-        .collect();
+    const BAND_EPSILON: f32 = 1e-5;
+    let hcount = band_count_y as usize;
+    let vcount = band_count_x as usize;
+
+    // Pre-compute sort keys and band ranges per curve (single pass over curves)
+    let num_curves = outline.curves.len();
+    let mut max_x_keys = Vec::with_capacity(num_curves);
+    let mut max_y_keys = Vec::with_capacity(num_curves);
+
+    // Phase 1: count curves per band (no allocations per band)
+    let mut hband_counts = vec![0u32; hcount];
+    let mut vband_counts = vec![0u32; vcount];
+
+    for curve in &outline.curves {
+        let curve_min_y = curve.p1[1].min(curve.p2[1]).min(curve.p3[1]);
+        let curve_max_y = curve.p1[1].max(curve.p2[1]).max(curve.p3[1]);
+        let curve_min_x = curve.p1[0].min(curve.p2[0]).min(curve.p3[0]);
+        let curve_max_x = curve.p1[0].max(curve.p2[0]).max(curve.p3[0]);
+
+        max_x_keys.push(curve_max_x);
+        max_y_keys.push(curve_max_y);
+
+        let hband_min = (curve_min_y * scale_y + offset_y).floor().clamp(0.0, hcount as f32 - 1.0) as usize;
+        let hband_max = ((curve_max_y * scale_y + offset_y - BAND_EPSILON).floor()).clamp(0.0, hcount as f32 - 1.0) as usize;
+        for b in hband_min..=hband_max {
+            hband_counts[b] += 1;
+        }
+
+        let vband_min = (curve_min_x * scale_x + offset_x).floor().clamp(0.0, vcount as f32 - 1.0) as usize;
+        let vband_max = ((curve_max_x * scale_x + offset_x - BAND_EPSILON).floor()).clamp(0.0, vcount as f32 - 1.0) as usize;
+        for b in vband_min..=vband_max {
+            vband_counts[b] += 1;
+        }
+    }
+
+    // Phase 2: compute offsets into flat array, then fill
+    let htotal: u32 = hband_counts.iter().sum();
+    let vtotal: u32 = vband_counts.iter().sum();
+
+    let mut hband_offsets = Vec::with_capacity(hcount);
+    let mut offset = 0u32;
+    for &count in &hband_counts {
+        hband_offsets.push(offset);
+        offset += count;
+    }
+    let mut vband_offsets = Vec::with_capacity(vcount);
+    for &count in &vband_counts {
+        vband_offsets.push(offset);
+        offset += count;
+    }
+
+    // Single flat array for all curve indices
+    let mut flat_indices = vec![0usize; (htotal + vtotal) as usize];
+    let mut hband_fill = hband_offsets.clone();
+    let mut vband_fill = vband_offsets.clone();
 
     for (i, curve) in outline.curves.iter().enumerate() {
         let curve_min_y = curve.p1[1].min(curve.p2[1]).min(curve.p3[1]);
@@ -67,53 +113,33 @@ pub fn build_bands(
         let curve_min_x = curve.p1[0].min(curve.p2[0]).min(curve.p3[0]);
         let curve_max_x = curve.p1[0].max(curve.p2[0]).max(curve.p3[0]);
 
-        // Horizontal bands: inclusive lower bound, exclusive upper bound (biased by epsilon)
-        const BAND_EPSILON: f32 = 1e-5;
-
-        let hmin = curve_min_y * scale_y + offset_y;
-        let hmax = curve_max_y * scale_y + offset_y;
-        let hband_min = hmin.floor().clamp(0.0, band_count_y as f32 - 1.0) as u32;
-        let hband_max = (hmax - BAND_EPSILON)
-            .floor()
-            .clamp(0.0, band_count_y as f32 - 1.0) as u32;
-
+        let hband_min = (curve_min_y * scale_y + offset_y).floor().clamp(0.0, hcount as f32 - 1.0) as usize;
+        let hband_max = ((curve_max_y * scale_y + offset_y - BAND_EPSILON).floor()).clamp(0.0, hcount as f32 - 1.0) as usize;
         for b in hband_min..=hband_max {
-            hband_curves[b as usize].push(i);
+            flat_indices[hband_fill[b] as usize] = i;
+            hband_fill[b] += 1;
         }
 
-        // Vertical bands: inclusive lower bound, exclusive upper bound (biased by epsilon)
-        let vmin = curve_min_x * scale_x + offset_x;
-        let vmax = curve_max_x * scale_x + offset_x;
-        let vband_min = vmin.floor().clamp(0.0, band_count_x as f32 - 1.0) as u32;
-        let vband_max = (vmax - BAND_EPSILON)
-            .floor()
-            .clamp(0.0, band_count_x as f32 - 1.0) as u32;
-
+        let vband_min = (curve_min_x * scale_x + offset_x).floor().clamp(0.0, vcount as f32 - 1.0) as usize;
+        let vband_max = ((curve_max_x * scale_x + offset_x - BAND_EPSILON).floor()).clamp(0.0, vcount as f32 - 1.0) as usize;
         for b in vband_min..=vband_max {
-            vband_curves[b as usize].push(i);
+            flat_indices[vband_fill[b] as usize] = i;
+            vband_fill[b] += 1;
         }
     }
 
-    // Pre-compute sort keys to avoid redundant max() calls in comparators.
-    // H-bands sort by descending max x; V-bands sort by descending max y.
-    let num_curves = outline.curves.len();
-    let mut max_x_keys = Vec::with_capacity(num_curves);
-    let mut max_y_keys = Vec::with_capacity(num_curves);
-    for curve in &outline.curves {
-        max_x_keys.push(curve.p1[0].max(curve.p2[0]).max(curve.p3[0]));
-        max_y_keys.push(curve.p1[1].max(curve.p2[1]).max(curve.p3[1]));
-    }
-
-    // Sort horizontal band curves by descending max x (for shader early exit)
-    for band in &mut hband_curves {
-        band.sort_unstable_by(|&a, &b| {
+    // Sort each band's slice by descending max coordinate (for shader early exit)
+    for b in 0..hcount {
+        let start = hband_offsets[b] as usize;
+        let end = start + hband_counts[b] as usize;
+        flat_indices[start..end].sort_unstable_by(|&a, &b| {
             max_x_keys[b].partial_cmp(&max_x_keys[a]).unwrap_or(std::cmp::Ordering::Equal)
         });
     }
-
-    // Sort vertical band curves by descending max y
-    for band in &mut vband_curves {
-        band.sort_unstable_by(|&a, &b| {
+    for b in 0..vcount {
+        let start = vband_offsets[b] as usize;
+        let end = start + vband_counts[b] as usize;
+        flat_indices[start..end].sort_unstable_by(|&a, &b| {
             max_y_keys[b].partial_cmp(&max_y_keys[a]).unwrap_or(std::cmp::Ordering::Equal)
         });
     }
@@ -127,60 +153,39 @@ pub fn build_bands(
     // Each curve index entry is (curve_loc.x, curve_loc.y, 0, 0) but in the Slug format
     // it's just (curve_loc.x, curve_loc.y) packed as uint2.
 
+    // Build GPU texture data from flat arrays
     let num_headers = band_count_y + band_count_x;
+    let curve_lists_start = num_headers;
 
-    // Phase 1: calculate offsets
-    let curve_lists_start = num_headers; // offset in texels from glyph start
-    let mut hband_offsets: Vec<(u32, u32)> = Vec::with_capacity(band_count_y as usize);
-    let mut vband_offsets: Vec<(u32, u32)> = Vec::with_capacity(band_count_x as usize);
+    // Calculate texel offsets for headers
+    let total_refs = (htotal + vtotal) as usize;
+    let mut entries: Vec<u32> = Vec::with_capacity((num_headers as usize + total_refs) * 4);
 
-    let mut current_offset = curve_lists_start;
-    for band in &hband_curves {
-        hband_offsets.push((band.len() as u32, current_offset));
-        current_offset += band.len() as u32;
-    }
-    for band in &vband_curves {
-        vband_offsets.push((band.len() as u32, current_offset));
-        current_offset += band.len() as u32;
-    }
-
-    // Reserve exact capacity: 4 u32s per header + 4 u32s per curve reference
-    let mut entries: Vec<u32> = Vec::with_capacity(current_offset as usize * 4);
-
-    // Phase 2: write headers
-    // Horizontal band headers come first (band_count_y of them)
-    for &(count, offset) in &hband_offsets {
-        entries.push(count);
-        entries.push(offset);
-        entries.push(0); // padding for uint4
-        entries.push(0);
-    }
-    // Vertical band headers
-    for &(count, offset) in &vband_offsets {
-        entries.push(count);
-        entries.push(offset);
+    // Write horizontal band headers
+    let mut texel_offset = curve_lists_start;
+    for b in 0..hcount {
+        entries.push(hband_counts[b]);
+        entries.push(texel_offset);
         entries.push(0);
         entries.push(0);
+        texel_offset += hband_counts[b];
+    }
+    // Write vertical band headers
+    for b in 0..vcount {
+        entries.push(vband_counts[b]);
+        entries.push(texel_offset);
+        entries.push(0);
+        entries.push(0);
+        texel_offset += vband_counts[b];
     }
 
-    // Phase 3: write curve index lists
-    for band in &hband_curves {
-        for &curve_idx in band {
-            let loc = curve_locations[curve_idx];
-            entries.push(loc.x);
-            entries.push(loc.y);
-            entries.push(0);
-            entries.push(0);
-        }
-    }
-    for band in &vband_curves {
-        for &curve_idx in band {
-            let loc = curve_locations[curve_idx];
-            entries.push(loc.x);
-            entries.push(loc.y);
-            entries.push(0);
-            entries.push(0);
-        }
+    // Write curve references from flat array
+    for &curve_idx in &flat_indices {
+        let loc = curve_locations[curve_idx];
+        entries.push(loc.x);
+        entries.push(loc.y);
+        entries.push(0);
+        entries.push(0);
     }
 
     BandData {
