@@ -63,7 +63,25 @@ Five functions are instrumented with `#[hotpath::measure]`:
 The hotpath example emits KV pairs to stderr (captured by brokkr):
 `distinct_glyphs`, `curve_texels`, `band_texels`, `cold_prepare_us`,
 `warm_prepare_avg_us`, `mixed_prepare_avg_us`, `curve_texture_bytes`,
-`band_texture_bytes`.
+`band_texture_bytes`, `gpu_text_render_us`.
+
+### GPU profiling
+
+Both CPU and GPU profiling run headless — no user interaction needed.
+
+- `brokkr sluggrs hotpath` measures CPU-side prepare AND GPU fragment shader
+  time via wgpu-profiler timestamp queries. Renders to an offscreen 1920x1080
+  texture. The `gpu_text_render_us` KV is stored in results.db.
+- `cargo run --example demo` also emits `gpu_text_render_ms` to stderr on
+  each redraw (5 warmup frames at startup flush the profiler pipeline). A
+  window opens but GPU timing is captured automatically:
+  `timeout 3 cargo run --example demo 2>&1 | grep gpu_`
+- Requires TIMESTAMP_QUERY + TIMESTAMP_QUERY_INSIDE_PASSES wgpu features
+  (NVIDIA, AMD, Intel desktop all support these). Gracefully disabled if
+  unavailable.
+
+Baseline (RTX 3080, 92 glyphs): CPU prepare 753us, GPU render 11us
+(headless offscreen) / 71us (windowed with compositor).
 
 ## Lints
 
