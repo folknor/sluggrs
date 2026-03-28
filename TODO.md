@@ -260,7 +260,7 @@ partly compute/sort bound (per-band sorting in band.rs), not just allocator boun
 
 ### Cold-frame waste (found by deep perf review)
 
-- [ ] band_data.entries Vec allocated per cache-miss glyph — build_bands
+- [x] band_data.entries Vec allocated per cache-miss glyph — build_bands
   returns owned BandData with fresh Vec. Could use scratch Vec on TextAtlas
   like scratch_curve_texels. **perf review**
 
