@@ -51,14 +51,13 @@ impl TextRenderer {
         }
     }
 
-    /// Prepares all of the provided text areas for rendering, with depth.
-    #[allow(clippy::too_many_arguments)] // matches cryoglyph's API
-    #[hotpath::measure]
     /// Prepare text areas for rendering, with per-glyph depth mapping.
     ///
     /// `encoder` and `cache` are unused — they exist for cryoglyph API
     /// compatibility. sluggrs uses `queue.write_texture` (no encoder needed)
     /// and extracts outlines via skrifa (no swash rasterization).
+    #[allow(clippy::too_many_arguments)]
+    #[hotpath::measure]
     pub fn prepare_with_depth<'a>(
         &mut self,
         device: &Device,
@@ -74,9 +73,6 @@ impl TextRenderer {
         self.instances.clear();
 
         let resolution = viewport.resolution();
-
-        // Persistent cache — avoids HashMap allocation per frame and
-        // avoids re-parsing skrifa FontRef + head table on warm frames.
 
         for text_area in text_areas {
             let bounds_min_x = text_area.bounds.left.max(0);
@@ -96,118 +92,40 @@ impl TextRenderer {
                 .skip_while(|run| !is_run_visible(run))
                 .take_while(is_run_visible);
 
-            // Precompute default color for this text area (avoids per-glyph division)
-            let dc = text_area.default_color;
-            let default_color = [
-                dc.r() as f32 / 255.0,
-                dc.g() as f32 / 255.0,
-                dc.b() as f32 / 255.0,
-                dc.a() as f32 / 255.0,
-            ];
+            let default_color = color_to_f32(text_area.default_color);
 
             for run in layout_runs {
                 for glyph in run.glyphs {
-                    let key = GlyphKey::from_layout_glyph(glyph);
-
-                    // Single hash: look up + mark used, or fall through to extraction
-                    let entry = if let Some(e) = atlas.glyphs.get_and_mark_used(&key) {
-                        e
-                    } else {
-                        // Cache miss — extract outline and upload
-                        let face_index = font_system
-                            .db()
-                            .face(glyph.font_id)
-                            .map(|info| info.index)
-                            .unwrap_or(0);
-                        let font = match font_system.get_font(glyph.font_id, glyph.font_weight) {
-                            Some(f) => f,
-                            None => {
-                                log::warn!("Font not found for glyph {key:?}");
-                                continue;
-                            }
-                        };
-
-                        if let std::collections::hash_map::Entry::Vacant(e) = self.units_per_em_cache.entry(glyph.font_id)
-                            && let Ok(skrifa_font) = skrifa::FontRef::from_index(font.data(), face_index)
-                        {
-                            use skrifa::raw::TableProvider;
-                            let v = skrifa_font.head().map(|h| h.units_per_em() as f32).unwrap_or(1000.0);
-                            e.insert(v);
-                        }
-
-                        let wght_tag = skrifa::Tag::new(b"wght");
-                        let location = [VariationSetting::new(wght_tag, glyph.font_weight.0 as f32)];
-
-                        let entry = match extract_outline(font.data(), face_index, glyph.glyph_id, &location) {
-                            Some(outline) => {
-                                let mut gpu_outline = prepare_outline(&outline);
-                                if glyph.cache_key_flags.contains(
-                                    cosmic_text::CacheKeyFlags::FAKE_ITALIC,
-                                ) {
-                                    apply_italic_shear(&mut gpu_outline);
-                                }
-                                let num_curves = gpu_outline.curves.len();
-                                let band_count = if num_curves < 10 {
-                                    4
-                                } else if num_curves < 30 {
-                                    8
-                                } else {
-                                    12
-                                };
-                                atlas.upload_glyph(device, queue, &gpu_outline, band_count, band_count)?
-                            }
-                            None => NON_VECTOR_GLYPH,
-                        };
-
-                        atlas.glyphs.insert_and_mark_used(key, entry)
-                    };
+                    // --- Phase 1: Cache lookup or extraction ---
+                    let entry = self.resolve_glyph(device, queue, font_system, atlas, glyph)?;
 
                     if entry.is_non_vector() {
                         continue;
                     }
 
-                    // Get font metrics for scaling (cached per font_id).
-                    // Usually populated in the glyph cache-miss block above;
-                    // this fallback handles glyphs cached from a prior frame.
-                    let units_per_em = match self.units_per_em_cache.get(&glyph.font_id) {
-                        Some(&v) => v,
-                        None => {
-                            let face_index = font_system
-                                .db()
-                                .face(glyph.font_id)
-                                .map(|info| info.index)
-                                .unwrap_or(0);
-                            let font = match font_system.get_font(glyph.font_id, glyph.font_weight) {
-                                Some(f) => f,
-                                None => continue,
-                            };
-                            let v = {
-                                let skrifa_font = match skrifa::FontRef::from_index(font.data(), face_index) {
-                                    Ok(f) => f,
-                                    Err(_) => continue,
-                                };
-                                use skrifa::raw::TableProvider;
-                                skrifa_font.head().map(|h| h.units_per_em() as f32).unwrap_or(1000.0)
-                            };
-                            self.units_per_em_cache.insert(glyph.font_id, v);
-                            v
-                        }
+                    // --- Phase 2: Font metrics ---
+                    let units_per_em = match resolve_units_per_em(
+                        &mut self.units_per_em_cache,
+                        font_system,
+                        glyph.font_id,
+                        glyph.font_weight,
+                    ) {
+                        Some(v) => v,
+                        None => continue,
                     };
 
+                    // --- Phase 3: Screen position + culling ---
                     let scale = glyph.font_size * text_area.scale / units_per_em;
                     let [min_x, min_y, max_x, max_y] = entry.bounds;
 
-                    // Screen position: glyph position from layout + text area offset
                     let glyph_x = text_area.left + (glyph.x + glyph.x_offset) * text_area.scale;
                     let glyph_y = text_area.top + (run.line_y + glyph.y_offset) * text_area.scale;
 
-                    // Screen rect: undilated quad (shader handles 1px dilation)
                     let screen_x = glyph_x + min_x * scale;
-                    let screen_y = glyph_y - max_y * scale; // flip Y: font is Y-up
+                    let screen_y = glyph_y - max_y * scale;
                     let screen_w = (max_x - min_x) * scale;
                     let screen_h = (max_y - min_y) * scale;
 
-                    // Skip if entirely outside bounds (1px margin for shader dilation)
                     if screen_x + screen_w + 1.0 < bounds_min_x as f32
                         || screen_x - 1.0 > bounds_max_x as f32
                         || screen_y + screen_h + 1.0 < bounds_min_y as f32
@@ -216,17 +134,11 @@ impl TextRenderer {
                         continue;
                     }
 
+                    // --- Phase 4: Instance packing ---
                     let color = match glyph.color_opt {
-                        Some(c) => [
-                            c.r() as f32 / 255.0,
-                            c.g() as f32 / 255.0,
-                            c.b() as f32 / 255.0,
-                            c.a() as f32 / 255.0,
-                        ],
+                        Some(c) => color_to_f32(c),
                         None => default_color,
                     };
-
-                    let depth = metadata_to_depth(glyph.metadata);
 
                     self.instances.push(GlyphInstance {
                         screen_rect: [screen_x, screen_y, screen_w, screen_h],
@@ -239,19 +151,80 @@ impl TextRenderer {
                             entry.band_max_y,
                         ],
                         color,
-                        depth,
+                        depth: metadata_to_depth(glyph.metadata),
                     });
                 }
             }
         }
 
+        self.upload_vertices(device, queue);
+        Ok(())
+    }
+
+    /// Resolve a glyph: return cached entry or extract + upload on miss.
+    fn resolve_glyph(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        font_system: &mut cosmic_text::FontSystem,
+        atlas: &mut TextAtlas,
+        glyph: &cosmic_text::LayoutGlyph,
+    ) -> Result<crate::glyph_cache::GlyphEntry, PrepareError> {
+        let key = GlyphKey::from_layout_glyph(glyph);
+
+        if let Some(e) = atlas.glyphs.get_and_mark_used(&key) {
+            return Ok(e);
+        }
+
+        // Cache miss — extract outline and upload
+        let face_index = font_system
+            .db()
+            .face(glyph.font_id)
+            .map(|info| info.index)
+            .unwrap_or(0);
+        let font = match font_system.get_font(glyph.font_id, glyph.font_weight) {
+            Some(f) => f,
+            None => {
+                log::warn!("Font not found for glyph {key:?}");
+                return Ok(NON_VECTOR_GLYPH);
+            }
+        };
+
+        // Populate units_per_em cache while we have the font ref
+        if let std::collections::hash_map::Entry::Vacant(e) = self.units_per_em_cache.entry(glyph.font_id)
+            && let Ok(skrifa_font) = skrifa::FontRef::from_index(font.data(), face_index)
+        {
+            use skrifa::raw::TableProvider;
+            let v = skrifa_font.head().map(|h| h.units_per_em() as f32).unwrap_or(1000.0);
+            e.insert(v);
+        }
+
+        let wght_tag = skrifa::Tag::new(b"wght");
+        let location = [VariationSetting::new(wght_tag, glyph.font_weight.0 as f32)];
+
+        let entry = match extract_outline(font.data(), face_index, glyph.glyph_id, &location) {
+            Some(outline) => {
+                let mut gpu_outline = prepare_outline(&outline);
+                if glyph.cache_key_flags.contains(cosmic_text::CacheKeyFlags::FAKE_ITALIC) {
+                    apply_italic_shear(&mut gpu_outline);
+                }
+                let band_count = band_count_for_curves(gpu_outline.curves.len());
+                atlas.upload_glyph(device, queue, &gpu_outline, band_count, band_count)?
+            }
+            None => NON_VECTOR_GLYPH,
+        };
+
+        Ok(atlas.glyphs.insert_and_mark_used(key, entry))
+    }
+
+    /// Upload the instance buffer to the GPU.
+    fn upload_vertices(&mut self, device: &Device, queue: &Queue) {
         self.glyphs_to_render = self.instances.len() as u32;
 
         if self.instances.is_empty() {
-            return Ok(());
+            return;
         }
 
-        // Upload vertex buffer
         let vertices_raw = bytemuck::cast_slice(&self.instances);
 
         if self.vertex_buffer_size >= vertices_raw.len() as u64 {
@@ -273,8 +246,6 @@ impl TextRenderer {
             self.vertex_buffer.unmap();
             self.vertex_buffer_size = new_size;
         }
-
-        Ok(())
     }
 
     /// Prepares all of the provided text areas for rendering.
@@ -322,6 +293,53 @@ impl TextRenderer {
 
         Ok(())
     }
+}
+
+/// Determine the band count for a glyph based on its curve complexity.
+fn band_count_for_curves(num_curves: usize) -> u32 {
+    if num_curves < 10 {
+        4
+    } else if num_curves < 30 {
+        8
+    } else {
+        12
+    }
+}
+
+/// Look up units_per_em for a font, populating the cache on miss.
+fn resolve_units_per_em(
+    cache: &mut std::collections::HashMap<cosmic_text::fontdb::ID, f32>,
+    font_system: &mut cosmic_text::FontSystem,
+    font_id: cosmic_text::fontdb::ID,
+    font_weight: cosmic_text::Weight,
+) -> Option<f32> {
+    if let Some(&v) = cache.get(&font_id) {
+        return Some(v);
+    }
+    let face_index = font_system
+        .db()
+        .face(font_id)
+        .map(|info| info.index)
+        .unwrap_or(0);
+    let font = font_system.get_font(font_id, font_weight)?;
+    let skrifa_font = skrifa::FontRef::from_index(font.data(), face_index).ok()?;
+    use skrifa::raw::TableProvider;
+    let v = skrifa_font
+        .head()
+        .map(|h| h.units_per_em() as f32)
+        .unwrap_or(1000.0);
+    cache.insert(font_id, v);
+    Some(v)
+}
+
+/// Convert a cosmic_text Color to normalized [f32; 4].
+fn color_to_f32(c: cosmic_text::Color) -> [f32; 4] {
+    [
+        c.r() as f32 / 255.0,
+        c.g() as f32 / 255.0,
+        c.b() as f32 / 255.0,
+        c.a() as f32 / 255.0,
+    ]
 }
 
 fn next_copy_buffer_size(size: u64) -> u64 {

@@ -2,7 +2,7 @@
 
 ## Bugs found by review (2026-03-27)
 
-- [ ] `prepare_with_depth` does too much — text_renderer.rs:57 handles font
+- [x] `prepare_with_depth` does too much — text_renderer.rs:57 handles font
   lookup, TTC face resolution, variation setup, outline extraction, fake
   italic, cache insertion, non-vector classification, instance packing, and
   vertex upload. Renderer and atlas are tightly coupled through pub(crate)
