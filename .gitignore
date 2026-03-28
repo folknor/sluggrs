@@ -8,3 +8,6 @@ data
 !.brokkr/results.db
 examples/fonts/TisaPro-Regular.otf
 examples/fonts/BerlingskeSerif-Regular.ttf
+examples/fonts/NotoColorEmoji*.ttf
+examples/emoji_test/target
+examples/emoji_test/Cargo.lock
