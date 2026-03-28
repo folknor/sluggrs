@@ -40,11 +40,10 @@ GPU-based vector text rendering using the Slug algorithm. Drop-in replacement fo
 brokkr check                                  # clippy + tests
 brokkr check -- --test glyph_pipeline_test    # run one test file
 brokkr check -- -- --ignored                  # run ignored (GPU-only) tests
-brokkr sluggrs hotpath                        # timing profile, stored in results.db
+brokkr sluggrs hotpath                        # timing profile (1 run, stored in results.db)
+brokkr sluggrs hotpath -n 3                   # 3 runs
 brokkr sluggrs hotpath --alloc                # allocation profile
-brokkr sluggrs hotpath --runs 5               # best-of-5
-brokkr sluggrs hotpath --commit abc123        # benchmark an old commit via worktree
-brokkr sluggrs hotpath --force                # run on dirty tree (results not stored)
+brokkr sluggrs hotpath --alloc -n 5           # 5 alloc runs
 brokkr results                                # last 20 results
 brokkr results <uuid>                         # look up by UUID prefix
 brokkr results --compare-last --command hotpath  # compare two most recent hotpath runs
@@ -53,11 +52,6 @@ brokkr env                                    # show environment info
 brokkr clean                                  # clean build artifacts and scratch data
 brokkr history                                # browse command history
 ```
-
-### Not yet available in sluggrs
-- `brokkr run` — no main binary (sluggrs is a library)
-- `brokkr bench` — no benchmark suite configured
-- `brokkr sluggrs test/list/approve/status` — visual snapshot testing (no snapshots defined yet)
 
 ## Profiling
 
