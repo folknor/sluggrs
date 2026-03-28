@@ -54,6 +54,11 @@ impl TextRenderer {
     /// Prepares all of the provided text areas for rendering, with depth.
     #[allow(clippy::too_many_arguments)] // matches cryoglyph's API
     #[hotpath::measure]
+    /// Prepare text areas for rendering, with per-glyph depth mapping.
+    ///
+    /// `encoder` and `cache` are unused — they exist for cryoglyph API
+    /// compatibility. sluggrs uses `queue.write_texture` (no encoder needed)
+    /// and extracts outlines via skrifa (no swash rasterization).
     pub fn prepare_with_depth<'a>(
         &mut self,
         device: &Device,

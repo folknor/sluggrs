@@ -198,8 +198,12 @@ impl TextAtlas {
     ) -> Result<GlyphEntry, crate::types::PrepareError> {
         let num_curves = gpu_outline.curves.len() as u32;
 
-        // Build curve texels (2 texels per curve) — reuse scratch buffer
+        // Build curve texels (2 texels per curve) — reuse scratch buffer.
+        // INVARIANT: curve_cursor must be even so that curve_loc.x is always
+        // even. This ensures curve_loc.x + 1 (the p3 texel read in the shader)
+        // never exceeds 4095 on a 4096-wide texture.
         let curve_start = self.curve_cursor;
+        debug_assert!(curve_start % 2 == 0, "curve_cursor must be even to prevent shader OOB read");
         self.scratch_curve_texels.clear();
         self.scratch_curve_texels.reserve(num_curves as usize * 2);
         for curve in &gpu_outline.curves {
