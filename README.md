@@ -4,8 +4,12 @@ GPU vector text rendering using the [Slug algorithm](https://terathon.com/blog/d
 
 Drop-in replacement for [cryoglyph](https://github.com/iced-rs/cryoglyph) in the [iced](https://github.com/iced-rs/iced) GUI framework's wgpu text rendering pipeline.
 
-Built with LLMs. See [LLM.md](LLM.md).
+<div align="center">
+<img src="docs/public/sluggrs.png" alt="sluggrs screenshot" />
+<p><em>sluggrs rendering multilingual text in <a href="https://github.com/folknor/ratatoskr">ratatoskr</a> via this <a href="https://github.com/folknor/iced/tree/sluggrs">iced fork</a></em></p>
+</div>
 
+Built with LLMs. See [LLM.md](LLM.md).
 
 ## How it works
 
@@ -26,7 +30,7 @@ Work in progress. The core rendering pipeline is functional and tested in produc
 - Cubic-to-quadratic subdivision for CFF fonts
 - Band acceleration structure for efficient per-pixel curve lookup
 - WGSL fragment shader with full Slug curve evaluation
-- Raster fallback for non-vector glyphs (color emoji, bitmap fonts) via SwashCache
+- Raster fallback for non-vector glyphs (color emoji, bitmap fonts) via SwashCache — renders textured quads in the same pass as vector text
 - Pressure-based trim/eviction matching cryoglyph's frame-boundary semantics
 - cryoglyph-compatible API (Cache, TextAtlas, TextRenderer, Viewport)
 - Wired into iced's `text.rs` via [forked iced](https://github.com/folknor/iced/tree/sluggrs)
