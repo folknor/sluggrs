@@ -304,14 +304,9 @@ impl TextRenderer {
 }
 
 /// Determine the band count for a glyph based on its curve complexity.
+/// Matches harfbuzz: 1:1 up to a cap of 16 bands.
 fn band_count_for_curves(num_curves: usize) -> u32 {
-    if num_curves < 10 {
-        4
-    } else if num_curves < 30 {
-        8
-    } else {
-        12
-    }
+    (num_curves as u32).clamp(1, 16)
 }
 
 /// Look up units_per_em for a font, populating the cache on miss.
