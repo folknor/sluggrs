@@ -3,7 +3,7 @@
 /// `GpuOutline` is a type alias for `GlyphOutline` — outlines pass through
 /// unchanged since line segments use p2=p1 encoding and the shader handles
 /// degenerate quadratics via exact-zero detection.
-use crate::outline::{GlyphOutline, QuadCurve};
+use crate::outline::GlyphOutline;
 
 /// Glyph outline prepared for GPU rendering.
 /// Identical to `GlyphOutline` — no transformation is needed.
@@ -49,6 +49,7 @@ pub fn apply_italic_shear(outline: &mut GpuOutline) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::outline::QuadCurve;
 
     fn line_segment(p1: [f32; 2], p3: [f32; 2]) -> QuadCurve {
         QuadCurve { p1, p2: p1, p3 }

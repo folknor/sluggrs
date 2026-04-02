@@ -83,19 +83,39 @@ impl OutlinePen for CollectPen {
     }
 
     fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
-        // Cubic bezier → approximate with quadratics via midpoint subdivision.
-        // For a first pass, split once into two quadratics (good enough for most glyphs).
-        let p0 = self.current;
-        let p1 = [cx0, cy0];
-        let p2 = [cx1, cy1];
-        let p3 = [x, y];
+        let c0: P = [self.current[0] as f64, self.current[1] as f64];
+        let c1: P = [cx0 as f64, cy0 as f64];
+        let c2: P = [cx1 as f64, cy1 as f64];
+        let c3: P = [x as f64, y as f64];
 
-        subdivide_cubic(&mut self.curves, p0, p1, p2, p3, 0);
+        // Point-collapse check
+        if c0 == c3 {
+            return;
+        }
 
-        self.current = p3;
-        self.update_bounds(p1);
-        self.update_bounds(p2);
-        self.update_bounds(p3);
+        // Collinearity pre-check: if both interior control points are within
+        // tolerance of the c0→c3 baseline, emit as a line.
+        let dx = c3[0] - c0[0];
+        let dy = c3[1] - c0[1];
+        let len_sq = dx * dx + dy * dy;
+        if len_sq > 1e-24 {
+            let inv = 1.0 / len_sq;
+            let cross1 = (c1[0] - c0[0]) * dy - (c1[1] - c0[1]) * dx;
+            let cross2 = (c2[0] - c0[0]) * dy - (c2[1] - c0[1]) * dx;
+            if cross1 * cross1 * inv <= CU2QU_TOLERANCE * CU2QU_TOLERANCE
+                && cross2 * cross2 * inv <= CU2QU_TOLERANCE * CU2QU_TOLERANCE
+            {
+                // Flat enough — emit as line (p2=p1 encoding)
+                let p3f = [x, y];
+                self.curves.push(QuadCurve { p1: self.current, p2: self.current, p3: p3f });
+                self.current = p3f;
+                self.update_bounds(p3f);
+                return;
+            }
+        }
+
+        cubic_to_quadratics(&mut self.curves, &mut self.min, &mut self.max, c0, c1, c2, c3, 0);
+        self.current = [x, y];
     }
 
     fn close(&mut self) {
@@ -111,52 +131,143 @@ impl OutlinePen for CollectPen {
     }
 }
 
-/// Recursively subdivide a cubic bezier into quadratic approximations.
-/// max_depth controls quality vs curve count tradeoff.
-fn subdivide_cubic(
+/// Cubic-to-quadratic conversion using tangent-line intersection fitting.
+/// Port of harfbuzz's cu2qu algorithm (hb-gpu-cu2qu.hh).
+/// All internal math uses f64 for numerical stability.
+///
+/// Tolerance for quadratic approximation, in font units.
+const CU2QU_TOLERANCE: f64 = 0.5;
+
+/// Maximum subdivision depth (max 1024 quadratics per cubic).
+const CU2QU_MAX_DEPTH: u32 = 10;
+
+type P = [f64; 2];
+
+fn lerp(a: P, b: P, t: f64) -> P {
+    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+}
+
+/// Check if a cubic error curve stays within tolerance of the origin.
+/// The error curve has endpoints at (0,0) and interior control points p1, p2.
+fn cubic_fits_inside(p0: P, p1: P, p2: P, p3: P, tolerance: f64, depth: u32) -> bool {
+    // Quick accept: both interior control points within tolerance
+    if f64::hypot(p1[0], p1[1]) <= tolerance && f64::hypot(p2[0], p2[1]) <= tolerance {
+        return true;
+    }
+    if depth >= 8 {
+        return false;
+    }
+
+    // Check midpoint (t=0.5): (p0 + 3*(p1+p2) + p3) / 8
+    let mid = [
+        (p0[0] + 3.0 * (p1[0] + p2[0]) + p3[0]) * 0.125,
+        (p0[1] + 3.0 * (p1[1] + p2[1]) + p3[1]) * 0.125,
+    ];
+    if f64::hypot(mid[0], mid[1]) > tolerance {
+        return false;
+    }
+
+    // Split error curve and recurse
+    let d3 = [
+        (p3[0] + p2[0] - p1[0] - p0[0]) * 0.125,
+        (p3[1] + p2[1] - p1[1] - p0[1]) * 0.125,
+    ];
+    let h01 = lerp(p0, p1, 0.5);
+    let h23 = lerp(p2, p3, 0.5);
+    let mid_minus_d3 = [mid[0] - d3[0], mid[1] - d3[1]];
+    let mid_plus_d3 = [mid[0] + d3[0], mid[1] + d3[1]];
+
+    cubic_fits_inside(p0, h01, mid_minus_d3, mid, tolerance, depth + 1)
+        && cubic_fits_inside(mid, mid_plus_d3, h23, p3, tolerance, depth + 1)
+}
+
+/// Try to fit a single quadratic to a cubic via tangent-line intersection.
+/// Returns Some(q1) if the fit is within tolerance, None otherwise.
+fn approx_quadratic(c0: P, c1: P, c2: P, c3: P, tolerance: f64) -> Option<P> {
+    // Tangent directions
+    let ax = c1[0] - c0[0];
+    let ay = c1[1] - c0[1];
+    let dx = c3[0] - c2[0];
+    let dy = c3[1] - c2[1];
+
+    // Perpendicular to start tangent
+    let px = -ay;
+    let py = ax;
+
+    // Intersection parameter along end tangent
+    let denom = px * dx + py * dy;
+    if denom.abs() < 1e-12 {
+        return None; // Parallel tangents — needs subdivision
+    }
+
+    let h = (px * (c0[0] - c2[0]) + py * (c0[1] - c2[1])) / denom;
+    let q1 = [c2[0] + dx * h, c2[1] + dy * h];
+
+    // Error: difference between original cubic and degree-elevated quadratic
+    let err1 = [
+        c0[0] + (q1[0] - c0[0]) * (2.0 / 3.0) - c1[0],
+        c0[1] + (q1[1] - c0[1]) * (2.0 / 3.0) - c1[1],
+    ];
+    let err2 = [
+        c3[0] + (q1[0] - c3[0]) * (2.0 / 3.0) - c2[0],
+        c3[1] + (q1[1] - c3[1]) * (2.0 / 3.0) - c2[1],
+    ];
+
+    if cubic_fits_inside([0.0; 2], err1, err2, [0.0; 2], tolerance, 0) {
+        Some(q1)
+    } else {
+        None
+    }
+}
+
+/// Convert a cubic bezier to quadratic approximations using cu2qu.
+/// Pushes quadratics to `out`, tracks bounds in `bounds_min`/`bounds_max`.
+fn cubic_to_quadratics(
     out: &mut Vec<QuadCurve>,
-    p0: [f32; 2],
-    p1: [f32; 2],
-    p2: [f32; 2],
-    p3: [f32; 2],
+    bounds_min: &mut [f32; 2],
+    bounds_max: &mut [f32; 2],
+    c0: P, c1: P, c2: P, c3: P,
     depth: u32,
 ) {
-    const MAX_DEPTH: u32 = 3;
-
-    // Check if quadratic approximation is good enough.
-    // Error metric: max distance between cubic and its quadratic approximation.
-    // The quadratic control point is at (3*(p1+p2) - p0 - p3) / 4
-    let qx = (3.0 * (p1[0] + p2[0]) - p0[0] - p3[0]) / 4.0;
-    let qy = (3.0 * (p1[1] + p2[1]) - p0[1] - p3[1]) / 4.0;
-
-    // Error is proportional to |p1 - q| + |p2 - q|
-    let err = ((p1[0] - qx).powi(2) + (p1[1] - qy).powi(2)).sqrt()
-        + ((p2[0] - qx).powi(2) + (p2[1] - qy).powi(2)).sqrt();
-
-    if err < 0.5 || depth >= MAX_DEPTH {
-        // Good enough — emit single quadratic
-        out.push(QuadCurve {
-            p1: p0,
-            p2: [qx, qy],
-            p3,
-        });
+    // Try single-quad fit
+    if let Some(q1) = approx_quadratic(c0, c1, c2, c3, CU2QU_TOLERANCE) {
+        let p1 = [c0[0] as f32, c0[1] as f32];
+        let p2 = [q1[0] as f32, q1[1] as f32];
+        let p3 = [c3[0] as f32, c3[1] as f32];
+        out.push(QuadCurve { p1, p2, p3 });
+        for p in [p2, p3] {
+            bounds_min[0] = bounds_min[0].min(p[0]);
+            bounds_min[1] = bounds_min[1].min(p[1]);
+            bounds_max[0] = bounds_max[0].max(p[0]);
+            bounds_max[1] = bounds_max[1].max(p[1]);
+        }
         return;
     }
 
-    // Split cubic at t=0.5 using de Casteljau
-    let m01 = mid(p0, p1);
-    let m12 = mid(p1, p2);
-    let m23 = mid(p2, p3);
-    let m012 = mid(m01, m12);
-    let m123 = mid(m12, m23);
-    let m0123 = mid(m012, m123);
+    // Max depth fallback: emit line
+    if depth >= CU2QU_MAX_DEPTH {
+        let p1 = [c0[0] as f32, c0[1] as f32];
+        let p3 = [c3[0] as f32, c3[1] as f32];
+        if p1 != p3 {
+            out.push(QuadCurve { p1, p2: p1, p3 });
+            bounds_min[0] = bounds_min[0].min(p3[0]);
+            bounds_min[1] = bounds_min[1].min(p3[1]);
+            bounds_max[0] = bounds_max[0].max(p3[0]);
+            bounds_max[1] = bounds_max[1].max(p3[1]);
+        }
+        return;
+    }
 
-    subdivide_cubic(out, p0, m01, m012, m0123, depth + 1);
-    subdivide_cubic(out, m0123, m123, m23, p3, depth + 1);
-}
+    // de Casteljau split at t=0.5
+    let m01 = lerp(c0, c1, 0.5);
+    let m12 = lerp(c1, c2, 0.5);
+    let m23 = lerp(c2, c3, 0.5);
+    let m012 = lerp(m01, m12, 0.5);
+    let m123 = lerp(m12, m23, 0.5);
+    let mid = lerp(m012, m123, 0.5);
 
-fn mid(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
-    [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
+    cubic_to_quadratics(out, bounds_min, bounds_max, c0, m01, m012, mid, depth + 1);
+    cubic_to_quadratics(out, bounds_min, bounds_max, mid, m123, m23, c3, depth + 1);
 }
 
 /// Extract the quadratic bezier outline for a glyph.
@@ -206,44 +317,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mid_computes_midpoint() {
-        assert_eq!(mid([0.0, 0.0], [10.0, 20.0]), [5.0, 10.0]);
-        assert_eq!(mid([-5.0, 3.0], [5.0, -3.0]), [0.0, 0.0]);
-    }
-
-    #[test]
-    fn subdivide_cubic_produces_at_least_one_quad() {
+    fn cu2qu_produces_at_least_one_quad() {
         let mut out = Vec::new();
-        subdivide_cubic(
-            &mut out,
-            [0.0, 0.0],
-            [10.0, 100.0],
-            [90.0, 100.0],
-            [100.0, 0.0],
+        let mut bmin = [f32::MAX; 2];
+        let mut bmax = [f32::MIN; 2];
+        cubic_to_quadratics(
+            &mut out, &mut bmin, &mut bmax,
+            [0.0, 0.0], [10.0, 100.0], [90.0, 100.0], [100.0, 0.0],
             0,
         );
-        assert!(
-            !out.is_empty(),
-            "subdivision must produce at least one curve"
-        );
-        // First curve should start at p0
+        assert!(!out.is_empty(), "cu2qu must produce at least one curve");
         assert_eq!(out[0].p1, [0.0, 0.0]);
-        // Last curve should end at p3
         assert_eq!(out.last().expect("non-empty").p3, [100.0, 0.0]);
     }
 
     #[test]
-    fn subdivide_cubic_chain_is_continuous() {
+    fn cu2qu_chain_is_continuous() {
         let mut out = Vec::new();
-        subdivide_cubic(
-            &mut out,
-            [0.0, 0.0],
-            [0.0, 100.0],
-            [100.0, 100.0],
-            [100.0, 0.0],
+        let mut bmin = [f32::MAX; 2];
+        let mut bmax = [f32::MIN; 2];
+        cubic_to_quadratics(
+            &mut out, &mut bmin, &mut bmax,
+            [0.0, 0.0], [0.0, 100.0], [100.0, 100.0], [100.0, 0.0],
             0,
         );
-        // Each curve's p3 should equal the next curve's p1
         for i in 0..out.len() - 1 {
             let gap_x = (out[i].p3[0] - out[i + 1].p1[0]).abs();
             let gap_y = (out[i].p3[1] - out[i + 1].p1[1]).abs();
@@ -255,20 +352,18 @@ mod tests {
     }
 
     #[test]
-    fn subdivide_respects_max_depth() {
-        // A highly curved cubic should still terminate (MAX_DEPTH=3 → max 8 quads)
+    fn cu2qu_terminates_on_complex_cubic() {
         let mut out = Vec::new();
-        subdivide_cubic(
-            &mut out,
-            [0.0, 0.0],
-            [0.0, 1000.0],
-            [1000.0, 1000.0],
-            [1000.0, 0.0],
+        let mut bmin = [f32::MAX; 2];
+        let mut bmax = [f32::MIN; 2];
+        cubic_to_quadratics(
+            &mut out, &mut bmin, &mut bmax,
+            [0.0, 0.0], [0.0, 1000.0], [1000.0, 1000.0], [1000.0, 0.0],
             0,
         );
         assert!(
-            out.len() <= 8,
-            "max depth 3 should produce at most 8 quads, got {}",
+            out.len() <= 1024,
+            "max depth 10 should produce at most 1024 quads, got {}",
             out.len()
         );
         assert!(!out.is_empty());

@@ -3,7 +3,6 @@
 /// Divides the glyph bounding box into horizontal and vertical bands,
 /// recording which curves intersect each band. This lets the fragment
 /// shader skip curves that can't affect the current pixel.
-use crate::outline::GlyphOutline;
 use crate::prepare::GpuOutline;
 
 /// Band data ready for GPU upload.
@@ -346,7 +345,7 @@ pub fn build_bands(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::outline::QuadCurve;
+    use crate::outline::{GlyphOutline, QuadCurve};
 
     fn make_outline(curves: Vec<QuadCurve>) -> GpuOutline {
         let mut min = [f32::MAX; 2];
