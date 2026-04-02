@@ -273,39 +273,49 @@ fn comma_line_only_glyph_regression() {
         );
     }
 
-    // With 1x1 bands, the single horizontal band and single vertical band should
-    // each contain ALL curves. Headers = 2 bands * 4 u32s = 8, plus
-    // num_curves * 2 (h + v) * 4 u32s for curve references.
+    // With axis-aligned curve filtering, horizontal curves are excluded from
+    // hbands and vertical curves from vbands (they can never produce ray
+    // crossings on that axis). Count expected curves per band type.
     let num_curves = gpu_outline.curves.len();
-    let expected_curve_refs = num_curves * 2 * 4; // h-band + v-band, 4 u32s each
-    let expected_total = 8 + expected_curve_refs;
+    let non_horizontal = gpu_outline.curves.iter().filter(|c| {
+        let min_y = c.p1[1].min(c.p2[1]).min(c.p3[1]);
+        let max_y = c.p1[1].max(c.p2[1]).max(c.p3[1]);
+        min_y != max_y
+    }).count();
+    let non_vertical = gpu_outline.curves.iter().filter(|c| {
+        let min_x = c.p1[0].min(c.p2[0]).min(c.p3[0]);
+        let max_x = c.p1[0].max(c.p2[0]).max(c.p3[0]);
+        min_x != max_x
+    }).count();
+
+    // Headers = 2 bands * 4 u32s = 8, plus curve refs * 4 u32s each
+    let expected_total = 8 + (non_horizontal + non_vertical) * 4;
     assert_eq!(
         band_data.entries.len(),
         expected_total,
-        "With 1x1 bands, all {} curves should appear in both h-band and v-band. \
-         Expected {} entries, got {}",
-        num_curves,
+        "Expected {} h-band curves + {} v-band curves = {} entries, got {}",
+        non_horizontal,
+        non_vertical,
         expected_total,
         band_data.entries.len()
     );
 
-    // Verify the h-band header reports all curves.
-    // Header layout: [count, offset, 0, 0] for h-band at index 0.
+    // Verify the h-band header reports non-horizontal curves.
     let hband_count = band_data.entries[0];
     assert_eq!(
-        hband_count, num_curves as u32,
-        "Horizontal band should contain all {num_curves} curves, got {hband_count}"
+        hband_count, non_horizontal as u32,
+        "Horizontal band should contain {non_horizontal} non-horizontal curves, got {hband_count}"
     );
 
     // v-band header is at index 4 (after the 1 h-band header).
     let vband_count = band_data.entries[4];
     assert_eq!(
-        vband_count, num_curves as u32,
-        "Vertical band should contain all {num_curves} curves, got {vband_count}"
+        vband_count, non_vertical as u32,
+        "Vertical band should contain {non_vertical} non-vertical curves, got {vband_count}"
     );
 
     eprintln!(
-        "Comma regression test passed: {num_curves} curves, all present in both bands"
+        "Comma regression test passed: {num_curves} curves, {non_horizontal} in hband, {non_vertical} in vband"
     );
 }
 

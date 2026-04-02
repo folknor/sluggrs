@@ -72,22 +72,32 @@ pub fn build_bands(
         max_x_keys.push(curve_max_x);
         max_y_keys.push(curve_max_y);
 
-        let hband_min = (curve_min_y * scale_y + offset_y)
-            .floor()
-            .clamp(0.0, hcount as f32 - 1.0) as usize;
-        let hband_max = ((curve_max_y * scale_y + offset_y - BAND_EPSILON).floor())
-            .clamp(0.0, hcount as f32 - 1.0) as usize;
-        for b in hband_min..=hband_max {
-            hband_counts[b] += 1;
+        // Axis-aligned curve filtering (matching harfbuzz hb-gpu-draw.cc:361-391):
+        // A horizontal curve (all y equal) never crosses a horizontal ray → skip hbands.
+        // A vertical curve (all x equal) never crosses a vertical ray → skip vbands.
+        let is_horizontal = curve_min_y == curve_max_y;
+        let is_vertical = curve_min_x == curve_max_x;
+
+        if !is_horizontal {
+            let hband_min = (curve_min_y * scale_y + offset_y)
+                .floor()
+                .clamp(0.0, hcount as f32 - 1.0) as usize;
+            let hband_max = ((curve_max_y * scale_y + offset_y - BAND_EPSILON).floor())
+                .clamp(0.0, hcount as f32 - 1.0) as usize;
+            for b in hband_min..=hband_max {
+                hband_counts[b] += 1;
+            }
         }
 
-        let vband_min = (curve_min_x * scale_x + offset_x)
-            .floor()
-            .clamp(0.0, vcount as f32 - 1.0) as usize;
-        let vband_max = ((curve_max_x * scale_x + offset_x - BAND_EPSILON).floor())
-            .clamp(0.0, vcount as f32 - 1.0) as usize;
-        for b in vband_min..=vband_max {
-            vband_counts[b] += 1;
+        if !is_vertical {
+            let vband_min = (curve_min_x * scale_x + offset_x)
+                .floor()
+                .clamp(0.0, vcount as f32 - 1.0) as usize;
+            let vband_max = ((curve_max_x * scale_x + offset_x - BAND_EPSILON).floor())
+                .clamp(0.0, vcount as f32 - 1.0) as usize;
+            for b in vband_min..=vband_max {
+                vband_counts[b] += 1;
+            }
         }
     }
 
@@ -118,24 +128,31 @@ pub fn build_bands(
         let curve_min_x = curve.p1[0].min(curve.p2[0]).min(curve.p3[0]);
         let curve_max_x = curve.p1[0].max(curve.p2[0]).max(curve.p3[0]);
 
-        let hband_min = (curve_min_y * scale_y + offset_y)
-            .floor()
-            .clamp(0.0, hcount as f32 - 1.0) as usize;
-        let hband_max = ((curve_max_y * scale_y + offset_y - BAND_EPSILON).floor())
-            .clamp(0.0, hcount as f32 - 1.0) as usize;
-        for b in hband_min..=hband_max {
-            flat_indices[hband_fill[b] as usize] = i;
-            hband_fill[b] += 1;
+        let is_horizontal = curve_min_y == curve_max_y;
+        let is_vertical = curve_min_x == curve_max_x;
+
+        if !is_horizontal {
+            let hband_min = (curve_min_y * scale_y + offset_y)
+                .floor()
+                .clamp(0.0, hcount as f32 - 1.0) as usize;
+            let hband_max = ((curve_max_y * scale_y + offset_y - BAND_EPSILON).floor())
+                .clamp(0.0, hcount as f32 - 1.0) as usize;
+            for b in hband_min..=hband_max {
+                flat_indices[hband_fill[b] as usize] = i;
+                hband_fill[b] += 1;
+            }
         }
 
-        let vband_min = (curve_min_x * scale_x + offset_x)
-            .floor()
-            .clamp(0.0, vcount as f32 - 1.0) as usize;
-        let vband_max = ((curve_max_x * scale_x + offset_x - BAND_EPSILON).floor())
-            .clamp(0.0, vcount as f32 - 1.0) as usize;
-        for b in vband_min..=vband_max {
-            flat_indices[vband_fill[b] as usize] = i;
-            vband_fill[b] += 1;
+        if !is_vertical {
+            let vband_min = (curve_min_x * scale_x + offset_x)
+                .floor()
+                .clamp(0.0, vcount as f32 - 1.0) as usize;
+            let vband_max = ((curve_max_x * scale_x + offset_x - BAND_EPSILON).floor())
+                .clamp(0.0, vcount as f32 - 1.0) as usize;
+            for b in vband_min..=vband_max {
+                flat_indices[vband_fill[b] as usize] = i;
+                vband_fill[b] += 1;
+            }
         }
     }
 

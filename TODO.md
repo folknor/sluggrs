@@ -146,46 +146,69 @@ partly compute/sort bound (per-band sorting in band.rs), not just allocator boun
 
 ## Divergences from harfbuzz Slug implementation (found by hb review)
 
-- [ ] Implicit p1 contour encoding — harfbuzz elides p1 for continuing
-  contours (saves a texel per non-first curve in a contour). We use explicit
-  2-texel pairs for every curve. Memory savings and potential cache benefits.
-  **hb review**
+### Done
 
-- [ ] Band split optimization — harfbuzz does a binary search per band to
-  find a split point that balances left/right curve counts, enabling
-  early-exit from both directions in the fragment shader. We use simpler
-  per-band curve lists. Note: Lengyel removed dual-sort from the reference
-  implementation, but harfbuzz added their own version — worth investigating
-  whether their approach avoids the small-text regression that killed the
-  original. **hb review**
-
-- [ ] Jacobian-based vertex dilation — harfbuzz computes proper half-pixel
-  expansion accounting for the full MVP transform. We use simpler
-  normal-based dilation. Compare quality and performance. **hb review**
-
-- [ ] Texture format — harfbuzz uses RGBA16I (int16 quantized at 4 units/em)
-  for a single unified glyph blob, half the memory per texel but lower
-  precision. We use Rgba32Float for curves + Rgba32Uint for bands as
-  separate textures. Evaluate whether 16-bit precision is sufficient.
-  **hb review**
-
-- [ ] Offset encoding — harfbuzz uses 16-bit signed offsets with +32768 bias
-  to pack band curve references compactly. Compare against our current
-  encoding. **hb review**
-
-- [ ] Small-size rendering — harfbuzz has shader-level 4x MSAA for <16 ppem
-  and stem darkening for <48 ppem. We have neither. **hb review**
-
-- [x] Exact geometry for lines — fixed: changed line encoding from p2=midpoint
+- [x] Exact geometry for lines — changed line encoding from p2=midpoint
   to p2=p1 (matching harfbuzz). This makes a=p3-p1 (always nonzero), so the
   quadratic solver handles lines naturally. Removed CPU perturbation and
   reverted shader threshold to compute-then-overwrite with exact ==0.0 check.
   **hb review**
 
-- [ ] Ray-direction-aware bands — harfbuzz's band format is symmetric and
-  considers ray direction for more aggressive curve culling per band. Our
-  band builder is simpler but likely leaves more curves for the shader to
-  reject. **hb review**
+- [x] Implicit p1 contour encoding — within a contour, each curve's p3 texel
+  doubles as the next curve's p12 texel. Saves ~45% curve texels (2962→1612
+  for 92 glyphs). Shader unchanged — same curve_loc/curve_loc+1 read pattern.
+  **hb review**
+
+### Next: band split + ray-direction-aware bands (one feature)
+
+These are two halves of the same design. The split point determines scan
+direction; the dual sorted lists enable early-exit from both sides.
+
+**Step 1: Axis-aligned curve filtering (quick win, band.rs only)**
+- Don't assign horizontal curves to hbands, vertical curves to vbands.
+  A horizontal curve never crosses a horizontal ray (all y-values equal →
+  calc_root_code returns 0), so the texture fetches are wasted.
+  Harfbuzz: `hb-gpu-draw.cc:361-391`. No shader change needed.
+
+**Step 2: Dual sorted lists (band.rs + shader)**
+- Each band stores two curve lists: descending by max_x/y (for right/down
+  rays) and ascending by min_x/y (for left/up rays). Band header grows
+  from (count, offset, 0, 0) to (count, desc_offset, asc_offset, split).
+- CPU: linear scan over descending list, tracking ascending left-count via
+  monotone pointer, pick split minimizing max(left_count, right_count).
+  Harfbuzz: `hb-gpu-draw.cc:580-628`.
+- Band index storage roughly doubles (two lists of same curves).
+
+**Step 3: Shader direction choice (shader)**
+- Fragment computes `leftRay = renderCoord.x < split` (hbands) or
+  `renderCoord.y < split` (vbands), picks the corresponding list.
+- Early-exit flips: leftward uses `min(p) > 0.5` break, rightward uses
+  `max(p) < -0.5` break.
+- Coverage formula flips: leftward `0.5 - r`, rightward `r + 0.5`.
+  Harfbuzz: `hb-gpu-fragment-glsl.hh:187-224`.
+
+**Expected impact:** roughly halves average per-fragment iteration count.
+Fragments on the "wrong" side of a band currently iterate all curves with
+no early exit. Memory cost: ~2x band curve indices.
+
+### Later
+
+- [ ] Jacobian-based vertex dilation — harfbuzz computes proper half-pixel
+  expansion accounting for the full MVP transform. We use simpler
+  normal-based dilation. Compare quality and performance. **hb review**
+
+- [ ] Unified RGBA16I texture format — harfbuzz packs headers, band data,
+  curve indices, and curve geometry into a single RGBA16I blob (8 bytes/texel
+  vs our 16 bytes/texel across two textures). Quantization at 4 units/em
+  (0.25 em precision) is sufficient — integer arithmetic also guarantees
+  exact zeros for degenerate cases. Curve refs use 16-bit signed offsets
+  with +32768 bias (glyph-local addressing). Would halve texture memory
+  again and reduce to a single storage buffer binding.
+  Harfbuzz: `hb-gpu-draw.hh:38`, `hb-gpu-draw.cc:259-263, 528-540`.
+  **hb review**
+
+- [ ] Small-size rendering — harfbuzz has shader-level 4x MSAA for <16 ppem
+  and stem darkening for <48 ppem. We have neither. **hb review**
 
 ## Future / long-term
 
