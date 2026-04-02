@@ -204,6 +204,14 @@ impl TextAtlas {
     ) -> Result<GlyphEntry, crate::types::PrepareError> {
         let num_curves = gpu_outline.curves.len() as u32;
 
+        // Reject glyphs with coordinates that would overflow i16 quantization.
+        // i16 range ±32767 at 4 units/em → ±8191.75 font units.
+        let [bmin_x, bmin_y, bmax_x, bmax_y] = gpu_outline.bounds;
+        let max_coord = bmin_x.abs().max(bmin_y.abs()).max(bmax_x.abs()).max(bmax_y.abs());
+        if max_coord * 4.0 > 32767.0 {
+            return Ok(crate::glyph_cache::NON_VECTOR_GLYPH);
+        }
+
         // Build curve texels with implicit p1 sharing within contours.
         // Within a contour, each curve's p3 texel doubles as the next curve's
         // p12 texel (since p3 of one curve == p1 of the next). This saves one
