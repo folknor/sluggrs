@@ -288,8 +288,8 @@ fn comma_line_only_glyph_regression() {
         min_x != max_x
     }).count();
 
-    // Headers = 2 bands * 4 u32s = 8, plus curve refs * 4 u32s each
-    let expected_total = 8 + (non_horizontal + non_vertical) * 4;
+    // Headers = 2 bands * 4 u32s = 8, plus curve refs * 2 lists (desc+asc) * 4 u32s each
+    let expected_total = 8 + (non_horizontal + non_vertical) * 2 * 4;
     assert_eq!(
         band_data.entries.len(),
         expected_total,

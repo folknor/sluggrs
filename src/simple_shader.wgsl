@@ -179,22 +179,29 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     );
     let glyph_loc = glyph_data.xy;
 
-    // --- Horizontal ray casting ---
+    // --- Horizontal ray casting (direction-aware) ---
     var xcov = 0.0;
     var xwgt = 0.0;
 
     let hband_header_loc = calc_band_loc(glyph_loc, u32(band_index.y));
-    let hband_data = textureLoad(band_texture, hband_header_loc, 0).xy;
+    let hband_data = textureLoad(band_texture, hband_header_loc, 0);
+    let h_split = bitcast<f32>(hband_data.w);
+    let h_left_ray = render_coord.x < h_split;
+    // Left ray → ascending list (asc_offset = .z), right ray → descending list (desc_offset = .y)
+    let h_data_offset = select(hband_data.y, hband_data.z, h_left_ray);
 
     for (var ci = 0; ci < i32(hband_data.x); ci++) {
-        let curve_ref_loc = calc_band_loc(glyph_loc, hband_data.y + u32(ci));
+        let curve_ref_loc = calc_band_loc(glyph_loc, h_data_offset + u32(ci));
         let curve_ref = textureLoad(band_texture, curve_ref_loc, 0).xy;
         let curve_loc = vec2<i32>(curve_ref);
         let p12 = textureLoad(curve_texture, curve_loc, 0) - vec4<f32>(render_coord, render_coord);
         let p3 = textureLoad(curve_texture, vec2<i32>(curve_loc.x + 1, curve_loc.y), 0).xy - render_coord;
 
-        if max(max(p12.x, p12.z), p3.x) * pixels_per_em.x < -0.5 {
-            break;
+        // Direction-aware early exit
+        if h_left_ray {
+            if min(min(p12.x, p12.z), p3.x) * pixels_per_em.x > 0.5 { break; }
+        } else {
+            if max(max(p12.x, p12.z), p3.x) * pixels_per_em.x < -0.5 { break; }
         }
 
         let code = calc_root_code(p12.y, p12.w, p3.y);
@@ -202,32 +209,40 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             let r = solve_horiz_poly(p12, p3) * pixels_per_em.x;
 
             if (code & 1u) != 0u {
-                xcov += clamp(r.x + 0.5, 0.0, 1.0);
+                let cov = select(r.x + 0.5, 0.5 - r.x, h_left_ray);
+                xcov += clamp(cov, 0.0, 1.0);
                 xwgt = max(xwgt, clamp(1.0 - abs(r.x) * 2.0, 0.0, 1.0));
             }
             if code > 1u {
-                xcov -= clamp(r.y + 0.5, 0.0, 1.0);
+                let cov = select(r.y + 0.5, 0.5 - r.y, h_left_ray);
+                xcov -= clamp(cov, 0.0, 1.0);
                 xwgt = max(xwgt, clamp(1.0 - abs(r.y) * 2.0, 0.0, 1.0));
             }
         }
     }
 
-    // --- Vertical ray casting ---
+    // --- Vertical ray casting (direction-aware) ---
     var ycov = 0.0;
     var ywgt = 0.0;
 
     let vband_header_loc = calc_band_loc(glyph_loc, u32(band_max.y + 1 + band_index.x));
-    let vband_data = textureLoad(band_texture, vband_header_loc, 0).xy;
+    let vband_data = textureLoad(band_texture, vband_header_loc, 0);
+    let v_split = bitcast<f32>(vband_data.w);
+    let v_left_ray = render_coord.y < v_split;
+    let v_data_offset = select(vband_data.y, vband_data.z, v_left_ray);
 
     for (var ci = 0; ci < i32(vband_data.x); ci++) {
-        let curve_ref_loc = calc_band_loc(glyph_loc, vband_data.y + u32(ci));
+        let curve_ref_loc = calc_band_loc(glyph_loc, v_data_offset + u32(ci));
         let curve_ref = textureLoad(band_texture, curve_ref_loc, 0).xy;
         let curve_loc = vec2<i32>(curve_ref);
         let p12 = textureLoad(curve_texture, curve_loc, 0) - vec4<f32>(render_coord, render_coord);
         let p3 = textureLoad(curve_texture, vec2<i32>(curve_loc.x + 1, curve_loc.y), 0).xy - render_coord;
 
-        if max(max(p12.y, p12.w), p3.y) * pixels_per_em.y < -0.5 {
-            break;
+        // Direction-aware early exit
+        if v_left_ray {
+            if min(min(p12.y, p12.w), p3.y) * pixels_per_em.y > 0.5 { break; }
+        } else {
+            if max(max(p12.y, p12.w), p3.y) * pixels_per_em.y < -0.5 { break; }
         }
 
         let code = calc_root_code(p12.x, p12.z, p3.x);
@@ -235,11 +250,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             let r = solve_vert_poly(p12, p3) * pixels_per_em.y;
 
             if (code & 1u) != 0u {
-                ycov -= clamp(r.x + 0.5, 0.0, 1.0);
+                let cov = select(r.x + 0.5, 0.5 - r.x, v_left_ray);
+                ycov -= clamp(cov, 0.0, 1.0);
                 ywgt = max(ywgt, clamp(1.0 - abs(r.x) * 2.0, 0.0, 1.0));
             }
             if code > 1u {
-                ycov += clamp(r.y + 0.5, 0.0, 1.0);
+                let cov = select(r.y + 0.5, 0.5 - r.y, v_left_ray);
+                ycov += clamp(cov, 0.0, 1.0);
                 ywgt = max(ywgt, clamp(1.0 - abs(r.y) * 2.0, 0.0, 1.0));
             }
         }

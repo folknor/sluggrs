@@ -25,9 +25,50 @@ pub struct CurveLocation {
     pub y: u32,
 }
 
+/// Find the optimal split coordinate for a band's dual sorted lists.
+/// Walks the descending list, tracking a monotone pointer into the ascending
+/// list, and picks the split that minimizes max(left_count, right_count).
+fn find_split(
+    desc_indices: &[usize],
+    asc_indices: &[usize],
+    max_keys: &[f32],
+    min_keys: &[f32],
+    bounds_min: f32,
+    bounds_max: f32,
+) -> f32 {
+    let n = desc_indices.len();
+    if n == 0 {
+        return (bounds_min + bounds_max) * 0.5;
+    }
+
+    let mut best_worst = n;
+    let mut best_split = (bounds_min + bounds_max) * 0.5;
+    let mut left_ptr = n;
+
+    for ci in 0..n {
+        let split = max_keys[desc_indices[ci]];
+        let right_count = ci + 1;
+
+        // Shrink left_ptr: remove curves from the end of asc list that have min > split
+        while left_ptr > 0 && min_keys[asc_indices[left_ptr - 1]] > split {
+            left_ptr -= 1;
+        }
+        let left_count = left_ptr;
+
+        let worst = right_count.max(left_count);
+        if worst < best_worst {
+            best_worst = worst;
+            best_split = split;
+        }
+    }
+
+    best_split
+}
+
 /// Build the band acceleration structure for a glyph.
 ///
-/// Operates on GPU-prepared geometry (with perturbed line segments).
+/// Produces dual sorted curve lists (descending by max, ascending by min)
+/// with a split point per band for direction-aware shader early exit.
 /// `curve_locations` maps each curve index to its (x, y) position in the curve texture.
 #[hotpath::measure]
 pub fn build_bands(
@@ -58,6 +99,8 @@ pub fn build_bands(
     let num_curves = outline.curves.len();
     let mut max_x_keys = Vec::with_capacity(num_curves);
     let mut max_y_keys = Vec::with_capacity(num_curves);
+    let mut min_x_keys = Vec::with_capacity(num_curves);
+    let mut min_y_keys = Vec::with_capacity(num_curves);
 
     // Phase 1: count curves per band (no allocations per band)
     let mut hband_counts = vec![0u32; hcount];
@@ -71,6 +114,8 @@ pub fn build_bands(
 
         max_x_keys.push(curve_max_x);
         max_y_keys.push(curve_max_y);
+        min_x_keys.push(curve_min_x);
+        min_y_keys.push(curve_min_y);
 
         // Axis-aligned curve filtering (matching harfbuzz hb-gpu-draw.cc:361-391):
         // A horizontal curve (all y equal) never crosses a horizontal ray → skip hbands.
@@ -101,9 +146,11 @@ pub fn build_bands(
         }
     }
 
-    // Phase 2: compute offsets into flat array, then fill
+    // Phase 2: build dual sorted lists (desc by max, asc by min) for each band.
+    // Both lists contain the same curves, just in different order.
     let htotal: u32 = hband_counts.iter().sum();
     let vtotal: u32 = vband_counts.iter().sum();
+    let total_refs = (htotal + vtotal) as usize;
 
     let mut hband_offsets = Vec::with_capacity(hcount);
     let mut offset = 0u32;
@@ -117,8 +164,9 @@ pub fn build_bands(
         offset += count;
     }
 
-    // Single flat array for all curve indices
-    let mut flat_indices = vec![0usize; (htotal + vtotal) as usize];
+    // Two flat arrays: desc (sorted by descending max) and asc (sorted by ascending min)
+    let mut desc_indices = vec![0usize; total_refs];
+    let mut asc_indices = vec![0usize; total_refs];
     let mut hband_fill = hband_offsets.clone();
     let mut vband_fill = vband_offsets.clone();
 
@@ -138,7 +186,9 @@ pub fn build_bands(
             let hband_max = ((curve_max_y * scale_y + offset_y - BAND_EPSILON).floor())
                 .clamp(0.0, hcount as f32 - 1.0) as usize;
             for b in hband_min..=hband_max {
-                flat_indices[hband_fill[b] as usize] = i;
+                let idx = hband_fill[b] as usize;
+                desc_indices[idx] = i;
+                asc_indices[idx] = i;
                 hband_fill[b] += 1;
             }
         }
@@ -150,75 +200,138 @@ pub fn build_bands(
             let vband_max = ((curve_max_x * scale_x + offset_x - BAND_EPSILON).floor())
                 .clamp(0.0, vcount as f32 - 1.0) as usize;
             for b in vband_min..=vband_max {
-                flat_indices[vband_fill[b] as usize] = i;
+                let idx = vband_fill[b] as usize;
+                desc_indices[idx] = i;
+                asc_indices[idx] = i;
                 vband_fill[b] += 1;
             }
         }
     }
 
-    // Sort each band's slice by descending max coordinate (for shader early exit)
+    // Sort desc by descending max, asc by ascending min
     for b in 0..hcount {
         let start = hband_offsets[b] as usize;
         let end = start + hband_counts[b] as usize;
-        flat_indices[start..end].sort_unstable_by(|&a, &b| {
+        desc_indices[start..end].sort_unstable_by(|&a, &b| {
             max_x_keys[b]
                 .partial_cmp(&max_x_keys[a])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        asc_indices[start..end].sort_unstable_by(|&a, &b| {
+            min_x_keys[a]
+                .partial_cmp(&min_x_keys[b])
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
     }
     for b in 0..vcount {
         let start = vband_offsets[b] as usize;
         let end = start + vband_counts[b] as usize;
-        flat_indices[start..end].sort_unstable_by(|&a, &b| {
+        desc_indices[start..end].sort_unstable_by(|&a, &b| {
             max_y_keys[b]
                 .partial_cmp(&max_y_keys[a])
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        asc_indices[start..end].sort_unstable_by(|&a, &b| {
+            min_y_keys[a]
+                .partial_cmp(&min_y_keys[b])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 
-    // Build the band texture data.
-    // Layout:
-    //   Row 0: [hband_0_header, hband_1_header, ..., vband_0_header, vband_1_header, ...]
-    //   After headers: curve index lists
-    //
-    // Each header is (count, offset_from_glyph_start).
-    // Each curve index entry is (curve_loc.x, curve_loc.y, 0, 0) but in the Slug format
-    // it's just (curve_loc.x, curve_loc.y) packed as uint2.
+    // Find optimal split per band. The split minimizes max(left_count, right_count)
+    // where left/right are determined by fragment position relative to the split.
+    let mut hband_splits = Vec::with_capacity(hcount);
+    for b in 0..hcount {
+        let start = hband_offsets[b] as usize;
+        let end = start + hband_counts[b] as usize;
+        hband_splits.push(find_split(
+            &desc_indices[start..end],
+            &asc_indices[start..end],
+            &max_x_keys,
+            &min_x_keys,
+            outline.bounds[0],
+            outline.bounds[2],
+        ));
+    }
+    let mut vband_splits = Vec::with_capacity(vcount);
+    for b in 0..vcount {
+        let start = vband_offsets[b] as usize;
+        let end = start + vband_counts[b] as usize;
+        vband_splits.push(find_split(
+            &desc_indices[start..end],
+            &asc_indices[start..end],
+            &max_y_keys,
+            &min_y_keys,
+            outline.bounds[1],
+            outline.bounds[3],
+        ));
+    }
 
-    // Build GPU texture data from flat arrays
+    // Build GPU texture data.
+    // Layout: [headers...] [band0_desc, band0_asc, band1_desc, band1_asc, ...]
+    // Header: (count, desc_offset, asc_offset, split_bits)
     let num_headers = band_count_y + band_count_x;
     let curve_lists_start = num_headers;
 
-    // Reuse scratch buffer for entries
-    let total_refs = (htotal + vtotal) as usize;
     scratch_entries.clear();
-    scratch_entries.reserve((num_headers as usize + total_refs) * 4);
+    scratch_entries.reserve((num_headers as usize + total_refs * 2) * 4);
 
     // Write horizontal band headers
     let mut texel_offset = curve_lists_start;
     for b in 0..hcount {
-        scratch_entries.push(hband_counts[b]);
-        scratch_entries.push(texel_offset);
-        scratch_entries.push(0);
-        scratch_entries.push(0);
-        texel_offset += hband_counts[b];
+        let count = hband_counts[b];
+        scratch_entries.push(count);
+        scratch_entries.push(texel_offset); // desc_offset
+        scratch_entries.push(texel_offset + count); // asc_offset
+        scratch_entries.push(hband_splits[b].to_bits());
+        texel_offset += count * 2; // desc + asc
     }
     // Write vertical band headers
     for b in 0..vcount {
-        scratch_entries.push(vband_counts[b]);
-        scratch_entries.push(texel_offset);
-        scratch_entries.push(0);
-        scratch_entries.push(0);
-        texel_offset += vband_counts[b];
+        let count = vband_counts[b];
+        scratch_entries.push(count);
+        scratch_entries.push(texel_offset); // desc_offset
+        scratch_entries.push(texel_offset + count); // asc_offset
+        scratch_entries.push(vband_splits[b].to_bits());
+        texel_offset += count * 2;
     }
 
-    // Write curve references from flat array
-    for &curve_idx in &flat_indices {
-        let loc = curve_locations[curve_idx];
-        scratch_entries.push(loc.x);
-        scratch_entries.push(loc.y);
-        scratch_entries.push(0);
-        scratch_entries.push(0);
+    // Write curve references: desc then asc for each band
+    for b in 0..hcount {
+        let start = hband_offsets[b] as usize;
+        let end = start + hband_counts[b] as usize;
+        for &curve_idx in &desc_indices[start..end] {
+            let loc = curve_locations[curve_idx];
+            scratch_entries.push(loc.x);
+            scratch_entries.push(loc.y);
+            scratch_entries.push(0);
+            scratch_entries.push(0);
+        }
+        for &curve_idx in &asc_indices[start..end] {
+            let loc = curve_locations[curve_idx];
+            scratch_entries.push(loc.x);
+            scratch_entries.push(loc.y);
+            scratch_entries.push(0);
+            scratch_entries.push(0);
+        }
+    }
+    for b in 0..vcount {
+        let start = vband_offsets[b] as usize;
+        let end = start + vband_counts[b] as usize;
+        for &curve_idx in &desc_indices[start..end] {
+            let loc = curve_locations[curve_idx];
+            scratch_entries.push(loc.x);
+            scratch_entries.push(loc.y);
+            scratch_entries.push(0);
+            scratch_entries.push(0);
+        }
+        for &curve_idx in &asc_indices[start..end] {
+            let loc = curve_locations[curve_idx];
+            scratch_entries.push(loc.x);
+            scratch_entries.push(loc.y);
+            scratch_entries.push(0);
+            scratch_entries.push(0);
+        }
     }
 
     BandData {
@@ -288,8 +401,8 @@ mod tests {
         let data = build_bands(&outline, &locs, 1, 1, Vec::new());
 
         // 2 band headers (h + v) * 4 u32 each = 8
-        // 1 curve * 2 bands * 4 u32 each = 8
-        assert_eq!(data.entries.len(), 16);
+        // 1 curve * 2 bands * 2 lists (desc+asc) * 4 u32 each = 16
+        assert_eq!(data.entries.len(), 24);
         // h-band should have count=1
         assert_eq!(data.entries[0], 1);
         // v-band should have count=1
@@ -374,9 +487,9 @@ mod tests {
         let data = build_bands(&outline, &locs, 4, 1, Vec::new());
 
         // 1 h-band header + 4 v-band headers = 5 * 4 = 20 u32s
-        // The curve should appear in the h-band (1 ref) and all 4 v-bands (4 refs)
-        // = 5 refs * 4 u32 = 20
-        let total_expected = 20 + 20;
+        // The curve appears in hband (1 ref * 2 lists) + all 4 vbands (4 refs * 2 lists)
+        // = 10 refs * 4 u32 = 40
+        let total_expected = 20 + 40;
         assert_eq!(data.entries.len(), total_expected);
     }
 
