@@ -59,8 +59,7 @@ fn dump_bold_r_geometry() {
     };
     let curve_locs: Vec<CurveLocation> = (0..num_curves)
         .map(|i| CurveLocation {
-            x: (i as u32) * 2,
-            y: 0,
+            offset: (i as u32) * 2,
         })
         .collect();
     let band_data = build_bands(&gpu, &curve_locs, band_count, band_count, Vec::new());
@@ -77,11 +76,11 @@ fn dump_bold_r_geometry() {
         for i in 0..hcount {
             let base = i * 4;
             let count = band_data.entries[base] as usize;
-            let offset = band_data.entries[base + 1] as usize;
+            let offset = (band_data.entries[base + 1] as i32 + 32768) as usize;
             for ci in 0..count {
                 let ref_base = (offset + ci) * 4;
-                let curve_x = band_data.entries[ref_base];
-                if curve_x / 2 == target_curve as i16 {
+                let curve_offset = (band_data.entries[ref_base] as i32 + 32768) as i16;
+                if curve_offset / 2 == target_curve as i16 {
                     h_bands.push(i);
                 }
             }
@@ -90,11 +89,11 @@ fn dump_bold_r_geometry() {
         for i in 0..vcount {
             let base = (hcount + i) * 4;
             let count = band_data.entries[base] as usize;
-            let offset = band_data.entries[base + 1] as usize;
+            let offset = (band_data.entries[base + 1] as i32 + 32768) as usize;
             for ci in 0..count {
                 let ref_base = (offset + ci) * 4;
-                let curve_x = band_data.entries[ref_base];
-                if curve_x / 2 == target_curve as i16 {
+                let curve_offset = (band_data.entries[ref_base] as i32 + 32768) as i16;
+                if curve_offset / 2 == target_curve as i16 {
                     v_bands.push(i);
                 }
             }

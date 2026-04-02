@@ -258,11 +258,10 @@ impl TextAtlas {
                 ]);
             }
 
-            // Record curve location (position of the p12 texel)
-            let curve_linear = curve_start + self.scratch_curve_texels.len() as u32 - 1;
+            // Record curve location as linear offset from curve_start
+            let curve_linear = self.scratch_curve_texels.len() as u32 - 1;
             self.scratch_curve_locations.push(CurveLocation {
-                x: curve_linear % CURVE_TEXTURE_WIDTH,
-                y: curve_linear / CURVE_TEXTURE_WIDTH,
+                offset: curve_linear,
             });
 
             // Emit p3 texel

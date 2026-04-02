@@ -18,11 +18,16 @@ pub struct BandData {
     pub band_transform: [f32; 4], // scale_x, scale_y, offset_x, offset_y
 }
 
-/// Curve location in the curve texture (x, y).
+/// Curve location as a linear offset in the glyph blob.
 #[derive(Debug, Clone, Copy)]
 pub struct CurveLocation {
-    pub x: u32,
-    pub y: u32,
+    pub offset: u32,
+}
+
+/// Encode a glyph-relative offset with +32768 bias for i16 storage.
+/// Allows unsigned range 0-65535 in a signed i16.
+fn encode_offset(offset: u32) -> i16 {
+    (offset as i32 - 32768) as i16
 }
 
 /// Find the optimal split coordinate for a band's dual sorted lists.
@@ -276,13 +281,13 @@ pub fn build_bands(
     scratch_entries.clear();
     scratch_entries.reserve((num_headers as usize + total_refs * 2) * 4);
 
-    // Write horizontal band headers (i16 quantized)
+    // Write horizontal band headers (biased offsets, quantized split)
     let mut texel_offset = curve_lists_start;
     for b in 0..hcount {
         let count = hband_counts[b];
         scratch_entries.push(count as i16);
-        scratch_entries.push(texel_offset as i16); // desc_offset
-        scratch_entries.push((texel_offset + count) as i16); // asc_offset
+        scratch_entries.push(encode_offset(texel_offset)); // desc_offset
+        scratch_entries.push(encode_offset(texel_offset + count)); // asc_offset
         scratch_entries.push((hband_splits[b] * 4.0).round() as i16); // quantized split
         texel_offset += count * 2; // desc + asc
     }
@@ -290,27 +295,28 @@ pub fn build_bands(
     for b in 0..vcount {
         let count = vband_counts[b];
         scratch_entries.push(count as i16);
-        scratch_entries.push(texel_offset as i16); // desc_offset
-        scratch_entries.push((texel_offset + count) as i16); // asc_offset
+        scratch_entries.push(encode_offset(texel_offset)); // desc_offset
+        scratch_entries.push(encode_offset(texel_offset + count)); // asc_offset
         scratch_entries.push((vband_splits[b] * 4.0).round() as i16); // quantized split
         texel_offset += count * 2;
     }
 
     // Write curve references: desc then asc for each band
+    // Curve offsets are biased and include the curve_data region's base.
     for b in 0..hcount {
         let start = hband_offsets[b] as usize;
         let end = start + hband_counts[b] as usize;
         for &curve_idx in &desc_indices[start..end] {
             let loc = curve_locations[curve_idx];
-            scratch_entries.push(loc.x as i16);
-            scratch_entries.push(loc.y as i16);
+            scratch_entries.push(encode_offset(loc.offset));
+            scratch_entries.push(0);
             scratch_entries.push(0);
             scratch_entries.push(0);
         }
         for &curve_idx in &asc_indices[start..end] {
             let loc = curve_locations[curve_idx];
-            scratch_entries.push(loc.x as i16);
-            scratch_entries.push(loc.y as i16);
+            scratch_entries.push(encode_offset(loc.offset));
+            scratch_entries.push(0);
             scratch_entries.push(0);
             scratch_entries.push(0);
         }
@@ -320,15 +326,15 @@ pub fn build_bands(
         let end = start + vband_counts[b] as usize;
         for &curve_idx in &desc_indices[start..end] {
             let loc = curve_locations[curve_idx];
-            scratch_entries.push(loc.x as i16);
-            scratch_entries.push(loc.y as i16);
+            scratch_entries.push(encode_offset(loc.offset));
+            scratch_entries.push(0);
             scratch_entries.push(0);
             scratch_entries.push(0);
         }
         for &curve_idx in &asc_indices[start..end] {
             let loc = curve_locations[curve_idx];
-            scratch_entries.push(loc.x as i16);
-            scratch_entries.push(loc.y as i16);
+            scratch_entries.push(encode_offset(loc.offset));
+            scratch_entries.push(0);
             scratch_entries.push(0);
             scratch_entries.push(0);
         }
@@ -367,8 +373,7 @@ mod tests {
     fn sequential_locations(n: usize) -> Vec<CurveLocation> {
         (0..n)
             .map(|i| CurveLocation {
-                x: i as u32 * 2,
-                y: 0,
+                offset: i as u32 * 2,
             })
             .collect()
     }

@@ -391,8 +391,7 @@ fn band_data_sanity() {
     // Create curve locations (one per curve, sequentially laid out)
     let curve_locations: Vec<CurveLocation> = (0..gpu_outline.curves.len())
         .map(|i| CurveLocation {
-            x: (i * 3) as u32, // 3 texels per curve (p1, p2, p3)
-            y: 0,
+            offset: (i * 3) as u32,
         })
         .collect();
 
@@ -474,8 +473,7 @@ fn band_data_single_band() {
 
     let curve_locations: Vec<CurveLocation> = (0..gpu_outline.curves.len())
         .map(|i| CurveLocation {
-            x: (i * 3) as u32,
-            y: 0,
+            offset: (i * 3) as u32,
         })
         .collect();
 

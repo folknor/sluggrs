@@ -251,8 +251,7 @@ fn comma_line_only_glyph_regression() {
     // Step 3: Build bands with a single band (1x1) — the simplest case.
     let curve_locations: Vec<CurveLocation> = (0..gpu_outline.curves.len())
         .map(|i| CurveLocation {
-            x: (i * 3) as u32,
-            y: 0,
+            offset: (i * 3) as u32,
         })
         .collect();
 

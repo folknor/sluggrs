@@ -168,12 +168,8 @@ fn prepare_text(
         let num_curves = gpu_outline.curves.len();
 
         let curve_locations: Vec<CurveLocation> = (0..num_curves)
-            .map(|i| {
-                let linear = curve_offset + (i as u32) * 2;
-                CurveLocation {
-                    x: linear % CURVE_TEXTURE_WIDTH,
-                    y: linear / CURVE_TEXTURE_WIDTH,
-                }
+            .map(|i| CurveLocation {
+                offset: curve_offset + (i as u32) * 2,
             })
             .collect();
 
