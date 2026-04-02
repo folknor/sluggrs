@@ -80,25 +80,21 @@ fn main() {
     gpu_times.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     let final_glyphs = harness.atlas.glyph_count();
-    let final_curve_texels = harness.atlas.curve_texels_used();
-    let final_band_texels = harness.atlas.band_texels_used();
+    let buffer_elements = harness.atlas.buffer_elements_used();
 
     // -- Emit KV pairs to stderr for brokkr capture --
     eprintln!("distinct_glyphs={distinct_glyphs}");
     eprintln!("final_glyphs={final_glyphs}");
-    eprintln!("curve_texels={final_curve_texels}");
-    eprintln!("band_texels={final_band_texels}");
+    eprintln!("buffer_elements={buffer_elements}");
     eprintln!("cold_prepare_us={cold_us}");
     eprintln!("warm_prepare_avg_us={warm_avg_us}");
     eprintln!("mixed_prepare_avg_us={mixed_avg_us}");
     eprintln!("warm_iterations={warm_iterations}");
     eprintln!("mixed_iterations={mixed_iterations}");
 
-    // Texture memory: curve texels are 8 bytes (rgba16sint), band texels are 16 bytes (rgba32uint)
-    let curve_bytes = final_curve_texels as u64 * 8;
-    let band_bytes = final_band_texels as u64 * 8; // i16×4 = 8 bytes
-    eprintln!("curve_texture_bytes={curve_bytes}");
-    eprintln!("band_texture_bytes={band_bytes}");
+    // Buffer memory: 16 bytes per vec4<i32> element
+    let buffer_bytes = buffer_elements as u64 * 16;
+    eprintln!("buffer_bytes={buffer_bytes}");
 
     if let Some(median) = gpu_times.get(gpu_times.len() / 2) {
         eprintln!("gpu_text_render_us={}", (*median * 1000.0) as u64);

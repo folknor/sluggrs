@@ -145,10 +145,10 @@ impl TextRenderer {
                         em_rect: [min_x, min_y, max_x, max_y],
                         band_transform: entry.band_transform,
                         glyph_data: [
-                            entry.band_offset % crate::BAND_TEXTURE_WIDTH,
-                            entry.band_offset / crate::BAND_TEXTURE_WIDTH,
+                            entry.band_offset,
                             entry.band_max_x,
                             entry.band_max_y,
+                            0,
                         ],
                         color,
                         depth: metadata_to_depth(glyph.metadata),

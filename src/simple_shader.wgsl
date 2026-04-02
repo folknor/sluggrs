@@ -2,9 +2,6 @@
 // Uses a simple 2D orthographic projection (no dilation).
 // The fragment shader is the full Slug curve evaluator.
 
-const K_LOG_BAND_TEXTURE_WIDTH: u32 = 12u;
-const K_BAND_TEXTURE_WIDTH: u32 = 4096u;
-
 struct Params {
     screen_size: vec2<f32>,
     scroll_offset: vec2<f32>,
@@ -14,8 +11,7 @@ struct Params {
 
 @group(0) @binding(0) var<uniform> params: Params;
 const INV_UNITS: f32 = 0.25; // 1.0 / 4.0 units_per_em
-@group(1) @binding(0) var curve_texture: texture_2d<i32>;
-@group(1) @binding(1) var band_texture: texture_2d<i32>;
+@group(1) @binding(0) var<storage, read> atlas: array<vec4<i32>>;
 
 // Per-instance data for a glyph
 struct GlyphInstance {
@@ -157,11 +153,9 @@ fn solve_vert_poly(p12: vec4<f32>, p3: vec2<f32>) -> vec2<f32> {
     );
 }
 
-fn calc_band_loc(glyph_loc: vec2<i32>, offset: u32) -> vec2<i32> {
-    var band_loc = vec2<i32>(glyph_loc.x + i32(offset), glyph_loc.y);
-    band_loc.y += band_loc.x >> K_LOG_BAND_TEXTURE_WIDTH;
-    band_loc.x &= i32(K_BAND_TEXTURE_WIDTH) - 1;
-    return band_loc;
+/// Decode a biased i16 offset: stored as (offset - 32768), recover with + 32768.
+fn decode_offset(v: i32) -> u32 {
+    return u32(v + 32768);
 }
 
 /// Evaluate Slug coverage at a single sample point.
@@ -169,7 +163,7 @@ fn render_single(
     render_coord: vec2<f32>,
     pixels_per_em: vec2<f32>,
     band_transform: vec4<f32>,
-    glyph_loc: vec2<i32>,
+    glyph_base: u32,
     band_max: vec2<i32>,
 ) -> f32 {
     let band_index = clamp(
@@ -182,19 +176,17 @@ fn render_single(
     var xcov = 0.0;
     var xwgt = 0.0;
 
-    let hband_header_loc = calc_band_loc(glyph_loc, u32(band_index.y));
-    let hband_data = textureLoad(band_texture, hband_header_loc, 0);
+    let hband_data = atlas[glyph_base + u32(band_index.y)];
     let h_split = f32(hband_data.w) * INV_UNITS;
     let h_left_ray = render_coord.x < h_split;
-    let h_data_offset = u32(select(hband_data.y, hband_data.z, h_left_ray));
+    let h_data_offset = decode_offset(select(hband_data.y, hband_data.z, h_left_ray));
 
     for (var ci = 0u; ci < u32(hband_data.x); ci++) {
-        let curve_ref_loc = calc_band_loc(glyph_loc, h_data_offset + ci);
-        let curve_ref = textureLoad(band_texture, curve_ref_loc, 0).xy;
-        let curve_loc = vec2<i32>(curve_ref);
-        let raw12 = textureLoad(curve_texture, curve_loc, 0);
+        let curve_ref = atlas[glyph_base + h_data_offset + ci];
+        let curve_offset = decode_offset(curve_ref.x);
+        let raw12 = atlas[glyph_base + curve_offset];
         let p12 = vec4<f32>(raw12) * INV_UNITS - vec4<f32>(render_coord, render_coord);
-        let raw3 = textureLoad(curve_texture, vec2<i32>(curve_loc.x + 1, curve_loc.y), 0);
+        let raw3 = atlas[glyph_base + curve_offset + 1u];
         let p3 = vec2<f32>(raw3.xy) * INV_UNITS - render_coord;
 
         if h_left_ray {
@@ -224,19 +216,17 @@ fn render_single(
     var ycov = 0.0;
     var ywgt = 0.0;
 
-    let vband_header_loc = calc_band_loc(glyph_loc, u32(band_max.y + 1 + band_index.x));
-    let vband_data = textureLoad(band_texture, vband_header_loc, 0);
+    let vband_data = atlas[glyph_base + u32(band_max.y + 1 + band_index.x)];
     let v_split = f32(vband_data.w) * INV_UNITS;
     let v_left_ray = render_coord.y < v_split;
-    let v_data_offset = u32(select(vband_data.y, vband_data.z, v_left_ray));
+    let v_data_offset = decode_offset(select(vband_data.y, vband_data.z, v_left_ray));
 
     for (var ci = 0u; ci < u32(vband_data.x); ci++) {
-        let curve_ref_loc = calc_band_loc(glyph_loc, v_data_offset + ci);
-        let curve_ref = textureLoad(band_texture, curve_ref_loc, 0).xy;
-        let curve_loc = vec2<i32>(curve_ref);
-        let raw12 = textureLoad(curve_texture, curve_loc, 0);
+        let curve_ref = atlas[glyph_base + v_data_offset + ci];
+        let curve_offset = decode_offset(curve_ref.x);
+        let raw12 = atlas[glyph_base + curve_offset];
         let p12 = vec4<f32>(raw12) * INV_UNITS - vec4<f32>(render_coord, render_coord);
-        let raw3 = textureLoad(curve_texture, vec2<i32>(curve_loc.x + 1, curve_loc.y), 0);
+        let raw3 = atlas[glyph_base + curve_offset + 1u];
         let p3 = vec2<f32>(raw3.xy) * INV_UNITS - render_coord;
 
         if v_left_ray {
@@ -287,22 +277,22 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Stable per-glyph ppem from instance data (for MSAA/darkening thresholds)
     let ppem = input.pixels_per_em.x;
 
-    var band_max = glyph_data.zw;
+    let glyph_base = u32(glyph_data.x);
+    var band_max = glyph_data.yz;
     band_max.y &= 0x00FF;
-    let glyph_loc = glyph_data.xy;
 
     // Single-sample coverage
-    var coverage = render_single(render_coord, pixels_per_em, band_transform, glyph_loc, band_max);
+    var coverage = render_single(render_coord, pixels_per_em, band_transform, glyph_base, band_max);
 
     if (params.flags & 1u) != 0u {
         // 4x MSAA for small sizes: blend in gradually from 16ppem down to 8ppem
         if ppem < 16.0 {
             let d = ems_per_pixel * (1.0 / 3.0);
             let msaa = 0.25 * (
-                render_single(render_coord + vec2<f32>(-d.x, -d.y), pixels_per_em, band_transform, glyph_loc, band_max) +
-                render_single(render_coord + vec2<f32>( d.x, -d.y), pixels_per_em, band_transform, glyph_loc, band_max) +
-                render_single(render_coord + vec2<f32>(-d.x,  d.y), pixels_per_em, band_transform, glyph_loc, band_max) +
-                render_single(render_coord + vec2<f32>( d.x,  d.y), pixels_per_em, band_transform, glyph_loc, band_max)
+                render_single(render_coord + vec2<f32>(-d.x, -d.y), pixels_per_em, band_transform, glyph_base, band_max) +
+                render_single(render_coord + vec2<f32>( d.x, -d.y), pixels_per_em, band_transform, glyph_base, band_max) +
+                render_single(render_coord + vec2<f32>(-d.x,  d.y), pixels_per_em, band_transform, glyph_base, band_max) +
+                render_single(render_coord + vec2<f32>( d.x,  d.y), pixels_per_em, band_transform, glyph_base, band_max)
             );
             coverage = mix(coverage, msaa, smoothstep(16.0, 8.0, ppem));
         }

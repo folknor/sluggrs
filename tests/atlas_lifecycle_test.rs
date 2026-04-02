@@ -342,13 +342,12 @@ fn trim_resets_when_textures_grew_and_working_set_shifted() {
         "trim() should reset when textures grew and working set shifted"
     );
 
-    // Textures should be back at initial size
+    // Buffer should be back at initial size
     assert_eq!(
-        h.atlas.curve_texels_used(),
+        h.atlas.buffer_elements_used(),
         0,
-        "curve cursor should be reset"
+        "buffer cursor should be reset"
     );
-    assert_eq!(h.atlas.band_texels_used(), 0, "band cursor should be reset");
 
     // The atlas should still be usable — next prepare re-extracts
     h.prepare_text("AB")

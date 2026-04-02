@@ -30,10 +30,6 @@ pub const SIMPLE_SHADER_WGSL: &str = include_str!("simple_shader.wgsl");
 // Kept internal until it's brought up to parity.
 const _SHADER_WGSL: &str = include_str!("shader.wgsl");
 
-/// Band texture width assumed by the shaders' wrapping logic.
-/// The uploaded texture must be exactly this wide; rows wrap at this boundary.
-pub const BAND_TEXTURE_WIDTH: u32 = 4096;
-
 /// Per-instance vertex data for a glyph (matches GlyphInstance in shader).
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]

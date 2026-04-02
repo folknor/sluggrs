@@ -2,8 +2,6 @@ use sluggrs::band::{self, CurveLocation, build_bands};
 use sluggrs::outline::{char_to_glyph_id, extract_outline};
 use sluggrs::prepare::{self, GpuOutline};
 
-const CURVE_TEXTURE_WIDTH: u32 = 4096;
-
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::{
@@ -47,48 +45,50 @@ struct PreparedGlyph {
     band_data: band::BandData,
 }
 
-/// Quantize f32 em-space coordinate to i16 at 4 units/em.
-fn q(v: f32) -> i16 {
-    (v * 4.0).round() as i16
+/// Quantize f32 em-space coordinate to i32 at 4 units/em.
+fn q(v: f32) -> i32 {
+    (v * 4.0).round() as i32
 }
 
-/// Build curve texture data from glyph outlines (int16 quantized).
-fn build_curve_texture(glyphs: &[PreparedGlyph]) -> Vec<[i16; 4]> {
-    let mut texels: Vec<[i16; 4]> = Vec::new();
+/// Build unified glyph buffer from prepared glyphs.
+/// Each glyph blob is [band_data][curve_data], with curve refs
+/// fixedup to account for band data size.
+fn build_glyph_buffer(glyphs: &[PreparedGlyph]) -> Vec<[i32; 4]> {
+    let mut buffer: Vec<[i32; 4]> = Vec::new();
 
     for glyph in glyphs {
+        // Build curve texels
+        let mut curve_texels: Vec<[i32; 4]> = Vec::new();
         for curve in &glyph.gpu_outline.curves {
-            texels.push([q(curve.p1[0]), q(curve.p1[1]), q(curve.p2[0]), q(curve.p2[1])]);
-            texels.push([q(curve.p3[0]), q(curve.p3[1]), 0, 0]);
+            curve_texels.push([q(curve.p1[0]), q(curve.p1[1]), q(curve.p2[0]), q(curve.p2[1])]);
+            curve_texels.push([q(curve.p3[0]), q(curve.p3[1]), 0, 0]);
         }
-    }
 
-    if texels.is_empty() {
-        texels.push([0; 4]);
-    }
+        // Band data with fixedup curve refs
+        let band_element_count = glyph.band_data.entries.len() / 4;
+        let num_headers = (glyph.band_data.band_count_x + glyph.band_data.band_count_y) as usize;
 
-    texels
-}
-
-/// Build band texture data from prepared glyphs.
-fn build_band_texture(glyphs: &[PreparedGlyph]) -> Vec<[i16; 4]> {
-    let mut texels: Vec<[i16; 4]> = Vec::new();
-
-    for glyph in glyphs {
-        for chunk in glyph.band_data.entries.chunks(4) {
-            let mut texel = [0i16; 4];
-            for (i, &val) in chunk.iter().enumerate() {
-                texel[i] = val;
+        // Widen band entries to i32, fixing up curve ref offsets
+        for (texel_idx, chunk) in glyph.band_data.entries.chunks(4).enumerate() {
+            let mut t = [chunk[0] as i32, chunk[1] as i32, chunk[2] as i32, chunk[3] as i32];
+            // Curve refs come after headers — fixup their offset by adding band size
+            if texel_idx >= num_headers {
+                let raw_offset = t[0] + 32768; // decode bias
+                let adjusted = raw_offset + band_element_count as i32;
+                t[0] = adjusted - 32768; // re-encode
             }
-            texels.push(texel);
+            buffer.push(t);
         }
+
+        // Append curve texels
+        buffer.extend_from_slice(&curve_texels);
     }
 
-    if texels.is_empty() {
-        texels.push([0i16; 4]);
+    if buffer.is_empty() {
+        buffer.push([0; 4]);
     }
 
-    texels
+    buffer
 }
 
 /// Prepare glyphs for a string of text with a given font.
@@ -101,8 +101,7 @@ fn prepare_text(
     start_y: f32,
     color: [f32; 4],
     weight: Option<f32>,
-    base_curve_offset: u32,
-    base_band_offset: u32,
+    base_buffer_offset: u32,
 ) -> (Vec<PreparedGlyph>, Vec<GlyphInstance>) {
     let font = match skrifa::FontRef::new(font_data) {
         Ok(f) => f,
@@ -127,8 +126,7 @@ fn prepare_text(
     let mut prepared: Vec<PreparedGlyph> = Vec::new();
     let mut instances: Vec<GlyphInstance> = Vec::new();
     let mut cursor_x = start_x;
-    let mut curve_offset: u32 = base_curve_offset;
-    let mut band_offset: u32 = base_band_offset;
+    let mut buffer_offset: u32 = base_buffer_offset;
 
     let hmtx = {
         use skrifa::raw::TableProvider;
@@ -167,19 +165,14 @@ fn prepare_text(
         let gpu_outline = prepare::prepare_outline(&outline);
         let num_curves = gpu_outline.curves.len();
 
+        // Curve locations are 0-based within curve region (will be fixupped in build_glyph_buffer)
         let curve_locations: Vec<CurveLocation> = (0..num_curves)
             .map(|i| CurveLocation {
-                offset: curve_offset + (i as u32) * 2,
+                offset: (i as u32) * 2,
             })
             .collect();
 
-        let band_count = if num_curves < 10 {
-            4
-        } else if num_curves < 30 {
-            8
-        } else {
-            12
-        };
+        let band_count = (num_curves as u32).clamp(1, 16);
         let band_data = build_bands(
             &gpu_outline,
             &curve_locations,
@@ -195,17 +188,19 @@ fn prepare_text(
         let screen_w = (max_x - min_x) * scale;
         let screen_h = (max_y - min_y) * scale;
 
-        let glyph_band_texel_count = (band_data.entries.len() / 4) as u32;
+        let band_element_count = (band_data.entries.len() / 4) as u32;
+        let curve_element_count = (num_curves as u32) * 2;
+        let blob_size = band_element_count + curve_element_count;
 
         instances.push(GlyphInstance {
             screen_rect: [screen_x, screen_y, screen_w, screen_h],
             em_rect: [min_x, min_y, max_x, max_y],
             band_transform: band_data.band_transform,
             glyph_data: [
-                band_offset % sluggrs::BAND_TEXTURE_WIDTH,
-                band_offset / sluggrs::BAND_TEXTURE_WIDTH,
-                (band_count - 1) as u32,
-                (band_count - 1) as u32,
+                buffer_offset,
+                band_count - 1,
+                band_count - 1,
+                0,
             ],
             color,
             depth: 0.0,
@@ -218,8 +213,7 @@ fn prepare_text(
             band_data,
         });
 
-        curve_offset += (num_curves as u32) * 2;
-        band_offset += glyph_band_texel_count;
+        buffer_offset += blob_size;
         cursor_x += advance * scale;
     }
 
@@ -499,8 +493,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     let mut all_prepared: Vec<PreparedGlyph> = Vec::new();
     let mut all_instances: Vec<GlyphInstance> = Vec::new();
 
-    let mut curve_offset: u32 = 0;
-    let mut band_offset: u32 = 0;
+    let mut buffer_offset: u32 = 0;
 
     // add_line takes logical sizes/positions and scales to physical pixels
     let mut add_line = |font_data: &[u8],
@@ -518,12 +511,12 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
             y * sf,
             color,
             weight,
-            curve_offset,
-            band_offset,
+            buffer_offset,
         );
         for g in &prepared {
-            curve_offset += (g.gpu_outline.curves.len() as u32) * 2;
-            band_offset += (g.band_data.entries.len() / 4) as u32;
+            let band_elements = (g.band_data.entries.len() / 4) as u32;
+            let curve_elements = (g.gpu_outline.curves.len() as u32) * 2;
+            buffer_offset += band_elements + curve_elements;
         }
         all_prepared.extend(prepared);
         all_instances.extend(instances);
@@ -851,70 +844,15 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
         all_instances.len()
     );
 
-    // Build GPU textures
-    let curve_texels = build_curve_texture(&all_prepared);
-    let band_texels = build_band_texture(&all_prepared);
+    // Build unified glyph buffer
+    let glyph_buffer_data = build_glyph_buffer(&all_prepared);
+    log::info!("Glyph buffer: {} elements ({} bytes)", glyph_buffer_data.len(), glyph_buffer_data.len() * 16);
 
-    // Curve texture: fixed width, wrap into rows (same as library's text_atlas.rs)
-    let curve_w = CURVE_TEXTURE_WIDTH;
-    let curve_count = curve_texels.len().max(1) as u32;
-    let curve_h = curve_count.div_ceil(curve_w);
-    let mut padded_curve_texels = curve_texels;
-    padded_curve_texels.resize((curve_w * curve_h) as usize, [0i16; 4]);
-
-    // Band texture: fixed width, wrap into rows
-    let band_w = sluggrs::BAND_TEXTURE_WIDTH;
-    let band_count = band_texels.len().max(1) as u32;
-    let band_h = band_count.div_ceil(band_w);
-    let mut padded_band_texels = band_texels;
-    padded_band_texels.resize((band_w * band_h) as usize, [0i16; 4]);
-
-    log::info!(
-        "Curve texture: {curve_w}x{curve_h} ({curve_count} used), Band texture: {band_w}x{band_h} ({band_count} used)"
-    );
-
-    let curve_texture = device.create_texture_with_data(
-        &queue,
-        &wgpu::TextureDescriptor {
-            label: Some("curve texture"),
-            size: wgpu::Extent3d {
-                width: curve_w,
-                height: curve_h,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Sint,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        },
-        wgpu::util::TextureDataOrder::LayerMajor,
-        bytemuck::cast_slice(&padded_curve_texels),
-    );
-
-    let band_texture = device.create_texture_with_data(
-        &queue,
-        &wgpu::TextureDescriptor {
-            label: Some("band texture"),
-            size: wgpu::Extent3d {
-                width: band_w,
-                height: band_h,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Sint,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        },
-        wgpu::util::TextureDataOrder::LayerMajor,
-        bytemuck::cast_slice(&padded_band_texels),
-    );
-
-    let curve_view = curve_texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let band_view = band_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let glyph_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("glyph buffer"),
+        contents: bytemuck::cast_slice(&glyph_buffer_data),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
 
     // --- Shader ---
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -939,28 +877,16 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
 
     let texture_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("texture bgl"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Sint,
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
             },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Sint,
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-        ],
+            count: None,
+        }],
     });
 
     // --- Buffers + bind groups ---
@@ -986,18 +912,12 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     });
 
     let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("texture bind group"),
+        label: Some("glyph buffer bind group"),
         layout: &texture_bgl,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&curve_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(&band_view),
-            },
-        ],
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: glyph_buffer.as_entire_binding(),
+        }],
     });
 
     let instance_count = all_instances.len() as u32;

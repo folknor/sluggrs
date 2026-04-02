@@ -1,4 +1,3 @@
-use crate::BAND_TEXTURE_WIDTH;
 use crate::band::CurveLocation;
 use crate::glyph_cache::{GlyphEntry, GlyphMap};
 use crate::gpu_cache::Cache;
@@ -6,43 +5,31 @@ use crate::prepare::GpuOutline;
 use crate::types::ColorMode;
 
 use wgpu::{
-    BindGroup, DepthStencilState, Device, Extent3d, MultisampleState, Queue, RenderPipeline,
-    TexelCopyBufferLayout, TexelCopyTextureInfo, TextureAspect, TextureDescriptor,
-    TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor,
+    BindGroup, DepthStencilState, Device, MultisampleState, Queue, RenderPipeline, TextureFormat,
 };
 
 /// Curve texture width. Fixed like the band texture — rows wrap at this boundary.
-const CURVE_TEXTURE_WIDTH: u32 = 4096;
-const INITIAL_CURVE_HEIGHT: u32 = 1;
-const INITIAL_BAND_HEIGHT: u32 = 1;
 
 /// An atlas containing cached glyph curve and band data for GPU rendering.
+/// Initial buffer capacity in vec4<i32> elements (16 bytes each).
+const INITIAL_BUFFER_CAPACITY: u32 = 8192;
+
 pub struct TextAtlas {
     pub(crate) cache: Cache,
     device: Device,
-    pub(crate) curve_texture: wgpu::Texture,
-    pub(crate) curve_view: TextureView,
-    pub(crate) band_texture: wgpu::Texture,
-    pub(crate) band_view: TextureView,
+    pub(crate) glyph_buffer: wgpu::Buffer,
     pub(crate) bind_group: BindGroup,
     pub(crate) format: TextureFormat,
     #[allow(dead_code)] // API contract — read by iced integration
     pub(crate) color_mode: ColorMode,
 
-    // Texture dimensions (height grows, width is fixed)
-    curve_height: u32,
-    band_height: u32,
-
-    // Write cursors (linear texel offsets, append-only)
-    curve_cursor: u32,
-    band_cursor: u32,
-
-    // CPU-side copies for re-upload on texture growth
-    curve_data: Vec<[i16; 4]>,
-    band_data: Vec<[i16; 4]>,
+    // Buffer state
+    buffer_capacity: u32, // in vec4<i32> elements
+    buffer_cursor: u32,   // append cursor in elements
+    buffer_data: Vec<[i32; 4]>, // CPU-side copy for re-upload on growth
 
     // Scratch buffers reused across upload_glyph() calls
-    scratch_curve_texels: Vec<[i16; 4]>,
+    scratch_curve_texels: Vec<[i32; 4]>,
     scratch_curve_locations: Vec<CurveLocation>,
     scratch_band_entries: Vec<i16>,
 
@@ -62,32 +49,19 @@ impl TextAtlas {
         format: TextureFormat,
         color_mode: ColorMode,
     ) -> Self {
-        let curve_height = INITIAL_CURVE_HEIGHT;
-        let band_height = INITIAL_BAND_HEIGHT;
-
-        let curve_texture = create_curve_texture(device, curve_height);
-        let band_texture = create_band_texture(device, band_height);
-
-        let curve_view = curve_texture.create_view(&TextureViewDescriptor::default());
-        let band_view = band_texture.create_view(&TextureViewDescriptor::default());
-        let bind_group = cache.create_atlas_bind_group(device, &curve_view, &band_view);
+        let glyph_buffer = create_glyph_buffer(device, INITIAL_BUFFER_CAPACITY);
+        let bind_group = cache.create_atlas_bind_group(device, &glyph_buffer);
 
         Self {
             cache: cache.clone(),
             device: device.clone(),
-            curve_texture,
-            curve_view,
-            band_texture,
-            band_view,
+            glyph_buffer,
             bind_group,
             format,
             color_mode,
-            curve_height,
-            band_height,
-            curve_cursor: 0,
-            band_cursor: 0,
-            curve_data: Vec::new(),
-            band_data: Vec::new(),
+            buffer_capacity: INITIAL_BUFFER_CAPACITY,
+            buffer_cursor: 0,
+            buffer_data: Vec::new(),
             scratch_curve_texels: Vec::new(),
             scratch_curve_locations: Vec::new(),
             scratch_band_entries: Vec::new(),
@@ -105,21 +79,16 @@ impl TextAtlas {
         &self.glyphs
     }
 
-    /// Linear texel offset into the curve texture (append-only cursor).
-    pub fn curve_texels_used(&self) -> u32 {
-        self.curve_cursor
-    }
-
-    /// Linear texel offset into the band texture (append-only cursor).
-    pub fn band_texels_used(&self) -> u32 {
-        self.band_cursor
+    /// Buffer elements used (in vec4<i32> units).
+    pub fn buffer_elements_used(&self) -> u32 {
+        self.buffer_cursor
     }
 
     /// End-of-frame cache management.
     ///
-    /// Clears per-frame usage tracking. When the textures have grown beyond
-    /// their initial size AND fewer than a quarter of cached glyphs are in use,
-    /// performs a full reset: recreates textures at initial size (reclaiming
+    /// Clears per-frame usage tracking. When the buffer has grown beyond
+    /// its initial size AND fewer than a quarter of cached glyphs are in use,
+    /// performs a full reset: recreates buffer at initial size (reclaiming
     /// GPU memory immediately), clears the glyph cache. The next prepare()
     /// re-extracts only the visible glyphs.
     ///
@@ -128,10 +97,8 @@ impl TextAtlas {
     /// memory has expanded (texture growth happened) AND the working set
     /// has shifted does eviction fire.
     pub fn trim(&mut self) {
-        // Only consider reset when textures have grown substantially.
-        // Minimum 16 rows means ~1MB+ of GPU memory before we bother
-        // with eviction — avoids churn for modest working sets.
-        let substantial_growth = self.curve_height >= 16 || self.band_height >= 16;
+        // Only consider reset when buffer has grown substantially.
+        let substantial_growth = self.buffer_capacity > INITIAL_BUFFER_CAPACITY * 4;
 
         if substantial_growth {
             let cached = self.glyphs.len();
@@ -142,11 +109,9 @@ impl TextAtlas {
             } else {
                 log::trace!(
                     "trim: retained ({in_use}/{cached} glyphs in use, \
-                     curve={}x{} band={}x{})",
-                    CURVE_TEXTURE_WIDTH,
-                    self.curve_height,
-                    BAND_TEXTURE_WIDTH,
-                    self.band_height,
+                     buffer={}/{})",
+                    self.buffer_cursor,
+                    self.buffer_capacity,
                 );
             }
         }
@@ -154,41 +119,26 @@ impl TextAtlas {
         self.glyphs.next_frame();
     }
 
-    /// Full atlas reset: recreate textures at initial size, clear all caches.
-    /// GPU memory is reclaimed immediately (old textures are dropped).
+    /// Full atlas reset: recreate buffer at initial size, clear all caches.
+    /// GPU memory is reclaimed immediately (old buffer is dropped).
     fn reset_atlas(&mut self) {
         log::debug!(
-            "trim: resetting atlas ({}/{} glyphs in use, \
-             curve={}x{} band={}x{} texels)",
+            "trim: resetting atlas ({}/{} glyphs in use, buffer={}/{})",
             self.glyphs.in_use_count(),
             self.glyphs.len(),
-            CURVE_TEXTURE_WIDTH,
-            self.curve_height,
-            BAND_TEXTURE_WIDTH,
-            self.band_height,
+            self.buffer_cursor,
+            self.buffer_capacity,
         );
 
         self.glyphs.clear();
-        self.curve_cursor = 0;
-        self.band_cursor = 0;
-        self.curve_data.clear();
-        self.band_data.clear();
+        self.buffer_cursor = 0;
+        self.buffer_data.clear();
 
-        // Recreate GPU textures at initial size — old textures are dropped,
-        // freeing their GPU allocations immediately.
-        self.curve_height = INITIAL_CURVE_HEIGHT;
-        self.band_height = INITIAL_BAND_HEIGHT;
-        self.curve_texture = create_curve_texture(&self.device, self.curve_height);
-        self.band_texture = create_band_texture(&self.device, self.band_height);
-        self.curve_view = self
-            .curve_texture
-            .create_view(&TextureViewDescriptor::default());
-        self.band_view = self
-            .band_texture
-            .create_view(&TextureViewDescriptor::default());
-        self.bind_group =
-            self.cache
-                .create_atlas_bind_group(&self.device, &self.curve_view, &self.band_view);
+        self.buffer_capacity = INITIAL_BUFFER_CAPACITY;
+        self.glyph_buffer = create_glyph_buffer(&self.device, self.buffer_capacity);
+        self.bind_group = self
+            .cache
+            .create_atlas_bind_group(&self.device, &self.glyph_buffer);
     }
 
     /// Upload a glyph's GPU-prepared outline and band data into the textures.
@@ -213,52 +163,32 @@ impl TextAtlas {
         }
 
         // Build curve texels with implicit p1 sharing within contours.
-        // Within a contour, each curve's p3 texel doubles as the next curve's
-        // p12 texel (since p3 of one curve == p1 of the next). This saves one
-        // texel per continuation curve. The shader reads curve_loc and
-        // curve_loc+1, so the read pattern is unchanged.
-        let curve_start = self.curve_cursor;
+        // No row-boundary padding needed — storage buffer is 1D.
         self.scratch_curve_texels.clear();
         self.scratch_curve_texels.reserve(num_curves as usize * 2);
         self.scratch_curve_locations.clear();
         self.scratch_curve_locations.reserve(num_curves as usize);
 
-        // Quantize f32 em-space coordinate to i16 at 4 units/em.
-        // Precision: 0.25 font design units (~0.008px at 64px/1000upem).
-        let q = |v: f32| -> i16 { (v * 4.0).round() as i16 };
+        // Quantize f32 em-space coordinate to i32 at 4 units/em.
+        let q = |v: f32| -> i32 { (v * 4.0).round() as i32 };
 
         for (i, curve) in gpu_outline.curves.iter().enumerate() {
             let is_continuation = i > 0
                 && curve.p1 == gpu_outline.curves[i - 1].p3;
 
             if is_continuation {
-                // Previous p3 texel becomes this curve's p12 texel.
-                // Check that the shared position isn't at the last column
-                // (shader reads curve_loc.x + 1, which would go OOB).
-                let shared_pos = curve_start + self.scratch_curve_texels.len() as u32 - 1;
-                if shared_pos % CURVE_TEXTURE_WIDTH == CURVE_TEXTURE_WIDTH - 1 {
-                    // Can't share at row boundary — emit fresh p12 texel on next row
-                    self.scratch_curve_texels.push([
-                        q(curve.p1[0]), q(curve.p1[1]), q(curve.p2[0]), q(curve.p2[1]),
-                    ]);
-                } else {
-                    // Overwrite previous p3 texel's .zw with our p2
-                    let last = self.scratch_curve_texels.last_mut().expect("continuation curve must have preceding texel");
-                    last[2] = q(curve.p2[0]);
-                    last[3] = q(curve.p2[1]);
-                }
+                // Overwrite previous p3 texel's .zw with our p2
+                let last = self.scratch_curve_texels.last_mut().expect("continuation curve must have preceding texel");
+                last[2] = q(curve.p2[0]);
+                last[3] = q(curve.p2[1]);
             } else {
-                // New contour: ensure position isn't at last column
-                let pos = curve_start + self.scratch_curve_texels.len() as u32;
-                if pos % CURVE_TEXTURE_WIDTH == CURVE_TEXTURE_WIDTH - 1 {
-                    self.scratch_curve_texels.push([0; 4]); // padding
-                }
+                // New contour: emit fresh p12 texel
                 self.scratch_curve_texels.push([
                     q(curve.p1[0]), q(curve.p1[1]), q(curve.p2[0]), q(curve.p2[1]),
                 ]);
             }
 
-            // Record curve location as linear offset from curve_start
+            // Record curve location (0-based within curve data region)
             let curve_linear = self.scratch_curve_texels.len() as u32 - 1;
             self.scratch_curve_locations.push(CurveLocation {
                 offset: curve_linear,
@@ -267,13 +197,11 @@ impl TextAtlas {
             // Emit p3 texel
             self.scratch_curve_texels.push([q(curve.p3[0]), q(curve.p3[1]), 0, 0]);
         }
-        let curve_texel_count = self.scratch_curve_texels.len() as u32;
+        let curve_element_count = self.scratch_curve_texels.len() as u32;
 
-        // Build band data with absolute 2D curve locations.
-        // NOTE: scratch_band_entries is moved out here and must be reclaimed
-        // (self.scratch_band_entries = band_data.entries) on ALL return paths
-        // to avoid losing the allocation.
-        let band_start = self.band_cursor;
+        // Build band data. Curve locations are 0-based within the curve region;
+        // build_bands produces glyph-relative offsets for band headers.
+        // We'll fixup curve ref offsets after we know the band data size.
         let band_data = crate::band::build_bands(
             gpu_outline,
             &self.scratch_curve_locations,
@@ -284,68 +212,59 @@ impl TextAtlas {
         let bd_count_x = band_data.band_count_x;
         let bd_count_y = band_data.band_count_y;
         let bd_transform = band_data.band_transform;
-        let band_texel_count = (band_data.entries.len() / 4) as u32;
+        let band_element_count = (band_data.entries.len() / 4) as u32;
 
-        // Check device limits before any mutation
-        let max_dim = device.limits().max_texture_dimension_2d;
-        let new_curve_end = self.curve_cursor + curve_texel_count;
-        let required_curve_height = new_curve_end.div_ceil(CURVE_TEXTURE_WIDTH);
-        let new_band_end = self.band_cursor + band_texel_count;
-        let required_band_height = new_band_end.div_ceil(BAND_TEXTURE_WIDTH);
+        // Fixup curve ref offsets: add band_element_count so they point into
+        // the curve region of the blob (which comes after band data).
+        // Band entries layout: first num_headers * 4 i16 values are headers,
+        // rest are curve refs (4 i16 values each, first is the offset).
+        let num_headers = (bd_count_x + bd_count_y) as usize;
+        let mut band_entries = band_data.entries;
+        for ref_idx in num_headers..(band_element_count as usize) {
+            let i = ref_idx * 4; // offset i16 is at position 0 of each texel
+            // Decode biased offset, add band size, re-encode
+            let raw_offset = band_entries[i] as i32 + 32768;
+            let adjusted = raw_offset as u32 + band_element_count;
+            band_entries[i] = (adjusted as i32 - 32768) as i16;
+        }
 
-        if required_curve_height > max_dim || required_band_height > max_dim {
-            // Reclaim the allocation before returning
-            self.scratch_band_entries = band_data.entries;
+        // Assemble glyph blob: [band_data] [curve_data]
+        let blob_size = band_element_count + curve_element_count;
+
+        // Overflow check
+        if blob_size > 65535 {
+            self.scratch_band_entries = band_entries;
             return Err(crate::types::PrepareError::AtlasFull);
         }
 
-        // Grow textures if needed
-        if required_curve_height > self.curve_height {
-            self.grow_curve_texture(device, queue, required_curve_height);
-        }
-        if required_band_height > self.band_height {
-            self.grow_band_texture(device, queue, required_band_height);
-        }
-
-        // Access band texels from the returned BandData
-        let band_texels: &[[i16; 4]] = bytemuck::cast_slice(&band_data.entries);
-
-        // Append to CPU-side copies
-        self.curve_data
-            .extend_from_slice(&self.scratch_curve_texels);
-        self.band_data.extend_from_slice(band_texels);
-
-        // Upload curve texels (handling wrapping across rows)
-        if !self.scratch_curve_texels.is_empty() {
-            self.upload_wrapped_texels_i16(
-                queue,
-                &self.curve_texture,
-                &self.scratch_curve_texels,
-                self.curve_cursor,
-                CURVE_TEXTURE_WIDTH,
-            );
+        // Check buffer capacity and grow if needed
+        let glyph_offset = self.buffer_cursor;
+        let new_end = glyph_offset + blob_size;
+        if new_end > self.buffer_capacity {
+            self.grow_buffer(device, queue, new_end);
         }
 
-        // Upload band texels (handling wrapping across rows)
-        if !band_texels.is_empty() {
-            upload_wrapped_texels_i16_band(
-                queue,
-                &self.band_texture,
-                band_texels,
-                self.band_cursor,
-                BAND_TEXTURE_WIDTH,
-            );
-        }
+        // Widen band entries from i16 to i32 and append to CPU copy
+        let band_i32: Vec<[i32; 4]> = band_entries
+            .chunks_exact(4)
+            .map(|c| [c[0] as i32, c[1] as i32, c[2] as i32, c[3] as i32])
+            .collect();
+        self.buffer_data.extend_from_slice(&band_i32);
+        self.buffer_data.extend_from_slice(&self.scratch_curve_texels);
 
-        // Reclaim the scratch allocation for reuse (after all borrows of band_data.entries)
-        self.scratch_band_entries = band_data.entries;
+        // Upload blob to GPU
+        let byte_offset = glyph_offset as u64 * 16; // 16 bytes per vec4<i32>
+        let blob_bytes: &[u8] = bytemuck::cast_slice(
+            &self.buffer_data[glyph_offset as usize..new_end as usize],
+        );
+        queue.write_buffer(&self.glyph_buffer, byte_offset, blob_bytes);
 
-        // Advance cursors
-        self.curve_cursor = new_curve_end;
-        self.band_cursor = new_band_end;
+        // Reclaim scratch
+        self.scratch_band_entries = band_entries;
+        self.buffer_cursor = new_end;
 
         Ok(GlyphEntry {
-            band_offset: band_start,
+            band_offset: glyph_offset,
             band_max_x: bd_count_x.saturating_sub(1),
             band_max_y: bd_count_y.saturating_sub(1),
             band_transform: bd_transform,
@@ -354,123 +273,36 @@ impl TextAtlas {
         })
     }
 
-    /// Upload i16 texels at a linear offset, handling row wrapping.
-    fn upload_wrapped_texels_i16(
-        &self,
-        queue: &Queue,
-        texture: &wgpu::Texture,
-        texels: &[[i16; 4]],
-        linear_offset: u32,
-        tex_width: u32,
-    ) {
-        let mut remaining = texels;
-        let mut offset = linear_offset;
-
-        while !remaining.is_empty() {
-            let x = offset % tex_width;
-            let y = offset / tex_width;
-            let row_remaining = (tex_width - x) as usize;
-            let count = remaining.len().min(row_remaining);
-
-            queue.write_texture(
-                TexelCopyTextureInfo {
-                    texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d { x, y, z: 0 },
-                    aspect: TextureAspect::All,
-                },
-                bytemuck::cast_slice(&remaining[..count]),
-                TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(count as u32 * 8), // i16×4 = 8 bytes
-                    rows_per_image: None,
-                },
-                Extent3d {
-                    width: count as u32,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-            );
-
-            remaining = &remaining[count..];
-            offset += count as u32;
+    fn grow_buffer(&mut self, device: &Device, queue: &Queue, min_capacity: u32) {
+        let mut new_cap = self.buffer_capacity;
+        while new_cap < min_capacity {
+            new_cap *= 2;
         }
-    }
-
-    fn grow_curve_texture(&mut self, device: &Device, queue: &Queue, min_height: u32) {
-        let mut new_height = self.curve_height;
-        while new_height < min_height {
-            new_height *= 2;
-        }
+        // Use max to avoid multiple growths in one frame
+        new_cap = new_cap.max(min_capacity);
 
         log::debug!(
-            "Growing curve texture: {}x{} → {}x{} (cursor: {})",
-            CURVE_TEXTURE_WIDTH,
-            self.curve_height,
-            CURVE_TEXTURE_WIDTH,
-            new_height,
-            self.curve_cursor
+            "Growing glyph buffer: {} → {} elements (cursor: {})",
+            self.buffer_capacity,
+            new_cap,
+            self.buffer_cursor,
         );
 
-        self.curve_texture = create_curve_texture(device, new_height);
-        self.curve_view = self
-            .curve_texture
-            .create_view(&TextureViewDescriptor::default());
-        self.curve_height = new_height;
+        self.glyph_buffer = create_glyph_buffer(device, new_cap);
+        self.buffer_capacity = new_cap;
 
         // Re-upload existing data
-        if !self.curve_data.is_empty() {
-            self.upload_wrapped_texels_i16(
-                queue,
-                &self.curve_texture,
-                &self.curve_data,
+        if !self.buffer_data.is_empty() {
+            queue.write_buffer(
+                &self.glyph_buffer,
                 0,
-                CURVE_TEXTURE_WIDTH,
+                bytemuck::cast_slice(&self.buffer_data),
             );
         }
 
-        self.rebind(device);
-    }
-
-    fn grow_band_texture(&mut self, device: &Device, queue: &Queue, min_height: u32) {
-        let mut new_height = self.band_height;
-        while new_height < min_height {
-            new_height *= 2;
-        }
-
-        log::debug!(
-            "Growing band texture: {}x{} → {}x{} (cursor: {})",
-            BAND_TEXTURE_WIDTH,
-            self.band_height,
-            BAND_TEXTURE_WIDTH,
-            new_height,
-            self.band_cursor
-        );
-
-        self.band_texture = create_band_texture(device, new_height);
-        self.band_view = self
-            .band_texture
-            .create_view(&TextureViewDescriptor::default());
-        self.band_height = new_height;
-
-        // Re-upload existing data
-        if !self.band_data.is_empty() {
-            upload_wrapped_texels_i16_band(
-                queue,
-                &self.band_texture,
-                &self.band_data,
-                0,
-                BAND_TEXTURE_WIDTH,
-            );
-        }
-
-        self.rebind(device);
-    }
-
-    fn rebind(&mut self, device: &Device) {
-        self.bind_group =
-            self.cache
-                .create_atlas_bind_group(device, &self.curve_view, &self.band_view);
+        self.bind_group = self
+            .cache
+            .create_atlas_bind_group(device, &self.glyph_buffer);
     }
 
     pub(crate) fn get_or_create_pipeline(
@@ -484,77 +316,11 @@ impl TextAtlas {
     }
 }
 
-fn upload_wrapped_texels_i16_band(
-    queue: &Queue,
-    texture: &wgpu::Texture,
-    texels: &[[i16; 4]],
-    linear_offset: u32,
-    tex_width: u32,
-) {
-    let mut remaining = texels;
-    let mut offset = linear_offset;
-
-    while !remaining.is_empty() {
-        let x = offset % tex_width;
-        let y = offset / tex_width;
-        let row_remaining = (tex_width - x) as usize;
-        let count = remaining.len().min(row_remaining);
-
-        queue.write_texture(
-            TexelCopyTextureInfo {
-                texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d { x, y, z: 0 },
-                aspect: TextureAspect::All,
-            },
-            bytemuck::cast_slice(&remaining[..count]),
-            TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(count as u32 * 8), // i16×4 = 8 bytes
-                rows_per_image: None,
-            },
-            Extent3d {
-                width: count as u32,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-        );
-
-        remaining = &remaining[count..];
-        offset += count as u32;
-    }
-}
-
-fn create_curve_texture(device: &Device, height: u32) -> wgpu::Texture {
-    device.create_texture(&TextureDescriptor {
-        label: Some("sluggrs curve texture"),
-        size: Extent3d {
-            width: CURVE_TEXTURE_WIDTH,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: TextureDimension::D2,
-        format: TextureFormat::Rgba16Sint,
-        usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
-        view_formats: &[],
-    })
-}
-
-fn create_band_texture(device: &Device, height: u32) -> wgpu::Texture {
-    device.create_texture(&TextureDescriptor {
-        label: Some("sluggrs band texture"),
-        size: Extent3d {
-            width: BAND_TEXTURE_WIDTH,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: TextureDimension::D2,
-        format: TextureFormat::Rgba16Sint,
-        usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
-        view_formats: &[],
+fn create_glyph_buffer(device: &Device, capacity: u32) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("sluggrs glyph buffer"),
+        size: capacity as u64 * 16, // 16 bytes per vec4<i32>
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
     })
 }

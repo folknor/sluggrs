@@ -102,31 +102,19 @@ impl Cache {
             ],
         };
 
-        // Bind group 0: curve texture (Rgba16Sint) + band texture (Rgba32Uint)
+        // Bind group 0: unified glyph storage buffer
         let atlas_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("sluggrs atlas bind group layout"),
-            entries: &[
-                BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: TextureViewDimension::D2,
-                        sample_type: TextureSampleType::Sint,
-                    },
-                    count: None,
+            entries: &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
                 },
-                BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: TextureViewDimension::D2,
-                        sample_type: TextureSampleType::Sint,
-                    },
-                    count: None,
-                },
-            ],
+                count: None,
+            }],
         });
 
         // Bind group 1: screen resolution uniform
@@ -164,22 +152,15 @@ impl Cache {
     pub(crate) fn create_atlas_bind_group(
         &self,
         device: &Device,
-        curve_view: &wgpu::TextureView,
-        band_view: &wgpu::TextureView,
+        buffer: &wgpu::Buffer,
     ) -> BindGroup {
         device.create_bind_group(&BindGroupDescriptor {
             label: Some("sluggrs atlas bind group"),
             layout: &self.0.atlas_layout,
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::TextureView(curve_view),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::TextureView(band_view),
-                },
-            ],
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
         })
     }
 
