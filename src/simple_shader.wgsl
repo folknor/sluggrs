@@ -55,8 +55,8 @@ fn vs_main(instance: GlyphInstance, @builtin(vertex_index) vid: u32) -> VertexOu
     // Undilated screen-space position
     let base_pos = instance.screen_rect.xy + corner * instance.screen_rect.zw;
 
-    // Apply scroll offset and dilate (push each corner outward by 1 pixel)
-    let screen_pos = base_pos + params.scroll_offset + normal;
+    // Apply scroll offset and dilate (push each corner outward by half a pixel)
+    let screen_pos = base_pos + params.scroll_offset + normal * 0.5;
 
     // Convert to NDC: [0, screen_size] → [-1, 1], flip Y
     let ndc = vec2<f32>(
@@ -73,7 +73,7 @@ fn vs_main(instance: GlyphInstance, @builtin(vertex_index) vid: u32) -> VertexOu
         mix(instance.em_rect.w, instance.em_rect.y, corner.y),
     );
 
-    // Convert 1-pixel dilation to em-space offset
+    // Convert half-pixel dilation to em-space offset
     let em_size = vec2<f32>(
         instance.em_rect.z - instance.em_rect.x,
         instance.em_rect.w - instance.em_rect.y,
@@ -81,7 +81,7 @@ fn vs_main(instance: GlyphInstance, @builtin(vertex_index) vid: u32) -> VertexOu
     let ems_per_pixel = em_size / max(instance.screen_rect.zw, vec2<f32>(1.0, 1.0));
 
     // Adjust texcoord for dilation (Y negated: em Y-up, screen Y-down)
-    output.texcoord = base_texcoord + vec2<f32>(normal.x, -normal.y) * ems_per_pixel;
+    output.texcoord = base_texcoord + vec2<f32>(normal.x, -normal.y) * ems_per_pixel * 0.5;
 
     output.banding = instance.band_transform;
     output.glyph = vec4<i32>(instance.glyph_data);

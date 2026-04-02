@@ -191,38 +191,57 @@ direction; the dual sorted lists enable early-exit from both sides.
 Fragments on the "wrong" side of a band currently iterate all curves with
 no early exit. Memory cost: ~2x band curve indices.
 
+- [x] RGBA16I texture format (Stages A+B) — both curve and band textures
+  now Rgba16Sint (8 bytes/texel). Quantized at 4 units/em. **hb review**
+
+### Next priorities (from hb review round 2)
+
+- [ ] Cu2qu cubic-to-quadratic conversion — our naive midpoint subdivision
+  (MAX_DEPTH=3, max 8 quads) produces more curves with lower fidelity than
+  harfbuzz's fonttools cu2qu port (tangent-line intersection for optimal
+  single-quad fit, proper geometric error tolerance of 0.5 font units,
+  double precision, MAX_DEPTH=10). Biggest remaining correctness gap for
+  CFF/OTF fonts. Also adds collinearity pre-check to emit lines directly.
+  Harfbuzz: `hb-gpu-cu2qu.hh`, `hb-gpu-draw.cc:122-137`. **hb review**
+
+- [ ] Shader MSAA for small sizes — 4x supersampling below 16ppem, blended
+  in with smoothstep(16,8,ppem). Four evaluations at ±1/3 pixel offsets.
+  Zero cost above 16ppem. Shader-only change.
+  Harfbuzz: `hb-gpu-fragment.wgsl:296-310`. **hb review**
+
+- [ ] Half-pixel dilation — we dilate by 1 full pixel, harfbuzz by 0.5px.
+  Over-dilation wastes fragment work on border pixels that always evaluate
+  to zero coverage. Easy shader change.
+  Harfbuzz: `hb-gpu-vertex.wgsl:49-81`. **hb review**
+
+- [ ] Stem darkening — ppem-aware gamma curve that thickens thin stems at
+  small sizes, brightness-dependent exponent. No-op above 48ppem.
+  Shader-only. Harfbuzz: `hb-gpu-fragment.wgsl:321-326`. **hb review**
+
+### Quick wins
+
+- [ ] Zero-length curve rejection — filter curves where start == end during
+  outline extraction. Trivial. **hb review**
+
+- [ ] Eliminate prepare_outline passthrough — now just copies curves and
+  recomputes bounds. Could fold into outline extraction. **hb review**
+
 ### Later
 
-- [ ] Jacobian-based vertex dilation — harfbuzz computes proper half-pixel
-  expansion accounting for the full MVP transform. We use simpler
-  normal-based dilation. Compare quality and performance. **hb review**
+- [ ] i16 overflow guards — add harfbuzz-style `quantize_fits_i16` checks
+  for extreme coordinates. Robustness.
+  Harfbuzz: `hb-gpu-draw.cc:265-271`. **hb review**
 
-### Next: RGBA16I texture format (incremental)
+- [ ] Band count policy — benchmark harfbuzz's `min(num_curves, 16)` cap
+  against our current 4/8/12 heuristic. **hb review**
 
-Quantize at 4 units/em (0.25 font design units precision, ~0.008px error
-at 64px/1000upem). Can be done in stages:
+- [ ] Jacobian-based vertex dilation — full MVP-aware half-pixel expansion.
+  Only needed if we support rotation/non-uniform scaling.
+  Harfbuzz: `hb-gpu-vertex.wgsl:49-81`. **hb review**
 
-**Stage A: Int16 curve texture (small change)**
-- Change curve_texture from Rgba32Float to Rgba16Sint (8 vs 16 bytes/texel)
-- Quantize in upload_glyph: `(val * 4.0).round() as i16`
-- Shader: `texture_2d<f32>` → `texture_2d<i32>`, decode with `* 0.25`
-- gpu_cache.rs: sample_type Float → Sint
-- Add overflow guard for coordinates outside i16 range (±8191 em)
-- Band texture, band data, curve locations — all unchanged
-- Harfbuzz: `hb-gpu-draw.hh:38`, `hb-gpu-draw.cc:259-263`
-
-**Stage B: Int16 band texture (medium change)**
-- Change band_texture from Rgba32Uint to Rgba16Sint
-- Band headers already fit (counts small, offsets need +32768 bias)
-- Curve refs change from absolute 2D (x,y) to glyph-local 1D offsets
-
-**Stage C: Unified storage buffer (large, optional)**
-- Merge both textures into single `array<vec4<i32>>` storage buffer
-- Simplifies bind groups, removes 2D wrapping logic
-- Only worth doing if we want full harfbuzz parity
-
-- [ ] Small-size rendering — harfbuzz has shader-level 4x MSAA for <16 ppem
-  and stem darkening for <48 ppem. We have neither. **hb review**
+- [ ] Unified storage buffer (Stage C) — merge both textures into single
+  `array<vec4<i32>>` with glyph-local relative offsets. Architectural
+  cleanup, optional. **hb review**
 
 ## Future / long-term
 

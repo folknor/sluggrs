@@ -64,8 +64,10 @@ impl OutlinePen for CollectPen {
     fn line_to(&mut self, x: f32, y: f32) {
         let p1 = self.current;
         let p3 = [x, y];
-        let p2 = p1;
-        self.curves.push(QuadCurve { p1, p2, p3 });
+        if p1 == p3 {
+            return; // zero-length: no winding contribution
+        }
+        self.curves.push(QuadCurve { p1, p2: p1, p3 });
         self.current = p3;
         self.update_bounds(p3);
     }
