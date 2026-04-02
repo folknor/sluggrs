@@ -9,7 +9,7 @@
 
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
 use sluggrs::{
-    Cache, ColorMode, Resolution, SwashCache, TextArea, TextBounds, TextAtlas, TextRenderer,
+    Cache, ColorMode, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
     Viewport,
 };
 
@@ -32,22 +32,18 @@ fn main() {
     let adapter_name = adapter.get_info().name;
     eprintln!("adapter={adapter_name}");
 
-    let has_timestamps = adapter
-        .features()
-        .contains(wgpu::Features::TIMESTAMP_QUERY);
+    let has_timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
 
     if !has_timestamps {
         eprintln!("ERROR: adapter does not support TIMESTAMP_QUERY — cannot measure GPU time");
         std::process::exit(1);
     }
 
-    let (device, queue) = pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            label: Some("gpu-bench"),
-            required_features: wgpu::Features::TIMESTAMP_QUERY,
-            ..Default::default()
-        },
-    ))
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("gpu-bench"),
+        required_features: wgpu::Features::TIMESTAMP_QUERY,
+        ..Default::default()
+    }))
     .expect("Failed to create device");
 
     let timestamp_period = queue.get_timestamp_period();
@@ -91,12 +87,18 @@ fn main() {
 
     // Set up sluggrs pipeline
     let cache = Cache::new(&device);
-    let mut atlas = TextAtlas::with_color_mode(&device, &queue, &cache, format, ColorMode::Accurate);
-    let mut renderer = TextRenderer::new(
-        &mut atlas, &device, wgpu::MultisampleState::default(), None,
-    );
+    let mut atlas =
+        TextAtlas::with_color_mode(&device, &queue, &cache, format, ColorMode::Accurate);
+    let mut renderer =
+        TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None);
     let mut viewport = Viewport::new(&device, &cache);
-    viewport.update(&queue, Resolution { width: WIDTH, height: HEIGHT });
+    viewport.update(
+        &queue,
+        Resolution {
+            width: WIDTH,
+            height: HEIGHT,
+        },
+    );
 
     let mut font_system = FontSystem::new();
     let mut swash_cache = SwashCache::new();
@@ -113,7 +115,13 @@ fn main() {
 
     let metrics = Metrics::new(16.0, 20.0);
     let mut buffer = Buffer::new(&mut font_system, metrics);
-    buffer.set_text(&mut font_system, text, &Attrs::new(), Shaping::Advanced, None);
+    buffer.set_text(
+        &mut font_system,
+        text,
+        &Attrs::new(),
+        Shaping::Advanced,
+        None,
+    );
     buffer.shape_until_scroll(&mut font_system, false);
 
     // Prepare (populates atlas + instances)
@@ -123,14 +131,28 @@ fn main() {
             left: 10.0,
             top: 10.0,
             scale: 1.0,
-            bounds: TextBounds { left: 0, top: 0, right: WIDTH as i32, bottom: HEIGHT as i32 },
+            bounds: TextBounds {
+                left: 0,
+                top: 0,
+                right: WIDTH as i32,
+                bottom: HEIGHT as i32,
+            },
             default_color: cosmic_text::Color::rgb(255, 255, 255),
         };
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        renderer.prepare(
-            &device, &queue, &mut encoder, &mut font_system,
-            &mut atlas, &viewport, [text_area], &mut swash_cache,
-        ).expect("prepare failed");
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        renderer
+            .prepare(
+                &device,
+                &queue,
+                &mut encoder,
+                &mut font_system,
+                &mut atlas,
+                &viewport,
+                [text_area],
+                &mut swash_cache,
+            )
+            .expect("prepare failed");
     }
 
     eprintln!("glyphs={}", atlas.glyph_count());
@@ -140,8 +162,21 @@ fn main() {
 
     // Warmup
     for _ in 0..WARMUP_FRAMES {
-        render_frame(&device, &queue, &renderer, &atlas, &viewport, &target_view, None, None, None);
-        let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+        render_frame(
+            &device,
+            &queue,
+            &renderer,
+            &atlas,
+            &viewport,
+            &target_view,
+            None,
+            None,
+            None,
+        );
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
     }
 
     // Benchmark
@@ -149,12 +184,22 @@ fn main() {
 
     for _ in 0..BENCH_FRAMES {
         render_frame(
-            &device, &queue, &renderer, &atlas, &viewport, &target_view,
-            Some(&query_set), Some(&resolve_buf), Some(&readback_buf),
+            &device,
+            &queue,
+            &renderer,
+            &atlas,
+            &viewport,
+            &target_view,
+            Some(&query_set),
+            Some(&resolve_buf),
+            Some(&readback_buf),
         );
 
         // Wait for GPU to finish and read back timestamps
-        let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
 
         let us = read_timestamp_us(&device, &readback_buf, timestamp_period);
         if let Some(us) = us {
@@ -177,7 +222,9 @@ fn main() {
 
     eprintln!();
     eprintln!("=== GPU render pass timing ({len} frames) ===");
-    eprintln!("min={min:.1}µs  median={median:.1}µs  avg={avg:.1}µs  p95={p95:.1}µs  max={max:.1}µs");
+    eprintln!(
+        "min={min:.1}µs  median={median:.1}µs  avg={avg:.1}µs  p95={p95:.1}µs  max={max:.1}µs"
+    );
 
     // KV output
     eprintln!("gpu_min_us={min:.0}");
@@ -226,7 +273,9 @@ fn render_frame(
             multiview_mask: None,
         });
 
-        renderer.render(atlas, viewport, &mut pass).expect("render failed");
+        renderer
+            .render(atlas, viewport, &mut pass)
+            .expect("render failed");
     }
 
     // Resolve timestamps → resolve buffer → readback buffer
@@ -248,7 +297,10 @@ fn read_timestamp_us(
     slice.map_async(wgpu::MapMode::Read, move |result| {
         tx.send(result).unwrap();
     });
-    let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+    let _ = device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: None,
+    });
     rx.recv().unwrap().ok()?;
 
     let data = slice.get_mapped_range();

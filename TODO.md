@@ -144,6 +144,49 @@ partly compute/sort bound (per-band sorting in band.rs), not just allocator boun
   requires fundamentally different architecture (compute dispatch, tile-based
   curve caching). Not compatible with our render-pass integration.
 
+## Divergences from harfbuzz Slug implementation (found by hb review)
+
+- [ ] Implicit p1 contour encoding — harfbuzz elides p1 for continuing
+  contours (saves a texel per non-first curve in a contour). We use explicit
+  2-texel pairs for every curve. Memory savings and potential cache benefits.
+  **hb review**
+
+- [ ] Band split optimization — harfbuzz does a binary search per band to
+  find a split point that balances left/right curve counts, enabling
+  early-exit from both directions in the fragment shader. We use simpler
+  per-band curve lists. Note: Lengyel removed dual-sort from the reference
+  implementation, but harfbuzz added their own version — worth investigating
+  whether their approach avoids the small-text regression that killed the
+  original. **hb review**
+
+- [ ] Jacobian-based vertex dilation — harfbuzz computes proper half-pixel
+  expansion accounting for the full MVP transform. We use simpler
+  normal-based dilation. Compare quality and performance. **hb review**
+
+- [ ] Texture format — harfbuzz uses RGBA16I (int16 quantized at 4 units/em)
+  for a single unified glyph blob, half the memory per texel but lower
+  precision. We use Rgba32Float for curves + Rgba32Uint for bands as
+  separate textures. Evaluate whether 16-bit precision is sufficient.
+  **hb review**
+
+- [ ] Offset encoding — harfbuzz uses 16-bit signed offsets with +32768 bias
+  to pack band curve references compactly. Compare against our current
+  encoding. **hb review**
+
+- [ ] Small-size rendering — harfbuzz has shader-level 4x MSAA for <16 ppem
+  and stem darkening for <48 ppem. We have neither. **hb review**
+
+- [x] Exact geometry for lines — fixed: changed line encoding from p2=midpoint
+  to p2=p1 (matching harfbuzz). This makes a=p3-p1 (always nonzero), so the
+  quadratic solver handles lines naturally. Removed CPU perturbation and
+  reverted shader threshold to compute-then-overwrite with exact ==0.0 check.
+  **hb review**
+
+- [ ] Ray-direction-aware bands — harfbuzz's band format is symmetric and
+  considers ray direction for more aggressive curve culling per band. Our
+  band builder is simpler but likely leaves more curves for the shader to
+  reject. **hb review**
+
 ## Future / long-term
 
 - [ ] Unbounded retained memory — curve_data and band_data in TextAtlas

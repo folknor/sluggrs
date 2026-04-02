@@ -1,9 +1,9 @@
+use crate::BAND_TEXTURE_WIDTH;
 use crate::band::CurveLocation;
 use crate::glyph_cache::{GlyphEntry, GlyphMap};
 use crate::gpu_cache::Cache;
 use crate::prepare::GpuOutline;
 use crate::types::ColorMode;
-use crate::BAND_TEXTURE_WIDTH;
 
 use wgpu::{
     BindGroup, DepthStencilState, Device, Extent3d, MultisampleState, Queue, RenderPipeline,
@@ -143,8 +143,10 @@ impl TextAtlas {
                 log::trace!(
                     "trim: retained ({in_use}/{cached} glyphs in use, \
                      curve={}x{} band={}x{})",
-                    CURVE_TEXTURE_WIDTH, self.curve_height,
-                    BAND_TEXTURE_WIDTH, self.band_height,
+                    CURVE_TEXTURE_WIDTH,
+                    self.curve_height,
+                    BAND_TEXTURE_WIDTH,
+                    self.band_height,
                 );
             }
         }
@@ -178,8 +180,12 @@ impl TextAtlas {
         self.band_height = INITIAL_BAND_HEIGHT;
         self.curve_texture = create_curve_texture(&self.device, self.curve_height);
         self.band_texture = create_band_texture(&self.device, self.band_height);
-        self.curve_view = self.curve_texture.create_view(&TextureViewDescriptor::default());
-        self.band_view = self.band_texture.create_view(&TextureViewDescriptor::default());
+        self.curve_view = self
+            .curve_texture
+            .create_view(&TextureViewDescriptor::default());
+        self.band_view = self
+            .band_texture
+            .create_view(&TextureViewDescriptor::default());
         self.bind_group =
             self.cache
                 .create_atlas_bind_group(&self.device, &self.curve_view, &self.band_view);
@@ -203,12 +209,17 @@ impl TextAtlas {
         // even. This ensures curve_loc.x + 1 (the p3 texel read in the shader)
         // never exceeds 4095 on a 4096-wide texture.
         let curve_start = self.curve_cursor;
-        debug_assert!(curve_start % 2 == 0, "curve_cursor must be even to prevent shader OOB read");
+        debug_assert!(
+            curve_start % 2 == 0,
+            "curve_cursor must be even to prevent shader OOB read"
+        );
         self.scratch_curve_texels.clear();
         self.scratch_curve_texels.reserve(num_curves as usize * 2);
         for curve in &gpu_outline.curves {
-            self.scratch_curve_texels.push([curve.p1[0], curve.p1[1], curve.p2[0], curve.p2[1]]);
-            self.scratch_curve_texels.push([curve.p3[0], curve.p3[1], 0.0, 0.0]);
+            self.scratch_curve_texels
+                .push([curve.p1[0], curve.p1[1], curve.p2[0], curve.p2[1]]);
+            self.scratch_curve_texels
+                .push([curve.p3[0], curve.p3[1], 0.0, 0.0]);
         }
         let curve_texel_count = self.scratch_curve_texels.len() as u32;
 
@@ -228,8 +239,13 @@ impl TextAtlas {
         // (self.scratch_band_entries = band_data.entries) on ALL return paths
         // to avoid losing the allocation.
         let band_start = self.band_cursor;
-        let band_data =
-            crate::band::build_bands(gpu_outline, &self.scratch_curve_locations, band_count_x, band_count_y, std::mem::take(&mut self.scratch_band_entries));
+        let band_data = crate::band::build_bands(
+            gpu_outline,
+            &self.scratch_curve_locations,
+            band_count_x,
+            band_count_y,
+            std::mem::take(&mut self.scratch_band_entries),
+        );
         let bd_count_x = band_data.band_count_x;
         let bd_count_y = band_data.band_count_y;
         let bd_transform = band_data.band_transform;
@@ -260,7 +276,8 @@ impl TextAtlas {
         let band_texels: &[[u32; 4]] = bytemuck::cast_slice(&band_data.entries);
 
         // Append to CPU-side copies
-        self.curve_data.extend_from_slice(&self.scratch_curve_texels);
+        self.curve_data
+            .extend_from_slice(&self.scratch_curve_texels);
         self.band_data.extend_from_slice(band_texels);
 
         // Upload curve texels (handling wrapping across rows)
@@ -301,7 +318,6 @@ impl TextAtlas {
             last_used_epoch: 0,
         })
     }
-
 
     /// Upload f32 texels at a linear offset, handling row wrapping.
     fn upload_wrapped_texels_f32(

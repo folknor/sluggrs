@@ -177,11 +177,7 @@ impl Cache {
         &self.0.uniforms_layout
     }
 
-    pub(crate) fn create_uniforms_bind_group(
-        &self,
-        device: &Device,
-        buffer: &Buffer,
-    ) -> BindGroup {
+    pub(crate) fn create_uniforms_bind_group(&self, device: &Device, buffer: &Buffer) -> BindGroup {
         device.create_bind_group(&BindGroupDescriptor {
             label: Some("sluggrs uniforms bind group"),
             layout: &self.0.uniforms_layout,

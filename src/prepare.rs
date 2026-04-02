@@ -1,10 +1,9 @@
 /// GPU preparation stage for glyph outlines.
 ///
-/// Transforms exact font geometry ([`GlyphOutline`]) into solver-safe
-/// geometry ([`GpuOutline`]) suitable for the Slug fragment shader.
-/// The key transformation is perturbing degenerate quadratics (line segments
-/// encoded with p2 at the midpoint) so the shader's quadratic solver never
-/// encounters collinear control points.
+/// Transforms font geometry ([`GlyphOutline`]) into [`GpuOutline`] for the
+/// Slug fragment shader. Line segments (degenerate quadratics) pass through
+/// unchanged — the shader handles them via exact-zero detection in the
+/// quadratic solver.
 use crate::outline::{GlyphOutline, QuadCurve};
 
 /// Glyph outline prepared for GPU rendering.
@@ -38,21 +37,9 @@ pub fn prepare_outline(outline: &GlyphOutline) -> GpuOutline {
     let mut max = [f32::MIN, f32::MIN];
 
     for curve in &outline.curves {
-        let p2 = if is_linear(curve) {
-            perturb_midpoint(curve.p1, curve.p3)
-        } else {
-            curve.p2
-        };
+        curves.push(*curve);
 
-        let out = QuadCurve {
-            p1: curve.p1,
-            p2,
-            p3: curve.p3,
-        };
-        curves.push(out);
-
-        // Recompute bounds over all control points (including perturbed p2)
-        for p in [out.p1, out.p2, out.p3] {
+        for p in [curve.p1, curve.p2, curve.p3] {
             min[0] = min[0].min(p[0]);
             min[1] = min[1].min(p[1]);
             max[0] = max[0].max(p[0]);
@@ -64,14 +51,6 @@ pub fn prepare_outline(outline: &GlyphOutline) -> GpuOutline {
         curves,
         bounds: [min[0], min[1], max[0], max[1]],
     }
-}
-
-/// Check whether a quadratic curve is actually a line segment
-/// (p2 is at the midpoint of p1–p3).
-fn is_linear(curve: &QuadCurve) -> bool {
-    let mid_x = (curve.p1[0] + curve.p3[0]) * 0.5;
-    let mid_y = (curve.p1[1] + curve.p3[1]) * 0.5;
-    (curve.p2[0] - mid_x).abs() < 1e-6 && (curve.p2[1] - mid_y).abs() < 1e-6
 }
 
 /// Italic shear factor: tan(14°) ≈ 0.2493, matching cosmic_text's
@@ -104,30 +83,12 @@ pub fn apply_italic_shear(outline: &mut GpuOutline) {
     outline.bounds = [min[0], min[1], max[0], max[1]];
 }
 
-/// Offset the midpoint of a line segment along the edge normal.
-/// This turns the degenerate quadratic into a tiny but genuine curve,
-/// preventing division-by-near-zero in the shader's quadratic solver.
-fn perturb_midpoint(p1: [f32; 2], p3: [f32; 2]) -> [f32; 2] {
-    let dx = p3[0] - p1[0];
-    let dy = p3[1] - p1[1];
-    let len = (dx * dx + dy * dy).sqrt().max(1.0);
-    // Scaled to segment length, clamped to a safe range in em-space.
-    let eps = (len * 1e-5).clamp(0.01, 0.1);
-    let nx = -dy / len;
-    let ny = dx / len;
-    [
-        (p1[0] + p3[0]) * 0.5 + nx * eps,
-        (p1[1] + p3[1]) * 0.5 + ny * eps,
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn line_segment(p1: [f32; 2], p3: [f32; 2]) -> QuadCurve {
-        let p2 = [(p1[0] + p3[0]) * 0.5, (p1[1] + p3[1]) * 0.5];
-        QuadCurve { p1, p2, p3 }
+        QuadCurve { p1, p2: p1, p3 }
     }
 
     fn real_quad(p1: [f32; 2], p2: [f32; 2], p3: [f32; 2]) -> QuadCurve {
@@ -135,54 +96,22 @@ mod tests {
     }
 
     #[test]
-    fn is_linear_detects_line_segment() {
-        let curve = line_segment([0.0, 0.0], [100.0, 200.0]);
-        assert!(is_linear(&curve));
-    }
-
-    #[test]
-    fn is_linear_rejects_real_quadratic() {
-        let curve = real_quad([0.0, 0.0], [50.0, 100.0], [100.0, 0.0]);
-        assert!(!is_linear(&curve));
-    }
-
-    #[test]
-    fn perturb_midpoint_stays_near_midpoint() {
-        let p1 = [0.0, 0.0];
-        let p3 = [100.0, 0.0];
-        let perturbed = perturb_midpoint(p1, p3);
-        // Should be close to (50, 0) but offset along the normal (0, -1)
-        assert!((perturbed[0] - 50.0).abs() < 1.0);
-        // Normal offset should be small but nonzero
-        assert!(perturbed[1].abs() > 1e-6);
-        assert!(perturbed[1].abs() < 1.0);
-    }
-
-    #[test]
-    fn perturb_midpoint_produces_nonlinear_curve() {
-        let p1 = [10.0, 20.0];
-        let p3 = [50.0, 80.0];
-        let p2 = perturb_midpoint(p1, p3);
-        let curve = QuadCurve { p1, p2, p3 };
-        assert!(!is_linear(&curve), "Perturbed midpoint should not be linear");
-    }
-
-    #[test]
-    fn prepare_outline_perturbs_lines_preserves_curves() {
+    fn prepare_outline_passes_lines_through_unchanged() {
         let outline = GlyphOutline {
             curves: vec![
-                line_segment([0.0, 0.0], [100.0, 0.0]),       // line → perturbed
-                real_quad([0.0, 0.0], [50.0, 80.0], [100.0, 0.0]), // curve → unchanged
+                line_segment([0.0, 0.0], [100.0, 0.0]),
+                real_quad([0.0, 0.0], [50.0, 80.0], [100.0, 0.0]),
             ],
             bounds: [0.0, 0.0, 100.0, 80.0],
         };
         let gpu = prepare_outline(&outline);
         assert_eq!(gpu.curves.len(), 2);
 
-        // First curve was linear → should now be nonlinear
-        assert!(!is_linear(&gpu.curves[0]));
+        // Line passes through with p2 = p1
+        assert!((gpu.curves[0].p2[0] - 0.0).abs() < 1e-6);
+        assert!((gpu.curves[0].p2[1] - 0.0).abs() < 1e-6);
 
-        // Second curve was already quadratic → p2 should be unchanged
+        // Quadratic passes through unchanged
         assert!((gpu.curves[1].p2[0] - 50.0).abs() < 1e-6);
         assert!((gpu.curves[1].p2[1] - 80.0).abs() < 1e-6);
     }

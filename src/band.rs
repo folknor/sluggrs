@@ -72,14 +72,20 @@ pub fn build_bands(
         max_x_keys.push(curve_max_x);
         max_y_keys.push(curve_max_y);
 
-        let hband_min = (curve_min_y * scale_y + offset_y).floor().clamp(0.0, hcount as f32 - 1.0) as usize;
-        let hband_max = ((curve_max_y * scale_y + offset_y - BAND_EPSILON).floor()).clamp(0.0, hcount as f32 - 1.0) as usize;
+        let hband_min = (curve_min_y * scale_y + offset_y)
+            .floor()
+            .clamp(0.0, hcount as f32 - 1.0) as usize;
+        let hband_max = ((curve_max_y * scale_y + offset_y - BAND_EPSILON).floor())
+            .clamp(0.0, hcount as f32 - 1.0) as usize;
         for b in hband_min..=hband_max {
             hband_counts[b] += 1;
         }
 
-        let vband_min = (curve_min_x * scale_x + offset_x).floor().clamp(0.0, vcount as f32 - 1.0) as usize;
-        let vband_max = ((curve_max_x * scale_x + offset_x - BAND_EPSILON).floor()).clamp(0.0, vcount as f32 - 1.0) as usize;
+        let vband_min = (curve_min_x * scale_x + offset_x)
+            .floor()
+            .clamp(0.0, vcount as f32 - 1.0) as usize;
+        let vband_max = ((curve_max_x * scale_x + offset_x - BAND_EPSILON).floor())
+            .clamp(0.0, vcount as f32 - 1.0) as usize;
         for b in vband_min..=vband_max {
             vband_counts[b] += 1;
         }
@@ -112,15 +118,21 @@ pub fn build_bands(
         let curve_min_x = curve.p1[0].min(curve.p2[0]).min(curve.p3[0]);
         let curve_max_x = curve.p1[0].max(curve.p2[0]).max(curve.p3[0]);
 
-        let hband_min = (curve_min_y * scale_y + offset_y).floor().clamp(0.0, hcount as f32 - 1.0) as usize;
-        let hband_max = ((curve_max_y * scale_y + offset_y - BAND_EPSILON).floor()).clamp(0.0, hcount as f32 - 1.0) as usize;
+        let hband_min = (curve_min_y * scale_y + offset_y)
+            .floor()
+            .clamp(0.0, hcount as f32 - 1.0) as usize;
+        let hband_max = ((curve_max_y * scale_y + offset_y - BAND_EPSILON).floor())
+            .clamp(0.0, hcount as f32 - 1.0) as usize;
         for b in hband_min..=hband_max {
             flat_indices[hband_fill[b] as usize] = i;
             hband_fill[b] += 1;
         }
 
-        let vband_min = (curve_min_x * scale_x + offset_x).floor().clamp(0.0, vcount as f32 - 1.0) as usize;
-        let vband_max = ((curve_max_x * scale_x + offset_x - BAND_EPSILON).floor()).clamp(0.0, vcount as f32 - 1.0) as usize;
+        let vband_min = (curve_min_x * scale_x + offset_x)
+            .floor()
+            .clamp(0.0, vcount as f32 - 1.0) as usize;
+        let vband_max = ((curve_max_x * scale_x + offset_x - BAND_EPSILON).floor())
+            .clamp(0.0, vcount as f32 - 1.0) as usize;
         for b in vband_min..=vband_max {
             flat_indices[vband_fill[b] as usize] = i;
             vband_fill[b] += 1;
@@ -132,14 +144,18 @@ pub fn build_bands(
         let start = hband_offsets[b] as usize;
         let end = start + hband_counts[b] as usize;
         flat_indices[start..end].sort_unstable_by(|&a, &b| {
-            max_x_keys[b].partial_cmp(&max_x_keys[a]).unwrap_or(std::cmp::Ordering::Equal)
+            max_x_keys[b]
+                .partial_cmp(&max_x_keys[a])
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
     }
     for b in 0..vcount {
         let start = vband_offsets[b] as usize;
         let end = start + vband_counts[b] as usize;
         flat_indices[start..end].sort_unstable_by(|&a, &b| {
-            max_y_keys[b].partial_cmp(&max_y_keys[a]).unwrap_or(std::cmp::Ordering::Equal)
+            max_y_keys[b]
+                .partial_cmp(&max_y_keys[a])
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
     }
 
@@ -219,9 +235,13 @@ mod tests {
     }
 
     fn sequential_locations(n: usize) -> Vec<CurveLocation> {
-        (0..n).map(|i| CurveLocation { x: i as u32 * 2, y: 0 }).collect()
+        (0..n)
+            .map(|i| CurveLocation {
+                x: i as u32 * 2,
+                y: 0,
+            })
+            .collect()
     }
-
 
     #[test]
     fn degenerate_glyph_zero_size() {
@@ -282,7 +302,10 @@ mod tests {
         // h-band 1 (top) should contain curve 1
         let hband0_count = data.entries[0];
         let hband1_count = data.entries[4];
-        assert!(hband0_count >= 1, "bottom h-band should contain bottom curve");
+        assert!(
+            hband0_count >= 1,
+            "bottom h-band should contain bottom curve"
+        );
         assert!(hband1_count >= 1, "top h-band should contain top curve");
     }
 
@@ -301,13 +324,25 @@ mod tests {
         // min_x mapped should give 0, max_x mapped should give band_count_x
         let mapped_min_x = outline.bounds[0] * scale_x + offset_x;
         let mapped_max_x = outline.bounds[2] * scale_x + offset_x;
-        assert!((mapped_min_x).abs() < 1e-4, "min_x should map to ~0, got {mapped_min_x}");
-        assert!((mapped_max_x - 4.0).abs() < 1e-4, "max_x should map to ~4, got {mapped_max_x}");
+        assert!(
+            (mapped_min_x).abs() < 1e-4,
+            "min_x should map to ~0, got {mapped_min_x}"
+        );
+        assert!(
+            (mapped_max_x - 4.0).abs() < 1e-4,
+            "max_x should map to ~4, got {mapped_max_x}"
+        );
 
         let mapped_min_y = outline.bounds[1] * scale_y + offset_y;
         let mapped_max_y = outline.bounds[3] * scale_y + offset_y;
-        assert!((mapped_min_y).abs() < 1e-4, "min_y should map to ~0, got {mapped_min_y}");
-        assert!((mapped_max_y - 4.0).abs() < 1e-4, "max_y should map to ~4, got {mapped_max_y}");
+        assert!(
+            (mapped_min_y).abs() < 1e-4,
+            "min_y should map to ~0, got {mapped_min_y}"
+        );
+        assert!(
+            (mapped_max_y - 4.0).abs() < 1e-4,
+            "max_y should map to ~4, got {mapped_max_y}"
+        );
     }
 
     #[test]
@@ -332,8 +367,16 @@ mod tests {
     fn entries_are_aligned_to_uint4() {
         // Every entry in the band data should be a multiple of 4 u32s
         let outline = make_outline(vec![
-            QuadCurve { p1: [0.0, 0.0], p2: [25.0, 50.0], p3: [50.0, 0.0] },
-            QuadCurve { p1: [50.0, 50.0], p2: [75.0, 100.0], p3: [100.0, 50.0] },
+            QuadCurve {
+                p1: [0.0, 0.0],
+                p2: [25.0, 50.0],
+                p3: [50.0, 0.0],
+            },
+            QuadCurve {
+                p1: [50.0, 50.0],
+                p2: [75.0, 100.0],
+                p3: [100.0, 50.0],
+            },
         ]);
         let locs = sequential_locations(2);
         let data = build_bands(&outline, &locs, 3, 3, Vec::new());

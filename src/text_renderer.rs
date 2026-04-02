@@ -1,16 +1,16 @@
+use crate::GlyphInstance;
 use crate::glyph_cache::{GlyphKey, NON_VECTOR_GLYPH};
 use crate::outline::extract_outline;
 use crate::prepare::{apply_italic_shear, prepare_outline};
 use crate::text_atlas::TextAtlas;
 use crate::types::{PrepareError, RenderError, TextArea};
 use crate::viewport::Viewport;
-use crate::GlyphInstance;
 
 use skrifa::setting::VariationSetting;
 
 use wgpu::{
-    Buffer, BufferDescriptor, BufferUsages, CommandEncoder, DepthStencilState, Device,
-    MultisampleState, Queue, RenderPass, RenderPipeline, COPY_BUFFER_ALIGNMENT,
+    Buffer, BufferDescriptor, BufferUsages, COPY_BUFFER_ALIGNMENT, CommandEncoder,
+    DepthStencilState, Device, MultisampleState, Queue, RenderPass, RenderPipeline,
 };
 
 /// A text renderer that uses the Slug algorithm to render text into an
@@ -192,11 +192,15 @@ impl TextRenderer {
         };
 
         // Populate units_per_em cache while we have the font ref
-        if let std::collections::hash_map::Entry::Vacant(e) = self.units_per_em_cache.entry(glyph.font_id)
+        if let std::collections::hash_map::Entry::Vacant(e) =
+            self.units_per_em_cache.entry(glyph.font_id)
             && let Ok(skrifa_font) = skrifa::FontRef::from_index(font.data(), face_index)
         {
             use skrifa::raw::TableProvider;
-            let v = skrifa_font.head().map(|h| h.units_per_em() as f32).unwrap_or(1000.0);
+            let v = skrifa_font
+                .head()
+                .map(|h| h.units_per_em() as f32)
+                .unwrap_or(1000.0);
             e.insert(v);
         }
 
@@ -206,7 +210,10 @@ impl TextRenderer {
         let entry = match extract_outline(font.data(), face_index, glyph.glyph_id, &location) {
             Some(outline) => {
                 let mut gpu_outline = prepare_outline(&outline);
-                if glyph.cache_key_flags.contains(cosmic_text::CacheKeyFlags::FAKE_ITALIC) {
+                if glyph
+                    .cache_key_flags
+                    .contains(cosmic_text::CacheKeyFlags::FAKE_ITALIC)
+                {
                     apply_italic_shear(&mut gpu_outline);
                 }
                 let band_count = band_count_for_curves(gpu_outline.curves.len());
@@ -240,9 +247,7 @@ impl TextRenderer {
                 usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
                 mapped_at_creation: true,
             });
-            self.vertex_buffer
-                .slice(..)
-                .get_mapped_range_mut()[..vertices_raw.len()]
+            self.vertex_buffer.slice(..).get_mapped_range_mut()[..vertices_raw.len()]
                 .copy_from_slice(vertices_raw);
             self.vertex_buffer.unmap();
             self.vertex_buffer_size = new_size;

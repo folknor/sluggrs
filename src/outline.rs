@@ -1,9 +1,9 @@
 /// Glyph outline extraction from font files via skrifa.
 /// Converts all curves to quadratic beziers (TrueType is native, CFF cubics are subdivided).
 use skrifa::{
+    MetadataProvider,
     instance::Size,
     outline::{DrawSettings, OutlinePen},
-    MetadataProvider,
 };
 
 /// A quadratic bezier curve: 3 control points in em-space.
@@ -64,7 +64,7 @@ impl OutlinePen for CollectPen {
     fn line_to(&mut self, x: f32, y: f32) {
         let p1 = self.current;
         let p3 = [x, y];
-        let p2 = [(p1[0] + p3[0]) * 0.5, (p1[1] + p3[1]) * 0.5];
+        let p2 = p1;
         self.curves.push(QuadCurve { p1, p2, p3 });
         self.current = p3;
         self.update_bounds(p3);
@@ -103,8 +103,7 @@ impl OutlinePen for CollectPen {
         if dx * dx + dy * dy > 1e-6 {
             let p1 = self.current;
             let p3 = self.contour_start;
-            let p2 = [(p1[0] + p3[0]) * 0.5, (p1[1] + p3[1]) * 0.5];
-            self.curves.push(QuadCurve { p1, p2, p3 });
+            self.curves.push(QuadCurve { p1, p2: p1, p3 });
             self.current = self.contour_start;
         }
     }
@@ -221,7 +220,10 @@ mod tests {
             [100.0, 0.0],
             0,
         );
-        assert!(!out.is_empty(), "subdivision must produce at least one curve");
+        assert!(
+            !out.is_empty(),
+            "subdivision must produce at least one curve"
+        );
         // First curve should start at p0
         assert_eq!(out[0].p1, [0.0, 0.0]);
         // Last curve should end at p3
@@ -262,7 +264,11 @@ mod tests {
             [1000.0, 0.0],
             0,
         );
-        assert!(out.len() <= 8, "max depth 3 should produce at most 8 quads, got {}", out.len());
+        assert!(
+            out.len() <= 8,
+            "max depth 3 should produce at most 8 quads, got {}",
+            out.len()
+        );
         assert!(!out.is_empty());
     }
 
@@ -273,8 +279,8 @@ mod tests {
         pen.line_to(100.0, 0.0);
         assert_eq!(pen.curves.len(), 1);
         let c = &pen.curves[0];
-        // p2 should be the midpoint
-        assert!((c.p2[0] - 50.0).abs() < 1e-6);
+        // p2 should equal p1 (harfbuzz-style degenerate encoding)
+        assert!((c.p2[0] - 0.0).abs() < 1e-6);
         assert!((c.p2[1] - 0.0).abs() < 1e-6);
     }
 

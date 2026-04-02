@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
-use sluggrs::band::{build_bands, CurveLocation};
+use sluggrs::band::{CurveLocation, build_bands};
 use sluggrs::glyph_cache::{GlyphEntry, GlyphKey, GlyphMap, NON_VECTOR_GLYPH};
 use sluggrs::outline::extract_outline;
 use sluggrs::prepare::prepare_outline;
@@ -61,21 +61,30 @@ fn glyph_key_equality_same_values() {
 fn glyph_key_inequality_different_glyph_id() {
     let a = make_key(0, 42, 400, 0);
     let b = make_key(0, 99, 400, 0);
-    assert_ne!(a, b, "GlyphKeys with different glyph_id should not be equal");
+    assert_ne!(
+        a, b,
+        "GlyphKeys with different glyph_id should not be equal"
+    );
 }
 
 #[test]
 fn glyph_key_inequality_different_weight() {
     let a = make_key(0, 42, 400, 0);
     let b = make_key(0, 42, 700, 0);
-    assert_ne!(a, b, "GlyphKeys with different font_weight should not be equal");
+    assert_ne!(
+        a, b,
+        "GlyphKeys with different font_weight should not be equal"
+    );
 }
 
 #[test]
 fn glyph_key_inequality_different_flags() {
     let a = make_key(0, 42, 400, 0);
     let b = make_key(0, 42, 400, 1);
-    assert_ne!(a, b, "GlyphKeys with different cache_key_flags should not be equal");
+    assert_ne!(
+        a, b,
+        "GlyphKeys with different cache_key_flags should not be equal"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -123,7 +132,11 @@ fn glyph_key_equal_implies_same_hash() {
     let a = make_key(0, 42, 400, 0);
     let b = make_key(0, 42, 400, 0);
     assert_eq!(a, b);
-    assert_eq!(hash_of(&a), hash_of(&b), "Equal GlyphKeys must have equal hashes");
+    assert_eq!(
+        hash_of(&a),
+        hash_of(&b),
+        "Equal GlyphKeys must have equal hashes"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -169,7 +182,9 @@ fn glyph_map_insert_and_get() {
     map.insert_and_mark_used(key, entry);
 
     assert!(map.contains_key(&key));
-    let got = map.get_and_mark_used(&key).expect("Should find inserted key");
+    let got = map
+        .get_and_mark_used(&key)
+        .expect("Should find inserted key");
     assert_eq!(got.band_offset, 100);
 }
 
@@ -384,7 +399,13 @@ fn band_data_sanity() {
     let band_count_x = 4u32;
     let band_count_y = 4u32;
 
-    let band_data = build_bands(&gpu_outline, &curve_locations, band_count_x, band_count_y, Vec::new());
+    let band_data = build_bands(
+        &gpu_outline,
+        &curve_locations,
+        band_count_x,
+        band_count_y,
+        Vec::new(),
+    );
 
     // Band counts should match requested
     assert_eq!(band_data.band_count_x, band_count_x);

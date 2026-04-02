@@ -219,19 +219,18 @@ fn comma_line_only_glyph_regression() {
     );
 
     // The comma in Inter Variable is made of line segments, encoded as degenerate
-    // quadratics where p2 is exactly the midpoint of p1–p3.
+    // quadratics where p2 = p1 (harfbuzz-style encoding).
     let all_linear = outline.curves.iter().all(|c| {
-        let mid_x = (c.p1[0] + c.p3[0]) * 0.5;
-        let mid_y = (c.p1[1] + c.p3[1]) * 0.5;
-        (c.p2[0] - mid_x).abs() < 1e-6 && (c.p2[1] - mid_y).abs() < 1e-6
+        (c.p2[0] - c.p1[0]).abs() < 1e-6 && (c.p2[1] - c.p1[1]).abs() < 1e-6
     });
     assert!(
         all_linear,
-        "All comma curves should be degenerate quadratics (line segments)"
+        "All comma curves should be degenerate quadratics (p2 = p1)"
     );
-    eprintln!("Confirmed: all {} comma curves are linear", outline.curves.len());
+    eprintln!("Confirmed: all {} comma curves are linear (p2 = p1)", outline.curves.len());
 
-    // Step 2: Prepare for GPU — line segments should get perturbed.
+    // Step 2: Prepare for GPU — line segments pass through unchanged,
+    // the shader handles them as normal quadratics (a = p3 - p1, nonzero).
     let gpu_outline = prepare_outline(&outline);
     assert_eq!(
         gpu_outline.curves.len(),
@@ -239,17 +238,15 @@ fn comma_line_only_glyph_regression() {
         "prepare_outline should preserve curve count"
     );
 
-    // After perturbation, p2 should no longer be exactly at the midpoint.
-    let any_perturbed = gpu_outline.curves.iter().any(|c| {
-        let mid_x = (c.p1[0] + c.p3[0]) * 0.5;
-        let mid_y = (c.p1[1] + c.p3[1]) * 0.5;
-        (c.p2[0] - mid_x).abs() > 1e-6 || (c.p2[1] - mid_y).abs() > 1e-6
+    // Lines should pass through with p2 still equal to p1.
+    let all_still_linear = gpu_outline.curves.iter().all(|c| {
+        (c.p2[0] - c.p1[0]).abs() < 1e-6 && (c.p2[1] - c.p1[1]).abs() < 1e-6
     });
     assert!(
-        any_perturbed,
-        "prepare_outline should perturb degenerate quadratics so p2 is no longer at the midpoint"
+        all_still_linear,
+        "prepare_outline should pass line segments through unchanged"
     );
-    eprintln!("Confirmed: curves are perturbed after prepare_outline");
+    eprintln!("Confirmed: line segments pass through unchanged after prepare_outline");
 
     // Step 3: Build bands with a single band (1x1) — the simplest case.
     let curve_locations: Vec<CurveLocation> = (0..gpu_outline.curves.len())

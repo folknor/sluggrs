@@ -46,13 +46,10 @@ impl TestHarness {
         let (device, queue) = create_test_device();
         let cache = Cache::new(&device);
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-        let mut atlas = TextAtlas::with_color_mode(&device, &queue, &cache, format, ColorMode::Accurate);
-        let renderer = TextRenderer::new(
-            &mut atlas,
-            &device,
-            wgpu::MultisampleState::default(),
-            None,
-        );
+        let mut atlas =
+            TextAtlas::with_color_mode(&device, &queue, &cache, format, ColorMode::Accurate);
+        let renderer =
+            TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None);
         let mut viewport = Viewport::new(&device, &cache);
         viewport.update(
             &queue,
@@ -285,8 +282,7 @@ fn trim_does_not_reset_without_texture_growth() {
     let mut h = TestHarness::new();
 
     // Upload a small number of glyphs — not enough to trigger texture growth
-    h.prepare_text("Hi")
-        .expect("Prepare should succeed");
+    h.prepare_text("Hi").expect("Prepare should succeed");
 
     let glyph_count_before = h.atlas.glyph_count();
     assert!(glyph_count_before > 0);
@@ -334,26 +330,33 @@ fn trim_resets_when_textures_grew_and_working_set_shifted() {
 
     // Now prepare only a small subset — the working set has shifted.
     // This marks only a few glyphs as in-use.
-    h.prepare_text("AB")
-        .expect("Small prepare should succeed");
+    h.prepare_text("AB").expect("Small prepare should succeed");
 
     // Trim: textures grew + in_use < cached / 2 → should reset
     h.atlas.trim();
 
     // After reset, the glyph cache should be empty (all evicted).
     assert_eq!(
-        h.atlas.glyph_count(), 0,
+        h.atlas.glyph_count(),
+        0,
         "trim() should reset when textures grew and working set shifted"
     );
 
     // Textures should be back at initial size
-    assert_eq!(h.atlas.curve_texels_used(), 0, "curve cursor should be reset");
+    assert_eq!(
+        h.atlas.curve_texels_used(),
+        0,
+        "curve cursor should be reset"
+    );
     assert_eq!(h.atlas.band_texels_used(), 0, "band cursor should be reset");
 
     // The atlas should still be usable — next prepare re-extracts
     h.prepare_text("AB")
         .expect("Prepare after reset should succeed");
-    assert!(h.atlas.glyph_count() > 0, "Glyphs should be re-uploaded after reset");
+    assert!(
+        h.atlas.glyph_count() > 0,
+        "Glyphs should be re-uploaded after reset"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -76,10 +76,16 @@ impl std::fmt::Display for RenderError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             RenderError::RemovedFromAtlas => {
-                write!(f, "Render error: glyph no longer exists within the texture atlas")
+                write!(
+                    f,
+                    "Render error: glyph no longer exists within the texture atlas"
+                )
             }
             RenderError::ScreenResolutionChanged => {
-                write!(f, "Render error: screen resolution changed since last prepare call")
+                write!(
+                    f,
+                    "Render error: screen resolution changed since last prepare call"
+                )
             }
         }
     }
@@ -113,7 +119,10 @@ mod tests {
         assert!(msg1.contains("atlas"), "Should mention atlas: {msg1}");
 
         let msg2 = format!("{}", RenderError::ScreenResolutionChanged);
-        assert!(msg2.contains("resolution"), "Should mention resolution: {msg2}");
+        assert!(
+            msg2.contains("resolution"),
+            "Should mention resolution: {msg2}"
+        );
     }
 
     #[test]
@@ -138,9 +147,18 @@ mod tests {
 
     #[test]
     fn resolution_equality() {
-        let a = Resolution { width: 1920, height: 1080 };
-        let b = Resolution { width: 1920, height: 1080 };
-        let c = Resolution { width: 1280, height: 720 };
+        let a = Resolution {
+            width: 1920,
+            height: 1080,
+        };
+        let b = Resolution {
+            width: 1920,
+            height: 1080,
+        };
+        let c = Resolution {
+            width: 1280,
+            height: 720,
+        };
         assert_eq!(a, b);
         assert_ne!(a, c);
     }

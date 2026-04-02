@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
 use sluggrs::{
-    Cache, ColorMode, Resolution, SwashCache, TextArea, TextBounds, TextAtlas, TextRenderer,
+    Cache, ColorMode, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
     Viewport,
 };
 
@@ -118,7 +118,10 @@ fn create_device() -> (wgpu::Device, wgpu::Queue) {
     if adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
         features |= wgpu::Features::TIMESTAMP_QUERY;
     }
-    if adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES) {
+    if adapter
+        .features()
+        .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES)
+    {
         features |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
     }
 
@@ -149,12 +152,8 @@ impl RenderHarness {
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
         let mut atlas =
             TextAtlas::with_color_mode(device, queue, &cache, format, ColorMode::Accurate);
-        let renderer = TextRenderer::new(
-            &mut atlas,
-            device,
-            wgpu::MultisampleState::default(),
-            None,
-        );
+        let renderer =
+            TextRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
         let mut viewport = Viewport::new(device, &cache);
         viewport.update(
             queue,
@@ -166,7 +165,11 @@ impl RenderHarness {
 
         let render_target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("offscreen render target"),
-            size: wgpu::Extent3d { width: 1920, height: 1080, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 1920,
+                height: 1080,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -177,14 +180,17 @@ impl RenderHarness {
         let render_view = render_target.create_view(&wgpu::TextureViewDescriptor::default());
 
         let gpu_profiler = if device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
-            Some(wgpu_profiler::GpuProfiler::new(
-                device,
-                wgpu_profiler::GpuProfilerSettings {
-                    enable_timer_queries: true,
-                    enable_debug_groups: false,
-                    max_num_pending_frames: 8,
-                },
-            ).expect("Failed to create GPU profiler"))
+            Some(
+                wgpu_profiler::GpuProfiler::new(
+                    device,
+                    wgpu_profiler::GpuProfilerSettings {
+                        enable_timer_queries: true,
+                        enable_debug_groups: false,
+                        max_num_pending_frames: 8,
+                    },
+                )
+                .expect("Failed to create GPU profiler"),
+            )
         } else {
             None
         };
@@ -205,7 +211,9 @@ impl RenderHarness {
 
     /// Run an actual GPU render pass and measure fragment shader time.
     fn render_gpu(&mut self) -> Option<f64> {
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -222,9 +230,14 @@ impl RenderHarness {
                 ..Default::default()
             });
 
-            let query = self.gpu_profiler.as_ref().map(|p| p.begin_query("text_render", &mut pass));
+            let query = self
+                .gpu_profiler
+                .as_ref()
+                .map(|p| p.begin_query("text_render", &mut pass));
 
-            self.renderer.render(&self.atlas, &self.viewport, &mut pass).unwrap();
+            self.renderer
+                .render(&self.atlas, &self.viewport, &mut pass)
+                .unwrap();
 
             if let (Some(profiler), Some(query)) = (&self.gpu_profiler, query) {
                 profiler.end_query(&mut pass, query);
@@ -239,7 +252,9 @@ impl RenderHarness {
 
         if let Some(profiler) = &mut self.gpu_profiler {
             let _ = profiler.end_frame();
-            if let Some(results) = profiler.process_finished_frame(self.queue.get_timestamp_period()) {
+            if let Some(results) =
+                profiler.process_finished_frame(self.queue.get_timestamp_period())
+            {
                 for r in &results {
                     if let Some(time) = &r.time {
                         return Some((time.end - time.start) * 1000.0);

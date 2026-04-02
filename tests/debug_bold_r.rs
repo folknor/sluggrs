@@ -1,17 +1,18 @@
-use sluggrs::band::{build_bands, CurveLocation};
+use skrifa::setting::VariationSetting;
+use sluggrs::band::{CurveLocation, build_bands};
 use sluggrs::outline::extract_outline;
 use sluggrs::prepare::prepare_outline;
-use skrifa::setting::VariationSetting;
 
 #[test]
 fn dump_bold_r_geometry() {
-    let font_data = std::fs::read("examples/fonts/InterVariable.ttf").expect("InterVariable.ttf must be present");
-    let glyph_id = sluggrs::outline::char_to_glyph_id(&font_data, 0, 'r').expect("'r' should be mapped");
+    let font_data = std::fs::read("examples/fonts/InterVariable.ttf")
+        .expect("InterVariable.ttf must be present");
+    let glyph_id =
+        sluggrs::outline::char_to_glyph_id(&font_data, 0, 'r').expect("'r' should be mapped");
 
     let wght = skrifa::Tag::new(b"wght");
     let location = [VariationSetting::new(wght, 700.0)];
-    let outline = extract_outline(&font_data, 0, glyph_id, &location)
-        .expect("should have outline");
+    let outline = extract_outline(&font_data, 0, glyph_id, &location).expect("should have outline");
     let gpu = prepare_outline(&outline);
 
     println!("=== ORIGINAL curves 2..5 ===");
@@ -49,9 +50,18 @@ fn dump_bold_r_geometry() {
 
     // Build bands
     let num_curves = gpu.curves.len();
-    let band_count = if num_curves < 10 { 4 } else if num_curves < 30 { 8 } else { 12 };
+    let band_count = if num_curves < 10 {
+        4
+    } else if num_curves < 30 {
+        8
+    } else {
+        12
+    };
     let curve_locs: Vec<CurveLocation> = (0..num_curves)
-        .map(|i| CurveLocation { x: (i as u32) * 2, y: 0 })
+        .map(|i| CurveLocation {
+            x: (i as u32) * 2,
+            y: 0,
+        })
         .collect();
     let band_data = build_bands(&gpu, &curve_locs, band_count, band_count, Vec::new());
 

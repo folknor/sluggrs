@@ -1,4 +1,4 @@
-use sluggrs::band::{self, build_bands, CurveLocation};
+use sluggrs::band::{self, CurveLocation, build_bands};
 use sluggrs::outline::{char_to_glyph_id, extract_outline};
 use sluggrs::prepare::{self, GpuOutline};
 
@@ -7,10 +7,7 @@ const CURVE_TEXTURE_WIDTH: u32 = 4096;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::{
-    application::ApplicationHandler,
-    event::WindowEvent,
-    event_loop::EventLoop,
-    window::Window,
+    application::ApplicationHandler, event::WindowEvent, event_loop::EventLoop, window::Window,
 };
 
 // Embedded fonts (always available)
@@ -25,12 +22,12 @@ const RUNES: &[u8] = include_bytes!("fonts/EBH Runes.otf");
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct GlyphInstance {
-    screen_rect: [f32; 4],     // x, y, width, height
-    em_rect: [f32; 4],         // min_x, min_y, max_x, max_y
-    band_transform: [f32; 4],  // scale_x, scale_y, offset_x, offset_y
-    glyph_data: [u32; 4],      // glyph_loc.x, glyph_loc.y, band_max.x, band_max.y
-    color: [f32; 4],           // RGBA
-    depth: f32,                // z-depth for widget layering
+    screen_rect: [f32; 4],    // x, y, width, height
+    em_rect: [f32; 4],        // min_x, min_y, max_x, max_y
+    band_transform: [f32; 4], // scale_x, scale_y, offset_x, offset_y
+    glyph_data: [u32; 4],     // glyph_loc.x, glyph_loc.y, band_max.x, band_max.y
+    color: [f32; 4],          // RGBA
+    depth: f32,               // z-depth for widget layering
 }
 
 #[repr(C)]
@@ -178,7 +175,13 @@ fn prepare_text(
         } else {
             12
         };
-        let band_data = build_bands(&gpu_outline, &curve_locations, band_count, band_count, Vec::new());
+        let band_data = build_bands(
+            &gpu_outline,
+            &curve_locations,
+            band_count,
+            band_count,
+            Vec::new(),
+        );
 
         let [min_x, min_y, max_x, max_y] = gpu_outline.bounds;
 
@@ -322,11 +325,12 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::KeyboardInput {
-                event: winit::event::KeyEvent {
-                    physical_key: winit::keyboard::PhysicalKey::Code(key),
-                    state: winit::event::ElementState::Pressed,
-                    ..
-                },
+                event:
+                    winit::event::KeyEvent {
+                        physical_key: winit::keyboard::PhysicalKey::Code(key),
+                        state: winit::event::ElementState::Pressed,
+                        ..
+                    },
                 ..
             } => {
                 if let Some(state) = &mut self.state {
@@ -348,7 +352,11 @@ impl ApplicationHandler for App {
                     }
                 }
             }
-            WindowEvent::MouseInput { state: btn_state, button: winit::event::MouseButton::Left, .. } => {
+            WindowEvent::MouseInput {
+                state: btn_state,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
                 if let Some(state) = &mut self.state {
                     state.dragging = btn_state == winit::event::ElementState::Pressed;
                 }
@@ -413,7 +421,9 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     log::info!("Using adapter: {:?}", adapter.get_info().name);
 
     let has_timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
-    let has_pass_timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES);
+    let has_pass_timestamps = adapter
+        .features()
+        .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES);
     let mut features = wgpu::Features::empty();
     if has_timestamps {
         features |= wgpu::Features::TIMESTAMP_QUERY;
@@ -424,7 +434,9 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     if !has_timestamps {
         eprintln!("WARNING: TIMESTAMP_QUERY not supported, GPU profiling disabled");
     } else if !has_pass_timestamps {
-        eprintln!("WARNING: TIMESTAMP_QUERY_INSIDE_PASSES not supported, pass-level profiling unavailable");
+        eprintln!(
+            "WARNING: TIMESTAMP_QUERY_INSIDE_PASSES not supported, pass-level profiling unavailable"
+        );
     }
 
     let (device, queue) = adapter
@@ -456,7 +468,8 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
 
     // --- Optional licensed fonts (not in git, loaded from disk) ---
     let tisa_data = try_load_font("/home/folk/.local/share/fonts/TisaPro-Regular.otf");
-    let berlingske_data = try_load_font("/home/folk/.local/share/fonts/BerlingskeSerif-Regular.ttf");
+    let berlingske_data =
+        try_load_font("/home/folk/.local/share/fonts/BerlingskeSerif-Regular.ttf");
 
     let white = [1.0, 1.0, 1.0, 1.0];
     let light_gray = [0.75, 0.75, 0.75, 1.0];
@@ -472,9 +485,24 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     let mut band_offset: u32 = 0;
 
     // add_line takes logical sizes/positions and scales to physical pixels
-    let mut add_line = |font_data: &[u8], text: &str, size: f32, x: f32, y: f32, color: [f32; 4], weight: Option<f32>| {
-        let (prepared, instances) =
-            prepare_text(font_data, text, size * sf, x * sf, y * sf, color, weight, curve_offset, band_offset);
+    let mut add_line = |font_data: &[u8],
+                        text: &str,
+                        size: f32,
+                        x: f32,
+                        y: f32,
+                        color: [f32; 4],
+                        weight: Option<f32>| {
+        let (prepared, instances) = prepare_text(
+            font_data,
+            text,
+            size * sf,
+            x * sf,
+            y * sf,
+            color,
+            weight,
+            curve_offset,
+            band_offset,
+        );
         for g in &prepared {
             curve_offset += (g.gpu_outline.curves.len() as u32) * 2;
             band_offset += (g.band_data.entries.len() / 4) as u32;
@@ -487,102 +515,295 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     let mut y = 30.0;
 
     // --- Sizes (Inter Variable, TTF) ---
-    add_line(INTER_VARIABLE, "12px Inter: the quick brown fox jumps over the lazy dog", 12.0, left, y, light_gray, None);
+    add_line(
+        INTER_VARIABLE,
+        "12px Inter: the quick brown fox jumps over the lazy dog",
+        12.0,
+        left,
+        y,
+        light_gray,
+        None,
+    );
     y += 24.0;
 
-    add_line(INTER_VARIABLE, "16px Inter: the quick brown fox jumps over the lazy dog", 16.0, left, y, white, None);
+    add_line(
+        INTER_VARIABLE,
+        "16px Inter: the quick brown fox jumps over the lazy dog",
+        16.0,
+        left,
+        y,
+        white,
+        None,
+    );
     y += 30.0;
 
-    add_line(INTER_VARIABLE, "24px Inter: the quick brown fox jumps over the lazy dog", 24.0, left, y, white, None);
+    add_line(
+        INTER_VARIABLE,
+        "24px Inter: the quick brown fox jumps over the lazy dog",
+        24.0,
+        left,
+        y,
+        white,
+        None,
+    );
     y += 40.0;
 
-    add_line(INTER_VARIABLE, "48px Inter: Slug GPU text rendering", 48.0, left, y, white, None);
+    add_line(
+        INTER_VARIABLE,
+        "48px Inter: Slug GPU text rendering",
+        48.0,
+        left,
+        y,
+        white,
+        None,
+    );
     y += 68.0;
 
     add_line(INTER_VARIABLE, "72px Inter", 72.0, left, y, gold, None);
     y += 90.0;
 
     // --- Inter Variable weights (wght axis) ---
-    add_line(INTER_VARIABLE, "24px Inter Thin (wght=100): fine hairline strokes", 24.0, left, y, light_gray, Some(100.0));
+    add_line(
+        INTER_VARIABLE,
+        "24px Inter Thin (wght=100): fine hairline strokes",
+        24.0,
+        left,
+        y,
+        light_gray,
+        Some(100.0),
+    );
     y += 38.0;
 
-    add_line(INTER_VARIABLE, "24px Inter Light (wght=300): lightweight text", 24.0, left, y, white, Some(300.0));
+    add_line(
+        INTER_VARIABLE,
+        "24px Inter Light (wght=300): lightweight text",
+        24.0,
+        left,
+        y,
+        white,
+        Some(300.0),
+    );
     y += 38.0;
 
-    add_line(INTER_VARIABLE, "24px Inter Regular (wght=400): standard weight", 24.0, left, y, white, Some(400.0));
+    add_line(
+        INTER_VARIABLE,
+        "24px Inter Regular (wght=400): standard weight",
+        24.0,
+        left,
+        y,
+        white,
+        Some(400.0),
+    );
     y += 38.0;
 
-    add_line(INTER_VARIABLE, "24px Inter Bold (wght=700): heavy strokes", 24.0, left, y, white, Some(700.0));
+    add_line(
+        INTER_VARIABLE,
+        "24px Inter Bold (wght=700): heavy strokes",
+        24.0,
+        left,
+        y,
+        white,
+        Some(700.0),
+    );
     y += 38.0;
 
-    add_line(INTER_VARIABLE, "24px Inter Black (wght=900): maximum weight", 24.0, left, y, white, Some(900.0));
+    add_line(
+        INTER_VARIABLE,
+        "24px Inter Black (wght=900): maximum weight",
+        24.0,
+        left,
+        y,
+        white,
+        Some(900.0),
+    );
     y += 44.0;
 
     // --- Weights (Roboto, TTF, separate files per weight) ---
-    add_line(ROBOTO_THIN, "24px Roboto Thin (separate TTF)", 24.0, left, y, light_gray, None);
+    add_line(
+        ROBOTO_THIN,
+        "24px Roboto Thin (separate TTF)",
+        24.0,
+        left,
+        y,
+        light_gray,
+        None,
+    );
     y += 38.0;
 
-    add_line(ROBOTO_REGULAR, "24px Roboto Regular (separate TTF)", 24.0, left, y, white, None);
+    add_line(
+        ROBOTO_REGULAR,
+        "24px Roboto Regular (separate TTF)",
+        24.0,
+        left,
+        y,
+        white,
+        None,
+    );
     y += 38.0;
 
-    add_line(ROBOTO_BOLD, "24px Roboto Bold (separate TTF): tight joins", 24.0, left, y, white, None);
+    add_line(
+        ROBOTO_BOLD,
+        "24px Roboto Bold (separate TTF): tight joins",
+        24.0,
+        left,
+        y,
+        white,
+        None,
+    );
     y += 44.0;
 
     // --- Font variety ---
-    add_line(CASKAYDIA, "20px Caskaydia Cove (mono, TTF): fn main() { let x = 42; }", 20.0, left, y, cyan, None);
+    add_line(
+        CASKAYDIA,
+        "20px Caskaydia Cove (mono, TTF): fn main() { let x = 42; }",
+        20.0,
+        left,
+        y,
+        cyan,
+        None,
+    );
     y += 36.0;
 
     if let Some(ref tisa) = tisa_data {
-        add_line(tisa, "22px Tisa Pro (serif, OTF/CFF cubic curves)", 22.0, left, y, white, None);
+        add_line(
+            tisa,
+            "22px Tisa Pro (serif, OTF/CFF cubic curves)",
+            22.0,
+            left,
+            y,
+            white,
+            None,
+        );
         y += 38.0;
     }
 
     if let Some(ref berlingske) = berlingske_data {
-        add_line(berlingske, "22px Berlingske Serif (TTF)", 22.0, left, y, white, None);
+        add_line(
+            berlingske,
+            "22px Berlingske Serif (TTF)",
+            22.0,
+            left,
+            y,
+            white,
+            None,
+        );
         y += 38.0;
     }
 
     add_line(RUNES, "abcdefghijklm", 36.0, left, y, gold, None);
     y += 14.0;
-    add_line(INTER_VARIABLE, "36px EBH Runes (OTF): decorative outlines", 14.0, left, y, light_gray, None);
+    add_line(
+        INTER_VARIABLE,
+        "36px EBH Runes (OTF): decorative outlines",
+        14.0,
+        left,
+        y,
+        light_gray,
+        None,
+    );
     y += 40.0;
 
     // --- CFF/OTF cubic subdivision test ---
-    let nimbus_roman = try_load_font("/usr/share/fonts/opentype/urw-base35/NimbusRoman-Regular.otf");
+    let nimbus_roman =
+        try_load_font("/usr/share/fonts/opentype/urw-base35/NimbusRoman-Regular.otf");
     let nimbus_sans = try_load_font("/usr/share/fonts/opentype/urw-base35/NimbusSans-Regular.otf");
     let urw_bookman = try_load_font("/usr/share/fonts/opentype/urw-base35/URWBookman-Light.otf");
     let zapf_chancery = try_load_font("/usr/share/fonts/opentype/urw-base35/Z003-MediumItalic.otf");
 
     if let Some(ref font) = nimbus_roman {
-        add_line(font, "24px Nimbus Roman (CFF): Sphinx of black quartz, judge my vow", 24.0, left, y, white, None);
+        add_line(
+            font,
+            "24px Nimbus Roman (CFF): Sphinx of black quartz, judge my vow",
+            24.0,
+            left,
+            y,
+            white,
+            None,
+        );
         y += 38.0;
-        add_line(font, "48px Nimbus Roman (CFF): QWERTY &@#", 48.0, left, y, gold, None);
+        add_line(
+            font,
+            "48px Nimbus Roman (CFF): QWERTY &@#",
+            48.0,
+            left,
+            y,
+            gold,
+            None,
+        );
         y += 68.0;
     }
 
     if let Some(ref font) = nimbus_sans {
-        add_line(font, "24px Nimbus Sans (CFF): Pack my box with five dozen liquor jugs", 24.0, left, y, white, None);
+        add_line(
+            font,
+            "24px Nimbus Sans (CFF): Pack my box with five dozen liquor jugs",
+            24.0,
+            left,
+            y,
+            white,
+            None,
+        );
         y += 38.0;
     }
 
     if let Some(ref font) = urw_bookman {
-        add_line(font, "24px URW Bookman Light (CFF): Curved serifs test", 24.0, left, y, cyan, None);
+        add_line(
+            font,
+            "24px URW Bookman Light (CFF): Curved serifs test",
+            24.0,
+            left,
+            y,
+            cyan,
+            None,
+        );
         y += 38.0;
     }
 
     if let Some(ref font) = zapf_chancery {
-        add_line(font, "30px Zapf Chancery (CFF italic): Flowing script curves", 30.0, left, y, pink, None);
+        add_line(
+            font,
+            "30px Zapf Chancery (CFF italic): Flowing script curves",
+            30.0,
+            left,
+            y,
+            pink,
+            None,
+        );
         y += 48.0;
     }
 
     // --- Known artifact glyphs (bold-weight curve joins) ---
-    add_line(INTER_VARIABLE, "36px Inter Bold artifact test: a & a & a & a", 36.0, left, y, pink, Some(700.0));
+    add_line(
+        INTER_VARIABLE,
+        "36px Inter Bold artifact test: a & a & a & a",
+        36.0,
+        left,
+        y,
+        pink,
+        Some(700.0),
+    );
     y += 54.0;
 
-    add_line(ROBOTO_BOLD, "36px Roboto Bold artifact test: a & a & a & a", 36.0, left, y, pink, None);
+    add_line(
+        ROBOTO_BOLD,
+        "36px Roboto Bold artifact test: a & a & a & a",
+        36.0,
+        left,
+        y,
+        pink,
+        None,
+    );
     y += 54.0;
 
-    add_line(INTER_VARIABLE, "60px Inter Bold: & & & a a a", 60.0, left, y, green, Some(700.0));
+    add_line(
+        INTER_VARIABLE,
+        "60px Inter Bold: & & & a a a",
+        60.0,
+        left,
+        y,
+        green,
+        Some(700.0),
+    );
 
     log::info!(
         "Prepared {} glyphs, {} instances across all lines",
@@ -834,14 +1055,17 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     });
 
     let gpu_profiler = if has_timestamps {
-        Some(wgpu_profiler::GpuProfiler::new(
-            &device,
-            wgpu_profiler::GpuProfilerSettings {
-                enable_timer_queries: true,
-                enable_debug_groups: false,
-                max_num_pending_frames: 3,
-            },
-        ).expect("Failed to create GPU profiler"))
+        Some(
+            wgpu_profiler::GpuProfiler::new(
+                &device,
+                wgpu_profiler::GpuProfilerSettings {
+                    enable_timer_queries: true,
+                    enable_debug_groups: false,
+                    max_num_pending_frames: 3,
+                },
+            )
+            .expect("Failed to create GPU profiler"),
+        )
     } else {
         None
     };
@@ -908,7 +1132,10 @@ fn render(state: &mut RenderState) {
         });
 
         // GPU profiling — measures actual fragment shader execution time
-        let query = state.gpu_profiler.as_ref().map(|p| p.begin_query("text_render", &mut pass));
+        let query = state
+            .gpu_profiler
+            .as_ref()
+            .map(|p| p.begin_query("text_render", &mut pass));
 
         pass.set_pipeline(&state.pipeline);
         pass.set_bind_group(0, &state.params_bind_group, &[]);

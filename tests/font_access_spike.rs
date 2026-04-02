@@ -13,7 +13,13 @@ fn extract_outline_from_cosmic_text_layout() {
     // Shape some text to get LayoutGlyphs
     let metrics = Metrics::new(24.0, 30.0);
     let mut buffer = Buffer::new(&mut font_system, metrics);
-    buffer.set_text(&mut font_system, "Hello, Slug!", &Attrs::new(), Shaping::Advanced, None);
+    buffer.set_text(
+        &mut font_system,
+        "Hello, Slug!",
+        &Attrs::new(),
+        Shaping::Advanced,
+        None,
+    );
     buffer.shape_until_scroll(&mut font_system, false);
 
     let mut glyphs_extracted = 0;
@@ -32,8 +38,8 @@ fn extract_outline_from_cosmic_text_layout() {
             assert!(!font_data.is_empty(), "Font data should not be empty");
 
             // Verify skrifa can parse the font bytes
-            let skrifa_font = skrifa::FontRef::new(font_data)
-                .expect("skrifa should parse the font bytes");
+            let skrifa_font =
+                skrifa::FontRef::new(font_data).expect("skrifa should parse the font bytes");
 
             // Verify we can get units_per_em
             let units_per_em = {
@@ -67,8 +73,10 @@ fn extract_outline_from_cosmic_text_layout() {
                         glyph.font_weight.0,
                         glyph.cache_key_flags,
                         outline.curves.len(),
-                        outline.bounds[0], outline.bounds[1],
-                        outline.bounds[2], outline.bounds[3],
+                        outline.bounds[0],
+                        outline.bounds[1],
+                        outline.bounds[2],
+                        outline.bounds[3],
                     );
                 }
                 None => {
@@ -82,9 +90,7 @@ fn extract_outline_from_cosmic_text_layout() {
         }
     }
 
-    println!(
-        "\nResult: {glyphs_extracted}/{glyphs_total} glyphs extracted successfully"
-    );
+    println!("\nResult: {glyphs_extracted}/{glyphs_total} glyphs extracted successfully");
     assert!(glyphs_extracted > 0, "Should extract at least some glyphs");
     // "Hello, Slug!" has 10 visible glyphs (excluding spaces), all should have outlines
     assert!(
@@ -99,10 +105,19 @@ fn glyph_key_fields_available() {
     let mut font_system = FontSystem::new();
     let metrics = Metrics::new(24.0, 30.0);
     let mut buffer = Buffer::new(&mut font_system, metrics);
-    buffer.set_text(&mut font_system, "A", &Attrs::new(), Shaping::Advanced, None);
+    buffer.set_text(
+        &mut font_system,
+        "A",
+        &Attrs::new(),
+        Shaping::Advanced,
+        None,
+    );
     buffer.shape_until_scroll(&mut font_system, false);
 
-    let run = buffer.layout_runs().next().expect("Should have a layout run");
+    let run = buffer
+        .layout_runs()
+        .next()
+        .expect("Should have a layout run");
     let glyph = &run.glyphs[0];
 
     // These are the fields we need for GlyphKey

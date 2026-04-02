@@ -8,8 +8,8 @@
 
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
 use sluggrs::{
-    Cache, Color, ColorMode, Resolution, SwashCache, TextArea, TextAtlas, TextBounds,
-    TextRenderer, Viewport,
+    Cache, Color, ColorMode, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
+    Viewport,
 };
 
 // ---------------------------------------------------------------------------
@@ -48,12 +48,8 @@ impl TestHarness {
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
         let mut atlas =
             TextAtlas::with_color_mode(&device, &queue, &cache, format, ColorMode::Accurate);
-        let renderer = TextRenderer::new(
-            &mut atlas,
-            &device,
-            wgpu::MultisampleState::default(),
-            None,
-        );
+        let renderer =
+            TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None);
         let mut viewport = Viewport::new(&device, &cache);
         viewport.update(
             &queue,

@@ -30,3 +30,10 @@ codex = "019d2e0f-e767-7f92-9908-269f0f47e00d"
 sweep = ["bugs", "perf", "slug", "gpu"]
 design = ["fonts", "wgpu", "arch"]
 everything = ["bugs", "perf", "slug", "gpu", "fonts", "wgpu", "arch"]
+
+[hb.plantasjen]
+claude = "2a9e8e4a-010d-4951-8d30-38d6a060d21b"
+codex = "019d4e31-37c5-75d2-9787-dbe5494a395e"
+
+[_audit]
+id = "55ec"
