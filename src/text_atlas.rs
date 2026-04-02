@@ -204,35 +204,59 @@ impl TextAtlas {
     ) -> Result<GlyphEntry, crate::types::PrepareError> {
         let num_curves = gpu_outline.curves.len() as u32;
 
-        // Build curve texels (2 texels per curve) — reuse scratch buffer.
-        // INVARIANT: curve_cursor must be even so that curve_loc.x is always
-        // even. This ensures curve_loc.x + 1 (the p3 texel read in the shader)
-        // never exceeds 4095 on a 4096-wide texture.
+        // Build curve texels with implicit p1 sharing within contours.
+        // Within a contour, each curve's p3 texel doubles as the next curve's
+        // p12 texel (since p3 of one curve == p1 of the next). This saves one
+        // texel per continuation curve. The shader reads curve_loc and
+        // curve_loc+1, so the read pattern is unchanged.
         let curve_start = self.curve_cursor;
-        debug_assert!(
-            curve_start % 2 == 0,
-            "curve_cursor must be even to prevent shader OOB read"
-        );
         self.scratch_curve_texels.clear();
         self.scratch_curve_texels.reserve(num_curves as usize * 2);
-        for curve in &gpu_outline.curves {
-            self.scratch_curve_texels
-                .push([curve.p1[0], curve.p1[1], curve.p2[0], curve.p2[1]]);
-            self.scratch_curve_texels
-                .push([curve.p3[0], curve.p3[1], 0.0, 0.0]);
-        }
-        let curve_texel_count = self.scratch_curve_texels.len() as u32;
-
-        // Build curve locations as 2D coordinates — reuse scratch buffer
         self.scratch_curve_locations.clear();
         self.scratch_curve_locations.reserve(num_curves as usize);
-        for i in 0..num_curves {
-            let linear = curve_start + i * 2;
+
+        for (i, curve) in gpu_outline.curves.iter().enumerate() {
+            let is_continuation = i > 0
+                && curve.p1 == gpu_outline.curves[i - 1].p3;
+
+            if is_continuation {
+                // Previous p3 texel becomes this curve's p12 texel.
+                // Check that the shared position isn't at the last column
+                // (shader reads curve_loc.x + 1, which would go OOB).
+                let shared_pos = curve_start + self.scratch_curve_texels.len() as u32 - 1;
+                if shared_pos % CURVE_TEXTURE_WIDTH == CURVE_TEXTURE_WIDTH - 1 {
+                    // Can't share at row boundary — emit fresh p12 texel on next row
+                    self.scratch_curve_texels.push([
+                        curve.p1[0], curve.p1[1], curve.p2[0], curve.p2[1],
+                    ]);
+                } else {
+                    // Overwrite previous p3 texel's .zw with our p2
+                    let last = self.scratch_curve_texels.last_mut().expect("continuation curve must have preceding texel");
+                    last[2] = curve.p2[0];
+                    last[3] = curve.p2[1];
+                }
+            } else {
+                // New contour: ensure position isn't at last column
+                let pos = curve_start + self.scratch_curve_texels.len() as u32;
+                if pos % CURVE_TEXTURE_WIDTH == CURVE_TEXTURE_WIDTH - 1 {
+                    self.scratch_curve_texels.push([0.0; 4]); // padding
+                }
+                self.scratch_curve_texels.push([
+                    curve.p1[0], curve.p1[1], curve.p2[0], curve.p2[1],
+                ]);
+            }
+
+            // Record curve location (position of the p12 texel)
+            let curve_linear = curve_start + self.scratch_curve_texels.len() as u32 - 1;
             self.scratch_curve_locations.push(CurveLocation {
-                x: linear % CURVE_TEXTURE_WIDTH,
-                y: linear / CURVE_TEXTURE_WIDTH,
+                x: curve_linear % CURVE_TEXTURE_WIDTH,
+                y: curve_linear / CURVE_TEXTURE_WIDTH,
             });
+
+            // Emit p3 texel
+            self.scratch_curve_texels.push([curve.p3[0], curve.p3[1], 0.0, 0.0]);
         }
+        let curve_texel_count = self.scratch_curve_texels.len() as u32;
 
         // Build band data with absolute 2D curve locations.
         // NOTE: scratch_band_entries is moved out here and must be reclaimed
