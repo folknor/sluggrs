@@ -241,6 +241,12 @@ impl TextAtlas {
         let glyph_offset = self.buffer_cursor;
         let new_end = glyph_offset + blob_size;
         if new_end > self.buffer_capacity {
+            let required_bytes = new_end as u64 * 16;
+            let max_bytes = device.limits().max_storage_buffer_binding_size as u64;
+            if required_bytes > max_bytes {
+                self.scratch_band_entries = band_entries;
+                return Err(crate::types::PrepareError::AtlasFull);
+            }
             self.grow_buffer(device, queue, new_end);
         }
 

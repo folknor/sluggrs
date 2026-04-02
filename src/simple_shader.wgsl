@@ -21,7 +21,7 @@ struct GlyphInstance {
     @location(1) em_rect: vec4<f32>,         // min_x, min_y, max_x, max_y
     // Band transform
     @location(2) band_transform: vec4<f32>,  // scale_x, scale_y, offset_x, offset_y
-    // Packed glyph data (same as Slug: glyph_loc.x, glyph_loc.y, band_max.x, band_max.y_with_flags)
+    // Packed glyph data: glyph_offset, band_max.x, band_max.y_with_flags, 0
     @location(3) glyph_data: vec4<u32>,
     // Color
     @location(4) color: vec4<f32>,

@@ -148,100 +148,26 @@ partly compute/sort bound (per-band sorting in band.rs), not just allocator boun
 
 ### Done
 
-- [x] Exact geometry for lines — changed line encoding from p2=midpoint
-  to p2=p1 (matching harfbuzz). This makes a=p3-p1 (always nonzero), so the
-  quadratic solver handles lines naturally. Removed CPU perturbation and
-  reverted shader threshold to compute-then-overwrite with exact ==0.0 check.
-  **hb review**
+- [x] Exact geometry for lines — p2=p1 encoding, removed CPU perturbation **hb review**
+- [x] Implicit p1 contour sharing — -45.6% curve texels **hb review**
+- [x] Axis-aligned curve filtering — skip horiz from hbands, vert from vbands **hb review**
+- [x] Dual sorted bands with split point — direction-aware early exit **hb review**
+- [x] RGBA16I texture format (Stages A+B) — halved texture memory **hb review**
+- [x] Half-pixel dilation — reduced from 1px to 0.5px **hb review**
+- [x] Zero-length curve rejection — filter p1==p3 in outline extraction **hb review**
+- [x] Shader MSAA — 4x supersampling below 16ppem, toggled with E key **hb review**
+- [x] Stem darkening — ppem-aware gamma, no-op above 48ppem **hb review**
+- [x] GpuOutline → type alias — prepare_outline is now a clone **hb review**
+- [x] Cu2qu — tangent-line intersection, f64, tolerance 0.5 font units **hb review**
+- [x] i16 overflow guard — reject glyphs exceeding quantization range **hb review**
+- [x] Band count policy — 1:1 up to cap of 16 (matching harfbuzz) **hb review**
+- [x] Unified storage buffer (Stage C) — single array<vec4<i32>>, -352 lines **hb review**
 
-- [x] Implicit p1 contour encoding — within a contour, each curve's p3 texel
-  doubles as the next curve's p12 texel. Saves ~45% curve texels (2962→1612
-  for 92 glyphs). Shader unchanged — same curve_loc/curve_loc+1 read pattern.
-  **hb review**
-
-### Next: band split + ray-direction-aware bands (one feature)
-
-These are two halves of the same design. The split point determines scan
-direction; the dual sorted lists enable early-exit from both sides.
-
-**Step 1: Axis-aligned curve filtering (quick win, band.rs only)**
-- Don't assign horizontal curves to hbands, vertical curves to vbands.
-  A horizontal curve never crosses a horizontal ray (all y-values equal →
-  calc_root_code returns 0), so the texture fetches are wasted.
-  Harfbuzz: `hb-gpu-draw.cc:361-391`. No shader change needed.
-
-**Step 2: Dual sorted lists (band.rs + shader)**
-- Each band stores two curve lists: descending by max_x/y (for right/down
-  rays) and ascending by min_x/y (for left/up rays). Band header grows
-  from (count, offset, 0, 0) to (count, desc_offset, asc_offset, split).
-- CPU: linear scan over descending list, tracking ascending left-count via
-  monotone pointer, pick split minimizing max(left_count, right_count).
-  Harfbuzz: `hb-gpu-draw.cc:580-628`.
-- Band index storage roughly doubles (two lists of same curves).
-
-**Step 3: Shader direction choice (shader)**
-- Fragment computes `leftRay = renderCoord.x < split` (hbands) or
-  `renderCoord.y < split` (vbands), picks the corresponding list.
-- Early-exit flips: leftward uses `min(p) > 0.5` break, rightward uses
-  `max(p) < -0.5` break.
-- Coverage formula flips: leftward `0.5 - r`, rightward `r + 0.5`.
-  Harfbuzz: `hb-gpu-fragment-glsl.hh:187-224`.
-
-**Expected impact:** roughly halves average per-fragment iteration count.
-Fragments on the "wrong" side of a band currently iterate all curves with
-no early exit. Memory cost: ~2x band curve indices.
-
-- [x] RGBA16I texture format (Stages A+B) — both curve and band textures
-  now Rgba16Sint (8 bytes/texel). Quantized at 4 units/em. **hb review**
-
-### Next priorities (from hb review round 2)
-
-- [ ] Cu2qu cubic-to-quadratic conversion — our naive midpoint subdivision
-  (MAX_DEPTH=3, max 8 quads) produces more curves with lower fidelity than
-  harfbuzz's fonttools cu2qu port (tangent-line intersection for optimal
-  single-quad fit, proper geometric error tolerance of 0.5 font units,
-  double precision, MAX_DEPTH=10). Biggest remaining correctness gap for
-  CFF/OTF fonts. Also adds collinearity pre-check to emit lines directly.
-  Harfbuzz: `hb-gpu-cu2qu.hh`, `hb-gpu-draw.cc:122-137`. **hb review**
-
-- [ ] Shader MSAA for small sizes — 4x supersampling below 16ppem, blended
-  in with smoothstep(16,8,ppem). Four evaluations at ±1/3 pixel offsets.
-  Zero cost above 16ppem. Shader-only change.
-  Harfbuzz: `hb-gpu-fragment.wgsl:296-310`. **hb review**
-
-- [ ] Half-pixel dilation — we dilate by 1 full pixel, harfbuzz by 0.5px.
-  Over-dilation wastes fragment work on border pixels that always evaluate
-  to zero coverage. Easy shader change.
-  Harfbuzz: `hb-gpu-vertex.wgsl:49-81`. **hb review**
-
-- [ ] Stem darkening — ppem-aware gamma curve that thickens thin stems at
-  small sizes, brightness-dependent exponent. No-op above 48ppem.
-  Shader-only. Harfbuzz: `hb-gpu-fragment.wgsl:321-326`. **hb review**
-
-### Quick wins
-
-- [ ] Zero-length curve rejection — filter curves where start == end during
-  outline extraction. Trivial. **hb review**
-
-- [ ] Eliminate prepare_outline passthrough — now just copies curves and
-  recomputes bounds. Could fold into outline extraction. **hb review**
-
-### Later
-
-- [ ] i16 overflow guards — add harfbuzz-style `quantize_fits_i16` checks
-  for extreme coordinates. Robustness.
-  Harfbuzz: `hb-gpu-draw.cc:265-271`. **hb review**
-
-- [ ] Band count policy — benchmark harfbuzz's `min(num_curves, 16)` cap
-  against our current 4/8/12 heuristic. **hb review**
+### Remaining
 
 - [ ] Jacobian-based vertex dilation — full MVP-aware half-pixel expansion.
   Only needed if we support rotation/non-uniform scaling.
   Harfbuzz: `hb-gpu-vertex.wgsl:49-81`. **hb review**
-
-- [ ] Unified storage buffer (Stage C) — merge both textures into single
-  `array<vec4<i32>>` with glyph-local relative offsets. Architectural
-  cleanup, optional. **hb review**
 
 ## Future / long-term
 
