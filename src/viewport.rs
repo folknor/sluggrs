@@ -17,6 +17,8 @@ impl Viewport {
         let params = Params {
             screen_size: [0.0, 0.0],
             scroll_offset: [0.0, 0.0],
+            flags: 1, // MSAA+stem darkening on by default
+            _pad: 0,
         };
 
         let params_buffer = device.create_buffer(&BufferDescriptor {

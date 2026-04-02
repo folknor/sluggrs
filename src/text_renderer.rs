@@ -152,6 +152,8 @@ impl TextRenderer {
                         ],
                         color,
                         depth: metadata_to_depth(glyph.metadata),
+                        ppem: glyph.font_size * text_area.scale,
+                        _pad: [0.0; 2],
                     });
                 }
             }

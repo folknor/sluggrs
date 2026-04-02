@@ -87,6 +87,18 @@ impl Cache {
                     offset: 80,
                     shader_location: 5,
                 },
+                // ppem: f32
+                wgpu::VertexAttribute {
+                    format: VertexFormat::Float32,
+                    offset: 84,
+                    shader_location: 6,
+                },
+                // _pad: vec2<f32>
+                wgpu::VertexAttribute {
+                    format: VertexFormat::Float32x2,
+                    offset: 88,
+                    shader_location: 7,
+                },
             ],
         };
 
@@ -122,7 +134,7 @@ impl Cache {
             label: Some("sluggrs uniforms bind group layout"),
             entries: &[BindGroupLayoutEntry {
                 binding: 0,
-                visibility: ShaderStages::VERTEX,
+                visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -251,4 +263,6 @@ impl Cache {
 pub(crate) struct Params {
     pub screen_size: [f32; 2],
     pub scroll_offset: [f32; 2],
+    pub flags: u32,     // bit 0: enable MSAA+stem darkening
+    pub _pad: u32,
 }

@@ -44,4 +44,6 @@ pub struct GlyphInstance {
     pub glyph_data: [u32; 4],     // band_loc_x, band_loc_y, band_max_x, band_max_y
     pub color: [f32; 4],          // RGBA
     pub depth: f32,               // z-depth for iced widget layering
+    pub ppem: f32,                // pixels per em (for MSAA/darkening thresholds)
+    pub _pad: [f32; 2],          // alignment padding
 }

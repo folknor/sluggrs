@@ -8,6 +8,8 @@ const K_BAND_TEXTURE_WIDTH: u32 = 4096u;
 struct Params {
     screen_size: vec2<f32>,
     scroll_offset: vec2<f32>,
+    flags: u32,       // bit 0: enable MSAA+stem darkening
+    _pad: u32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -29,6 +31,9 @@ struct GlyphInstance {
     @location(4) color: vec4<f32>,
     // Depth for widget layer ordering (from iced's metadata_to_depth)
     @location(5) depth: f32,
+    // Pixels per em (for MSAA/darkening thresholds)
+    @location(6) ppem: f32,
+    @location(7) _pad: vec2<f32>,
 }
 
 struct VertexOutput {
@@ -37,6 +42,7 @@ struct VertexOutput {
     @location(1) texcoord: vec2<f32>,               // em-space coordinates
     @location(2) @interpolate(flat) banding: vec4<f32>,
     @location(3) @interpolate(flat) glyph: vec4<i32>,
+    @location(4) @interpolate(flat) pixels_per_em: vec2<f32>,
 }
 
 @vertex
@@ -86,6 +92,7 @@ fn vs_main(instance: GlyphInstance, @builtin(vertex_index) vid: u32) -> VertexOu
     output.banding = instance.band_transform;
     output.glyph = vec4<i32>(instance.glyph_data);
     output.color = instance.color;
+    output.pixels_per_em = vec2<f32>(instance.ppem, instance.ppem);
 
     return output;
 }
@@ -157,28 +164,19 @@ fn calc_band_loc(glyph_loc: vec2<i32>, offset: u32) -> vec2<i32> {
     return band_loc;
 }
 
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let render_coord = input.texcoord;
-    let band_transform = input.banding;
-    let glyph_data = input.glyph;
-
-    // fwidth() can return zero at quad edges (helper lane boundaries),
-    // producing infinity in pixels_per_em. Clamp to avoid NaN propagation
-    // when a root lands at exactly 0.0 (0.0 * inf = NaN). The clamp floor
-    // is tiny enough to not affect real coverage calculations.
-    let ems_per_pixel = max(fwidth(render_coord), vec2<f32>(1.0 / 65536.0));
-    let pixels_per_em = 1.0 / ems_per_pixel;
-
-    var band_max = glyph_data.zw;
-    band_max.y &= 0x00FF;
-
+/// Evaluate Slug coverage at a single sample point.
+fn render_single(
+    render_coord: vec2<f32>,
+    pixels_per_em: vec2<f32>,
+    band_transform: vec4<f32>,
+    glyph_loc: vec2<i32>,
+    band_max: vec2<i32>,
+) -> f32 {
     let band_index = clamp(
         vec2<i32>(render_coord * band_transform.xy + band_transform.zw),
         vec2<i32>(0, 0),
         band_max,
     );
-    let glyph_loc = glyph_data.xy;
 
     // --- Horizontal ray casting (direction-aware) ---
     var xcov = 0.0;
@@ -188,7 +186,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let hband_data = textureLoad(band_texture, hband_header_loc, 0);
     let h_split = f32(hband_data.w) * INV_UNITS;
     let h_left_ray = render_coord.x < h_split;
-    // Left ray → ascending list (asc_offset = .z), right ray → descending list (desc_offset = .y)
     let h_data_offset = u32(select(hband_data.y, hband_data.z, h_left_ray));
 
     for (var ci = 0u; ci < u32(hband_data.x); ci++) {
@@ -200,7 +197,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let raw3 = textureLoad(curve_texture, vec2<i32>(curve_loc.x + 1, curve_loc.y), 0);
         let p3 = vec2<f32>(raw3.xy) * INV_UNITS - render_coord;
 
-        // Direction-aware early exit
         if h_left_ray {
             if min(min(p12.x, p12.z), p3.x) * pixels_per_em.x > 0.5 { break; }
         } else {
@@ -243,7 +239,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let raw3 = textureLoad(curve_texture, vec2<i32>(curve_loc.x + 1, curve_loc.y), 0);
         let p3 = vec2<f32>(raw3.xy) * INV_UNITS - render_coord;
 
-        // Direction-aware early exit
         if v_left_ray {
             if min(min(p12.y, p12.w), p3.y) * pixels_per_em.y > 0.5 { break; }
         } else {
@@ -270,9 +265,57 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Combine coverage (original Slug formula)
     let combined = abs(xcov * xwgt + ycov * ywgt) / max(xwgt + ywgt, 1.0 / 65536.0);
     let fallback = min(abs(xcov), abs(ycov));
-    let final_coverage = clamp(max(combined, fallback), 0.0, 1.0);
-    // Premultiplied alpha output: RGB must be multiplied by alpha for
-    // correct blending with PREMULTIPLIED_ALPHA_BLENDING blend state.
-    let alpha = input.color.a * final_coverage;
+    return clamp(max(combined, fallback), 0.0, 1.0);
+}
+
+/// Stem darkening: thicken thin stems at small sizes.
+/// Gamma curve with brightness-dependent exponent, no-op above 48ppem.
+fn darken(coverage: f32, brightness: f32, ppem: f32) -> f32 {
+    return pow(coverage,
+        mix(pow(2.0, brightness - 0.5), 1.0, smoothstep(8.0, 48.0, ppem)));
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    let render_coord = input.texcoord;
+    let band_transform = input.banding;
+    let glyph_data = input.glyph;
+
+    // Per-pixel coverage needs the actual em-to-pixel ratio from fwidth
+    let ems_per_pixel = max(fwidth(render_coord), vec2<f32>(1.0 / 65536.0));
+    let pixels_per_em = 1.0 / ems_per_pixel;
+    // Stable per-glyph ppem from instance data (for MSAA/darkening thresholds)
+    let ppem = input.pixels_per_em.x;
+
+    var band_max = glyph_data.zw;
+    band_max.y &= 0x00FF;
+    let glyph_loc = glyph_data.xy;
+
+    // Single-sample coverage
+    var coverage = render_single(render_coord, pixels_per_em, band_transform, glyph_loc, band_max);
+
+    if (params.flags & 1u) != 0u {
+        // 4x MSAA for small sizes: blend in gradually from 16ppem down to 8ppem
+        if ppem < 16.0 {
+            let d = ems_per_pixel * (1.0 / 3.0);
+            let msaa = 0.25 * (
+                render_single(render_coord + vec2<f32>(-d.x, -d.y), pixels_per_em, band_transform, glyph_loc, band_max) +
+                render_single(render_coord + vec2<f32>( d.x, -d.y), pixels_per_em, band_transform, glyph_loc, band_max) +
+                render_single(render_coord + vec2<f32>(-d.x,  d.y), pixels_per_em, band_transform, glyph_loc, band_max) +
+                render_single(render_coord + vec2<f32>( d.x,  d.y), pixels_per_em, band_transform, glyph_loc, band_max)
+            );
+            coverage = mix(coverage, msaa, smoothstep(16.0, 8.0, ppem));
+        }
+
+        // Stem darkening: brightness-aware gamma for thin stems at small sizes.
+        // No-op above 48ppem (exponent = 1.0), so skip the pow entirely.
+        if ppem < 48.0 {
+            let brightness = dot(input.color.rgb, vec3<f32>(0.299, 0.587, 0.114));
+            coverage = darken(coverage, brightness, ppem);
+        }
+    }
+
+    // Premultiplied alpha output
+    let alpha = input.color.a * coverage;
     return vec4<f32>(input.color.rgb * alpha, alpha);
 }

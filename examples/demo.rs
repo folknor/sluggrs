@@ -28,6 +28,8 @@ struct GlyphInstance {
     glyph_data: [u32; 4],     // glyph_loc.x, glyph_loc.y, band_max.x, band_max.y
     color: [f32; 4],          // RGBA
     depth: f32,               // z-depth for widget layering
+    ppem: f32,                // pixels per em
+    _pad: [f32; 2],           // alignment padding
 }
 
 #[repr(C)]
@@ -35,6 +37,8 @@ struct GlyphInstance {
 struct Params {
     screen_size: [f32; 2],
     scroll_offset: [f32; 2],
+    flags: u32,     // bit 0: enable MSAA+stem darkening
+    _pad: u32,
 }
 
 /// Prepared glyph data ready for GPU upload.
@@ -209,6 +213,8 @@ fn prepare_text(
             ],
             color,
             depth: 0.0,
+            ppem: font_size,
+            _pad: [0.0; 2],
         });
 
         prepared.push(PreparedGlyph {
@@ -228,6 +234,7 @@ struct App {
     state: Option<RenderState>,
     window: Option<Arc<Window>>,
     warmup_frames: u32,
+    enhance: bool,
 }
 
 struct RenderState {
@@ -249,13 +256,15 @@ struct RenderState {
 }
 
 impl RenderState {
-    fn update_params(&self) {
+    fn update_params(&self, enhance: bool) {
         let params = Params {
             screen_size: [
                 self.config.width as f32 / self.zoom,
                 self.config.height as f32 / self.zoom,
             ],
             scroll_offset: self.scroll,
+            flags: if enhance { 1 } else { 0 },
+            _pad: 0,
         };
         self.queue
             .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
@@ -268,6 +277,7 @@ impl App {
             state: None,
             window: None,
             warmup_frames: 5,
+            enhance: true,
         }
     }
 }
@@ -308,7 +318,7 @@ impl ApplicationHandler for App {
                     state.config.width = new_size.width.max(1);
                     state.config.height = new_size.height.max(1);
                     state.surface.configure(&state.device, &state.config);
-                    state.update_params();
+                    state.update_params(self.enhance);
 
                     if let Some(window) = &self.window {
                         window.request_redraw();
@@ -322,7 +332,7 @@ impl ApplicationHandler for App {
                         winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 50.0,
                     };
                     state.zoom = (state.zoom * (1.0 + scroll * 0.1)).clamp(0.1, 20.0);
-                    state.update_params();
+                    state.update_params(self.enhance);
 
                     if let Some(window) = &self.window {
                         window.request_redraw();
@@ -349,9 +359,16 @@ impl ApplicationHandler for App {
                             state.scroll = [0.0, 0.0];
                             state.zoom = 1.0;
                         }
+                        winit::keyboard::KeyCode::KeyE => {
+                            self.enhance = !self.enhance;
+                            eprintln!(
+                                "MSAA + stem darkening: {}",
+                                if self.enhance { "ON" } else { "OFF" }
+                            );
+                        }
                         _ => return,
                     }
-                    state.update_params();
+                    state.update_params(self.enhance);
                     if let Some(window) = &self.window {
                         window.request_redraw();
                     }
@@ -374,7 +391,7 @@ impl ApplicationHandler for App {
                         let dy = pos[1] - state.last_mouse[1];
                         state.scroll[0] += dx / state.zoom;
                         state.scroll[1] += dy / state.zoom;
-                        state.update_params();
+                        state.update_params(self.enhance);
                         if let Some(window) = &self.window {
                             window.request_redraw();
                         }
@@ -520,6 +537,28 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     let mut y = 30.0;
 
     // --- Sizes (Inter Variable, TTF) ---
+    add_line(
+        INTER_VARIABLE,
+        "8px Inter: the quick brown fox jumps over the lazy dog — MSAA target",
+        8.0,
+        left,
+        y,
+        light_gray,
+        None,
+    );
+    y += 16.0;
+
+    add_line(
+        INTER_VARIABLE,
+        "10px Inter: the quick brown fox jumps over the lazy dog",
+        10.0,
+        left,
+        y,
+        light_gray,
+        None,
+    );
+    y += 20.0;
+
     add_line(
         INTER_VARIABLE,
         "12px Inter: the quick brown fox jumps over the lazy dog",
@@ -892,7 +931,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
         label: Some("params bgl"),
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
@@ -932,6 +971,8 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     let params = Params {
         screen_size: [config.width as f32, config.height as f32],
         scroll_offset: [0.0, 0.0],
+        flags: 1, // MSAA+stem darkening on by default
+        _pad: 0,
     };
     let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("params buffer"),
@@ -972,6 +1013,8 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
             glyph_data: [0; 4],
             color: [0.0; 4],
             depth: 0.0,
+            ppem: 0.0,
+            _pad: [0.0; 2],
         }]
     } else {
         all_instances
@@ -1029,6 +1072,16 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
                         format: wgpu::VertexFormat::Float32,
                         offset: 80,
                         shader_location: 5,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32,
+                        offset: 84,
+                        shader_location: 6,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x2,
+                        offset: 88,
+                        shader_location: 7,
                     },
                 ],
             }],
