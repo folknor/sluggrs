@@ -96,7 +96,7 @@ fn main() {
 
     // Texture memory: curve texels are 8 bytes (rgba16sint), band texels are 16 bytes (rgba32uint)
     let curve_bytes = final_curve_texels as u64 * 8;
-    let band_bytes = final_band_texels as u64 * 16;
+    let band_bytes = final_band_texels as u64 * 8; // i16×4 = 8 bytes
     eprintln!("curve_texture_bytes={curve_bytes}");
     eprintln!("band_texture_bytes={band_bytes}");
 

@@ -81,7 +81,7 @@ fn dump_bold_r_geometry() {
             for ci in 0..count {
                 let ref_base = (offset + ci) * 4;
                 let curve_x = band_data.entries[ref_base];
-                if curve_x / 2 == target_curve {
+                if curve_x / 2 == target_curve as i16 {
                     h_bands.push(i);
                 }
             }
@@ -94,7 +94,7 @@ fn dump_bold_r_geometry() {
             for ci in 0..count {
                 let ref_base = (offset + ci) * 4;
                 let curve_x = band_data.entries[ref_base];
-                if curve_x / 2 == target_curve {
+                if curve_x / 2 == target_curve as i16 {
                     v_bands.push(i);
                 }
             }

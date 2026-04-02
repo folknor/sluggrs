@@ -7,9 +7,9 @@ use crate::prepare::GpuOutline;
 
 /// Band data ready for GPU upload.
 pub struct BandData {
-    /// Entries in the band texture: (curve_count, offset) pairs followed by curve indices.
+    /// Entries in the band texture as i16 texels: headers + curve indices.
     /// Pass this Vec back via `build_bands` to reuse its allocation.
-    pub entries: Vec<u32>,
+    pub entries: Vec<i16>,
     /// Number of horizontal bands
     pub band_count_x: u32,
     /// Number of vertical bands
@@ -76,7 +76,7 @@ pub fn build_bands(
     curve_locations: &[CurveLocation],
     band_count_x: u32,
     band_count_y: u32,
-    mut scratch_entries: Vec<u32>,
+    mut scratch_entries: Vec<i16>,
 ) -> BandData {
     let [min_x, min_y, max_x, max_y] = outline.bounds;
     let width = max_x - min_x;
@@ -276,23 +276,23 @@ pub fn build_bands(
     scratch_entries.clear();
     scratch_entries.reserve((num_headers as usize + total_refs * 2) * 4);
 
-    // Write horizontal band headers
+    // Write horizontal band headers (i16 quantized)
     let mut texel_offset = curve_lists_start;
     for b in 0..hcount {
         let count = hband_counts[b];
-        scratch_entries.push(count);
-        scratch_entries.push(texel_offset); // desc_offset
-        scratch_entries.push(texel_offset + count); // asc_offset
-        scratch_entries.push(hband_splits[b].to_bits());
+        scratch_entries.push(count as i16);
+        scratch_entries.push(texel_offset as i16); // desc_offset
+        scratch_entries.push((texel_offset + count) as i16); // asc_offset
+        scratch_entries.push((hband_splits[b] * 4.0).round() as i16); // quantized split
         texel_offset += count * 2; // desc + asc
     }
     // Write vertical band headers
     for b in 0..vcount {
         let count = vband_counts[b];
-        scratch_entries.push(count);
-        scratch_entries.push(texel_offset); // desc_offset
-        scratch_entries.push(texel_offset + count); // asc_offset
-        scratch_entries.push(vband_splits[b].to_bits());
+        scratch_entries.push(count as i16);
+        scratch_entries.push(texel_offset as i16); // desc_offset
+        scratch_entries.push((texel_offset + count) as i16); // asc_offset
+        scratch_entries.push((vband_splits[b] * 4.0).round() as i16); // quantized split
         texel_offset += count * 2;
     }
 
@@ -302,15 +302,15 @@ pub fn build_bands(
         let end = start + hband_counts[b] as usize;
         for &curve_idx in &desc_indices[start..end] {
             let loc = curve_locations[curve_idx];
-            scratch_entries.push(loc.x);
-            scratch_entries.push(loc.y);
+            scratch_entries.push(loc.x as i16);
+            scratch_entries.push(loc.y as i16);
             scratch_entries.push(0);
             scratch_entries.push(0);
         }
         for &curve_idx in &asc_indices[start..end] {
             let loc = curve_locations[curve_idx];
-            scratch_entries.push(loc.x);
-            scratch_entries.push(loc.y);
+            scratch_entries.push(loc.x as i16);
+            scratch_entries.push(loc.y as i16);
             scratch_entries.push(0);
             scratch_entries.push(0);
         }
@@ -320,15 +320,15 @@ pub fn build_bands(
         let end = start + vband_counts[b] as usize;
         for &curve_idx in &desc_indices[start..end] {
             let loc = curve_locations[curve_idx];
-            scratch_entries.push(loc.x);
-            scratch_entries.push(loc.y);
+            scratch_entries.push(loc.x as i16);
+            scratch_entries.push(loc.y as i16);
             scratch_entries.push(0);
             scratch_entries.push(0);
         }
         for &curve_idx in &asc_indices[start..end] {
             let loc = curve_locations[curve_idx];
-            scratch_entries.push(loc.x);
-            scratch_entries.push(loc.y);
+            scratch_entries.push(loc.x as i16);
+            scratch_entries.push(loc.y as i16);
             scratch_entries.push(0);
             scratch_entries.push(0);
         }

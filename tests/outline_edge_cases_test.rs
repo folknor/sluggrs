@@ -303,14 +303,14 @@ fn comma_line_only_glyph_regression() {
     // Verify the h-band header reports non-horizontal curves.
     let hband_count = band_data.entries[0];
     assert_eq!(
-        hband_count, non_horizontal as u32,
+        hband_count, non_horizontal as i16,
         "Horizontal band should contain {non_horizontal} non-horizontal curves, got {hband_count}"
     );
 
     // v-band header is at index 4 (after the 1 h-band header).
     let vband_count = band_data.entries[4];
     assert_eq!(
-        vband_count, non_vertical as u32,
+        vband_count, non_vertical as i16,
         "Vertical band should contain {non_vertical} non-vertical curves, got {vband_count}"
     );
 

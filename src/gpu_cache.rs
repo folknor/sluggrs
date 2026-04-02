@@ -110,7 +110,7 @@ impl Cache {
                     ty: BindingType::Texture {
                         multisampled: false,
                         view_dimension: TextureViewDimension::D2,
-                        sample_type: TextureSampleType::Uint,
+                        sample_type: TextureSampleType::Sint,
                     },
                     count: None,
                 },

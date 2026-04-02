@@ -13,7 +13,7 @@ struct Params {
 @group(0) @binding(0) var<uniform> params: Params;
 const INV_UNITS: f32 = 0.25; // 1.0 / 4.0 units_per_em
 @group(1) @binding(0) var curve_texture: texture_2d<i32>;
-@group(1) @binding(1) var band_texture: texture_2d<u32>;
+@group(1) @binding(1) var band_texture: texture_2d<i32>;
 
 // Per-instance data for a glyph
 struct GlyphInstance {
@@ -186,13 +186,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     let hband_header_loc = calc_band_loc(glyph_loc, u32(band_index.y));
     let hband_data = textureLoad(band_texture, hband_header_loc, 0);
-    let h_split = bitcast<f32>(hband_data.w);
+    let h_split = f32(hband_data.w) * INV_UNITS;
     let h_left_ray = render_coord.x < h_split;
     // Left ray → ascending list (asc_offset = .z), right ray → descending list (desc_offset = .y)
-    let h_data_offset = select(hband_data.y, hband_data.z, h_left_ray);
+    let h_data_offset = u32(select(hband_data.y, hband_data.z, h_left_ray));
 
-    for (var ci = 0; ci < i32(hband_data.x); ci++) {
-        let curve_ref_loc = calc_band_loc(glyph_loc, h_data_offset + u32(ci));
+    for (var ci = 0u; ci < u32(hband_data.x); ci++) {
+        let curve_ref_loc = calc_band_loc(glyph_loc, h_data_offset + ci);
         let curve_ref = textureLoad(band_texture, curve_ref_loc, 0).xy;
         let curve_loc = vec2<i32>(curve_ref);
         let raw12 = textureLoad(curve_texture, curve_loc, 0);
@@ -230,12 +230,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     let vband_header_loc = calc_band_loc(glyph_loc, u32(band_max.y + 1 + band_index.x));
     let vband_data = textureLoad(band_texture, vband_header_loc, 0);
-    let v_split = bitcast<f32>(vband_data.w);
+    let v_split = f32(vband_data.w) * INV_UNITS;
     let v_left_ray = render_coord.y < v_split;
-    let v_data_offset = select(vband_data.y, vband_data.z, v_left_ray);
+    let v_data_offset = u32(select(vband_data.y, vband_data.z, v_left_ray));
 
-    for (var ci = 0; ci < i32(vband_data.x); ci++) {
-        let curve_ref_loc = calc_band_loc(glyph_loc, v_data_offset + u32(ci));
+    for (var ci = 0u; ci < u32(vband_data.x); ci++) {
+        let curve_ref_loc = calc_band_loc(glyph_loc, v_data_offset + ci);
         let curve_ref = textureLoad(band_texture, curve_ref_loc, 0).xy;
         let curve_loc = vec2<i32>(curve_ref);
         let raw12 = textureLoad(curve_texture, curve_loc, 0);

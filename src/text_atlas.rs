@@ -39,12 +39,12 @@ pub struct TextAtlas {
 
     // CPU-side copies for re-upload on texture growth
     curve_data: Vec<[i16; 4]>,
-    band_data: Vec<[u32; 4]>,
+    band_data: Vec<[i16; 4]>,
 
     // Scratch buffers reused across upload_glyph() calls
     scratch_curve_texels: Vec<[i16; 4]>,
     scratch_curve_locations: Vec<CurveLocation>,
-    scratch_band_entries: Vec<u32>,
+    scratch_band_entries: Vec<i16>,
 
     // Glyph cache
     pub(crate) glyphs: GlyphMap,
@@ -301,7 +301,7 @@ impl TextAtlas {
         }
 
         // Access band texels from the returned BandData
-        let band_texels: &[[u32; 4]] = bytemuck::cast_slice(&band_data.entries);
+        let band_texels: &[[i16; 4]] = bytemuck::cast_slice(&band_data.entries);
 
         // Append to CPU-side copies
         self.curve_data
@@ -321,7 +321,7 @@ impl TextAtlas {
 
         // Upload band texels (handling wrapping across rows)
         if !band_texels.is_empty() {
-            upload_wrapped_texels_u32(
+            upload_wrapped_texels_i16_band(
                 queue,
                 &self.band_texture,
                 band_texels,
@@ -448,7 +448,7 @@ impl TextAtlas {
 
         // Re-upload existing data
         if !self.band_data.is_empty() {
-            upload_wrapped_texels_u32(
+            upload_wrapped_texels_i16_band(
                 queue,
                 &self.band_texture,
                 &self.band_data,
@@ -477,10 +477,10 @@ impl TextAtlas {
     }
 }
 
-fn upload_wrapped_texels_u32(
+fn upload_wrapped_texels_i16_band(
     queue: &Queue,
     texture: &wgpu::Texture,
-    texels: &[[u32; 4]],
+    texels: &[[i16; 4]],
     linear_offset: u32,
     tex_width: u32,
 ) {
@@ -503,7 +503,7 @@ fn upload_wrapped_texels_u32(
             bytemuck::cast_slice(&remaining[..count]),
             TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(count as u32 * 16),
+                bytes_per_row: Some(count as u32 * 8), // i16×4 = 8 bytes
                 rows_per_image: None,
             },
             Extent3d {
@@ -546,7 +546,7 @@ fn create_band_texture(device: &Device, height: u32) -> wgpu::Texture {
         mip_level_count: 1,
         sample_count: 1,
         dimension: TextureDimension::D2,
-        format: TextureFormat::Rgba32Uint,
+        format: TextureFormat::Rgba16Sint,
         usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
         view_formats: &[],
     })

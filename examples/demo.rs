@@ -67,12 +67,12 @@ fn build_curve_texture(glyphs: &[PreparedGlyph]) -> Vec<[i16; 4]> {
 }
 
 /// Build band texture data from prepared glyphs.
-fn build_band_texture(glyphs: &[PreparedGlyph]) -> Vec<[u32; 4]> {
-    let mut texels: Vec<[u32; 4]> = Vec::new();
+fn build_band_texture(glyphs: &[PreparedGlyph]) -> Vec<[i16; 4]> {
+    let mut texels: Vec<[i16; 4]> = Vec::new();
 
     for glyph in glyphs {
         for chunk in glyph.band_data.entries.chunks(4) {
-            let mut texel = [0u32; 4];
+            let mut texel = [0i16; 4];
             for (i, &val) in chunk.iter().enumerate() {
                 texel[i] = val;
             }
@@ -81,7 +81,7 @@ fn build_band_texture(glyphs: &[PreparedGlyph]) -> Vec<[u32; 4]> {
     }
 
     if texels.is_empty() {
-        texels.push([0u32; 4]);
+        texels.push([0i16; 4]);
     }
 
     texels
@@ -832,7 +832,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     let band_count = band_texels.len().max(1) as u32;
     let band_h = band_count.div_ceil(band_w);
     let mut padded_band_texels = band_texels;
-    padded_band_texels.resize((band_w * band_h) as usize, [0u32; 4]);
+    padded_band_texels.resize((band_w * band_h) as usize, [0i16; 4]);
 
     log::info!(
         "Curve texture: {curve_w}x{curve_h} ({curve_count} used), Band texture: {band_w}x{band_h} ({band_count} used)"
@@ -870,7 +870,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Uint,
+            format: wgpu::TextureFormat::Rgba16Sint,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         },
@@ -919,7 +919,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
                 binding: 1,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Uint,
+                    sample_type: wgpu::TextureSampleType::Sint,
                     view_dimension: wgpu::TextureViewDimension::D2,
                     multisampled: false,
                 },
