@@ -94,8 +94,8 @@ fn main() {
     eprintln!("warm_iterations={warm_iterations}");
     eprintln!("mixed_iterations={mixed_iterations}");
 
-    // Texture memory: each texel is 16 bytes (rgba32float / rgba32uint)
-    let curve_bytes = final_curve_texels as u64 * 16;
+    // Texture memory: curve texels are 8 bytes (rgba16sint), band texels are 16 bytes (rgba32uint)
+    let curve_bytes = final_curve_texels as u64 * 8;
     let band_bytes = final_band_texels as u64 * 16;
     eprintln!("curve_texture_bytes={curve_bytes}");
     eprintln!("band_texture_bytes={band_bytes}");

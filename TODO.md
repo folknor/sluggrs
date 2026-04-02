@@ -197,15 +197,29 @@ no early exit. Memory cost: ~2x band curve indices.
   expansion accounting for the full MVP transform. We use simpler
   normal-based dilation. Compare quality and performance. **hb review**
 
-- [ ] Unified RGBA16I texture format — harfbuzz packs headers, band data,
-  curve indices, and curve geometry into a single RGBA16I blob (8 bytes/texel
-  vs our 16 bytes/texel across two textures). Quantization at 4 units/em
-  (0.25 em precision) is sufficient — integer arithmetic also guarantees
-  exact zeros for degenerate cases. Curve refs use 16-bit signed offsets
-  with +32768 bias (glyph-local addressing). Would halve texture memory
-  again and reduce to a single storage buffer binding.
-  Harfbuzz: `hb-gpu-draw.hh:38`, `hb-gpu-draw.cc:259-263, 528-540`.
-  **hb review**
+### Next: RGBA16I texture format (incremental)
+
+Quantize at 4 units/em (0.25 font design units precision, ~0.008px error
+at 64px/1000upem). Can be done in stages:
+
+**Stage A: Int16 curve texture (small change)**
+- Change curve_texture from Rgba32Float to Rgba16Sint (8 vs 16 bytes/texel)
+- Quantize in upload_glyph: `(val * 4.0).round() as i16`
+- Shader: `texture_2d<f32>` → `texture_2d<i32>`, decode with `* 0.25`
+- gpu_cache.rs: sample_type Float → Sint
+- Add overflow guard for coordinates outside i16 range (±8191 em)
+- Band texture, band data, curve locations — all unchanged
+- Harfbuzz: `hb-gpu-draw.hh:38`, `hb-gpu-draw.cc:259-263`
+
+**Stage B: Int16 band texture (medium change)**
+- Change band_texture from Rgba32Uint to Rgba16Sint
+- Band headers already fit (counts small, offsets need +32768 bias)
+- Curve refs change from absolute 2D (x,y) to glyph-local 1D offsets
+
+**Stage C: Unified storage buffer (large, optional)**
+- Merge both textures into single `array<vec4<i32>>` storage buffer
+- Simplifies bind groups, removes 2D wrapping logic
+- Only worth doing if we want full harfbuzz parity
 
 - [ ] Small-size rendering — harfbuzz has shader-level 4x MSAA for <16 ppem
   and stem darkening for <48 ppem. We have neither. **hb review**

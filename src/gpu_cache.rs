@@ -90,7 +90,7 @@ impl Cache {
             ],
         };
 
-        // Bind group 0: curve texture (Rgba32Float) + band texture (Rgba32Uint)
+        // Bind group 0: curve texture (Rgba16Sint) + band texture (Rgba32Uint)
         let atlas_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("sluggrs atlas bind group layout"),
             entries: &[
@@ -100,7 +100,7 @@ impl Cache {
                     ty: BindingType::Texture {
                         multisampled: false,
                         view_dimension: TextureViewDimension::D2,
-                        sample_type: TextureSampleType::Float { filterable: false },
+                        sample_type: TextureSampleType::Sint,
                     },
                     count: None,
                 },

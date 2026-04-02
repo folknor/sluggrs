@@ -38,11 +38,11 @@ pub struct TextAtlas {
     band_cursor: u32,
 
     // CPU-side copies for re-upload on texture growth
-    curve_data: Vec<[f32; 4]>,
+    curve_data: Vec<[i16; 4]>,
     band_data: Vec<[u32; 4]>,
 
     // Scratch buffers reused across upload_glyph() calls
-    scratch_curve_texels: Vec<[f32; 4]>,
+    scratch_curve_texels: Vec<[i16; 4]>,
     scratch_curve_locations: Vec<CurveLocation>,
     scratch_band_entries: Vec<u32>,
 
@@ -215,6 +215,10 @@ impl TextAtlas {
         self.scratch_curve_locations.clear();
         self.scratch_curve_locations.reserve(num_curves as usize);
 
+        // Quantize f32 em-space coordinate to i16 at 4 units/em.
+        // Precision: 0.25 font design units (~0.008px at 64px/1000upem).
+        let q = |v: f32| -> i16 { (v * 4.0).round() as i16 };
+
         for (i, curve) in gpu_outline.curves.iter().enumerate() {
             let is_continuation = i > 0
                 && curve.p1 == gpu_outline.curves[i - 1].p3;
@@ -227,22 +231,22 @@ impl TextAtlas {
                 if shared_pos % CURVE_TEXTURE_WIDTH == CURVE_TEXTURE_WIDTH - 1 {
                     // Can't share at row boundary — emit fresh p12 texel on next row
                     self.scratch_curve_texels.push([
-                        curve.p1[0], curve.p1[1], curve.p2[0], curve.p2[1],
+                        q(curve.p1[0]), q(curve.p1[1]), q(curve.p2[0]), q(curve.p2[1]),
                     ]);
                 } else {
                     // Overwrite previous p3 texel's .zw with our p2
                     let last = self.scratch_curve_texels.last_mut().expect("continuation curve must have preceding texel");
-                    last[2] = curve.p2[0];
-                    last[3] = curve.p2[1];
+                    last[2] = q(curve.p2[0]);
+                    last[3] = q(curve.p2[1]);
                 }
             } else {
                 // New contour: ensure position isn't at last column
                 let pos = curve_start + self.scratch_curve_texels.len() as u32;
                 if pos % CURVE_TEXTURE_WIDTH == CURVE_TEXTURE_WIDTH - 1 {
-                    self.scratch_curve_texels.push([0.0; 4]); // padding
+                    self.scratch_curve_texels.push([0; 4]); // padding
                 }
                 self.scratch_curve_texels.push([
-                    curve.p1[0], curve.p1[1], curve.p2[0], curve.p2[1],
+                    q(curve.p1[0]), q(curve.p1[1]), q(curve.p2[0]), q(curve.p2[1]),
                 ]);
             }
 
@@ -254,7 +258,7 @@ impl TextAtlas {
             });
 
             // Emit p3 texel
-            self.scratch_curve_texels.push([curve.p3[0], curve.p3[1], 0.0, 0.0]);
+            self.scratch_curve_texels.push([q(curve.p3[0]), q(curve.p3[1]), 0, 0]);
         }
         let curve_texel_count = self.scratch_curve_texels.len() as u32;
 
@@ -306,7 +310,7 @@ impl TextAtlas {
 
         // Upload curve texels (handling wrapping across rows)
         if !self.scratch_curve_texels.is_empty() {
-            self.upload_wrapped_texels_f32(
+            self.upload_wrapped_texels_i16(
                 queue,
                 &self.curve_texture,
                 &self.scratch_curve_texels,
@@ -343,12 +347,12 @@ impl TextAtlas {
         })
     }
 
-    /// Upload f32 texels at a linear offset, handling row wrapping.
-    fn upload_wrapped_texels_f32(
+    /// Upload i16 texels at a linear offset, handling row wrapping.
+    fn upload_wrapped_texels_i16(
         &self,
         queue: &Queue,
         texture: &wgpu::Texture,
-        texels: &[[f32; 4]],
+        texels: &[[i16; 4]],
         linear_offset: u32,
         tex_width: u32,
     ) {
@@ -371,7 +375,7 @@ impl TextAtlas {
                 bytemuck::cast_slice(&remaining[..count]),
                 TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(count as u32 * 16),
+                    bytes_per_row: Some(count as u32 * 8), // i16×4 = 8 bytes
                     rows_per_image: None,
                 },
                 Extent3d {
@@ -409,7 +413,7 @@ impl TextAtlas {
 
         // Re-upload existing data
         if !self.curve_data.is_empty() {
-            self.upload_wrapped_texels_f32(
+            self.upload_wrapped_texels_i16(
                 queue,
                 &self.curve_texture,
                 &self.curve_data,
@@ -525,7 +529,7 @@ fn create_curve_texture(device: &Device, height: u32) -> wgpu::Texture {
         mip_level_count: 1,
         sample_count: 1,
         dimension: TextureDimension::D2,
-        format: TextureFormat::Rgba32Float,
+        format: TextureFormat::Rgba16Sint,
         usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
         view_formats: &[],
     })

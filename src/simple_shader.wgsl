@@ -11,7 +11,8 @@ struct Params {
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
-@group(1) @binding(0) var curve_texture: texture_2d<f32>;
+const INV_UNITS: f32 = 0.25; // 1.0 / 4.0 units_per_em
+@group(1) @binding(0) var curve_texture: texture_2d<i32>;
 @group(1) @binding(1) var band_texture: texture_2d<u32>;
 
 // Per-instance data for a glyph
@@ -194,8 +195,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let curve_ref_loc = calc_band_loc(glyph_loc, h_data_offset + u32(ci));
         let curve_ref = textureLoad(band_texture, curve_ref_loc, 0).xy;
         let curve_loc = vec2<i32>(curve_ref);
-        let p12 = textureLoad(curve_texture, curve_loc, 0) - vec4<f32>(render_coord, render_coord);
-        let p3 = textureLoad(curve_texture, vec2<i32>(curve_loc.x + 1, curve_loc.y), 0).xy - render_coord;
+        let raw12 = textureLoad(curve_texture, curve_loc, 0);
+        let p12 = vec4<f32>(raw12) * INV_UNITS - vec4<f32>(render_coord, render_coord);
+        let raw3 = textureLoad(curve_texture, vec2<i32>(curve_loc.x + 1, curve_loc.y), 0);
+        let p3 = vec2<f32>(raw3.xy) * INV_UNITS - render_coord;
 
         // Direction-aware early exit
         if h_left_ray {
@@ -235,8 +238,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let curve_ref_loc = calc_band_loc(glyph_loc, v_data_offset + u32(ci));
         let curve_ref = textureLoad(band_texture, curve_ref_loc, 0).xy;
         let curve_loc = vec2<i32>(curve_ref);
-        let p12 = textureLoad(curve_texture, curve_loc, 0) - vec4<f32>(render_coord, render_coord);
-        let p3 = textureLoad(curve_texture, vec2<i32>(curve_loc.x + 1, curve_loc.y), 0).xy - render_coord;
+        let raw12 = textureLoad(curve_texture, curve_loc, 0);
+        let p12 = vec4<f32>(raw12) * INV_UNITS - vec4<f32>(render_coord, render_coord);
+        let raw3 = textureLoad(curve_texture, vec2<i32>(curve_loc.x + 1, curve_loc.y), 0);
+        let p3 = vec2<f32>(raw3.xy) * INV_UNITS - render_coord;
 
         // Direction-aware early exit
         if v_left_ray {

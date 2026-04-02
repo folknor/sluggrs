@@ -43,19 +43,24 @@ struct PreparedGlyph {
     band_data: band::BandData,
 }
 
-/// Build curve texture data from glyph outlines.
-fn build_curve_texture(glyphs: &[PreparedGlyph]) -> Vec<[f32; 4]> {
-    let mut texels: Vec<[f32; 4]> = Vec::new();
+/// Quantize f32 em-space coordinate to i16 at 4 units/em.
+fn q(v: f32) -> i16 {
+    (v * 4.0).round() as i16
+}
+
+/// Build curve texture data from glyph outlines (int16 quantized).
+fn build_curve_texture(glyphs: &[PreparedGlyph]) -> Vec<[i16; 4]> {
+    let mut texels: Vec<[i16; 4]> = Vec::new();
 
     for glyph in glyphs {
         for curve in &glyph.gpu_outline.curves {
-            texels.push([curve.p1[0], curve.p1[1], curve.p2[0], curve.p2[1]]);
-            texels.push([curve.p3[0], curve.p3[1], 0.0, 0.0]);
+            texels.push([q(curve.p1[0]), q(curve.p1[1]), q(curve.p2[0]), q(curve.p2[1])]);
+            texels.push([q(curve.p3[0]), q(curve.p3[1]), 0, 0]);
         }
     }
 
     if texels.is_empty() {
-        texels.push([0.0; 4]);
+        texels.push([0; 4]);
     }
 
     texels
@@ -820,7 +825,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     let curve_count = curve_texels.len().max(1) as u32;
     let curve_h = curve_count.div_ceil(curve_w);
     let mut padded_curve_texels = curve_texels;
-    padded_curve_texels.resize((curve_w * curve_h) as usize, [0.0; 4]);
+    padded_curve_texels.resize((curve_w * curve_h) as usize, [0i16; 4]);
 
     // Band texture: fixed width, wrap into rows
     let band_w = sluggrs::BAND_TEXTURE_WIDTH;
@@ -845,7 +850,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Float,
+            format: wgpu::TextureFormat::Rgba16Sint,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         },
@@ -904,7 +909,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
                 binding: 0,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    sample_type: wgpu::TextureSampleType::Sint,
                     view_dimension: wgpu::TextureViewDimension::D2,
                     multisampled: false,
                 },
