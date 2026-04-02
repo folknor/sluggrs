@@ -3,6 +3,7 @@
 /// Divides the glyph bounding box into horizontal and vertical bands,
 /// recording which curves intersect each band. This lets the fragment
 /// shader skip curves that can't affect the current pixel.
+use crate::outline::GlyphOutline;
 use crate::prepare::GpuOutline;
 
 /// Band data ready for GPU upload.
@@ -358,7 +359,7 @@ mod tests {
                 max[1] = max[1].max(p[1]);
             }
         }
-        GpuOutline {
+        GlyphOutline {
             curves,
             bounds: [min[0], min[1], max[0], max[1]],
         }

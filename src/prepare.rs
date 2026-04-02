@@ -1,56 +1,19 @@
 /// GPU preparation stage for glyph outlines.
 ///
-/// Transforms font geometry ([`GlyphOutline`]) into [`GpuOutline`] for the
-/// Slug fragment shader. Line segments (degenerate quadratics) pass through
-/// unchanged — the shader handles them via exact-zero detection in the
-/// quadratic solver.
+/// `GpuOutline` is a type alias for `GlyphOutline` — outlines pass through
+/// unchanged since line segments use p2=p1 encoding and the shader handles
+/// degenerate quadratics via exact-zero detection.
 use crate::outline::{GlyphOutline, QuadCurve};
 
 /// Glyph outline prepared for GPU rendering.
-///
-/// Curves may differ slightly from the true font geometry: line segments
-/// have p2 offset along the edge normal to avoid degenerate quadratics
-/// in the shader solver. Bounds are recomputed to contain the actual
-/// control points.
-#[derive(Debug, Clone)]
-pub struct GpuOutline {
-    pub curves: Vec<QuadCurve>,
-    pub bounds: [f32; 4], // min_x, min_y, max_x, max_y
-}
+/// Identical to `GlyphOutline` — no transformation is needed.
+pub type GpuOutline = GlyphOutline;
 
 /// Prepare a glyph outline for GPU rendering.
-///
-/// Line segments (degenerate quadratics where p2 is the midpoint of p1–p3)
-/// are perturbed slightly along the edge normal so the Slug shader's
-/// quadratic solver always has a nonzero second-degree coefficient.
+/// This is now a simple clone — all preparation happens during extraction.
 #[hotpath::measure]
 pub fn prepare_outline(outline: &GlyphOutline) -> GpuOutline {
-    if outline.curves.is_empty() {
-        return GpuOutline {
-            curves: Vec::new(),
-            bounds: [0.0, 0.0, 0.0, 0.0],
-        };
-    }
-
-    let mut curves = Vec::with_capacity(outline.curves.len());
-    let mut min = [f32::MAX, f32::MAX];
-    let mut max = [f32::MIN, f32::MIN];
-
-    for curve in &outline.curves {
-        curves.push(*curve);
-
-        for p in [curve.p1, curve.p2, curve.p3] {
-            min[0] = min[0].min(p[0]);
-            min[1] = min[1].min(p[1]);
-            max[0] = max[0].max(p[0]);
-            max[1] = max[1].max(p[1]);
-        }
-    }
-
-    GpuOutline {
-        curves,
-        bounds: [min[0], min[1], max[0], max[1]],
-    }
+    outline.clone()
 }
 
 /// Italic shear factor: tan(14°) ≈ 0.2493, matching cosmic_text's
@@ -151,7 +114,7 @@ mod tests {
 
     #[test]
     fn italic_shear_only_affects_x() {
-        let mut outline = GpuOutline {
+        let mut outline = GlyphOutline {
             curves: vec![real_quad([10.0, 100.0], [50.0, 200.0], [90.0, 50.0])],
             bounds: [10.0, 50.0, 90.0, 200.0],
         };
@@ -172,7 +135,7 @@ mod tests {
 
     #[test]
     fn italic_shear_zero_y_unchanged() {
-        let mut outline = GpuOutline {
+        let mut outline = GlyphOutline {
             curves: vec![real_quad([10.0, 0.0], [50.0, 0.0], [90.0, 0.0])],
             bounds: [10.0, 0.0, 90.0, 0.0],
         };
@@ -187,7 +150,7 @@ mod tests {
 
     #[test]
     fn italic_shear_positive_y_shifts_right() {
-        let mut outline = GpuOutline {
+        let mut outline = GlyphOutline {
             curves: vec![real_quad([0.0, 100.0], [0.0, 200.0], [0.0, 300.0])],
             bounds: [0.0, 100.0, 0.0, 300.0],
         };
@@ -201,7 +164,7 @@ mod tests {
 
     #[test]
     fn italic_shear_bounds_updated() {
-        let mut outline = GpuOutline {
+        let mut outline = GlyphOutline {
             curves: vec![real_quad([0.0, 0.0], [50.0, 500.0], [100.0, 0.0])],
             bounds: [0.0, 0.0, 100.0, 500.0],
         };
