@@ -2,10 +2,13 @@ use crate::band::{BandScratch, CurveLocation};
 use crate::glyph_cache::{GlyphEntry, GlyphMap};
 use crate::gpu_cache::Cache;
 use crate::outline::GlyphOutline;
+use crate::raster_text::{NonVectorGlyph, RasterState, RasterVertex};
 use crate::types::ColorMode;
+use crate::viewport::Viewport;
 
 use wgpu::{
-    BindGroup, DepthStencilState, Device, MultisampleState, Queue, RenderPipeline, TextureFormat,
+    BindGroup, Buffer, DepthStencilState, Device, MultisampleState, Queue, RenderPass,
+    RenderPipeline, TextureFormat,
 };
 
 /// An atlas containing cached glyph curve and band data for GPU rendering.
@@ -39,6 +42,10 @@ pub struct TextAtlas {
     /// Monotonic counter incremented on atlas reset. Used by TextRenderer's
     /// retained cache to detect when cached glyph offsets are invalidated.
     generation: u32,
+
+    // Raster fallback for non-vector glyphs (emoji, bitmap fonts)
+    raster: Option<RasterState>,
+    swash_cache: cosmic_text::SwashCache,
 }
 
 impl TextAtlas {
@@ -73,6 +80,8 @@ impl TextAtlas {
             gpu_flush_cursor: 0,
             generation: 0,
             glyphs: GlyphMap::new(),
+            raster: None,
+            swash_cache: cosmic_text::SwashCache::new(),
         }
     }
 
@@ -128,6 +137,59 @@ impl TextAtlas {
         }
 
         self.glyphs.next_frame();
+
+        if let Some(raster) = &mut self.raster {
+            raster.trim();
+        }
+    }
+
+    /// Lazily initialize raster pipeline. Called from TextRenderer::new().
+    pub(crate) fn init_raster(
+        &mut self,
+        device: &Device,
+        depth_stencil: Option<DepthStencilState>,
+        multisample: MultisampleState,
+    ) {
+        if self.raster.is_none() {
+            self.raster = Some(RasterState::new(
+                device,
+                self.format,
+                self.cache.uniforms_layout(),
+                depth_stencil,
+                multisample,
+            ));
+        }
+    }
+
+    /// Rasterize non-vector glyphs and return per-instance vertex data.
+    pub(crate) fn rasterize_glyphs(
+        &mut self,
+        queue: &Queue,
+        font_system: &mut cosmic_text::FontSystem,
+        glyphs: &[NonVectorGlyph],
+    ) -> Vec<RasterVertex> {
+        if glyphs.is_empty() {
+            return Vec::new();
+        }
+        let raster = match &mut self.raster {
+            Some(r) => r,
+            None => return Vec::new(),
+        };
+        raster.rasterize_glyphs(queue, font_system, &mut self.swash_cache, glyphs)
+    }
+
+    /// Set the raster pipeline and atlas bind group, then draw from the
+    /// caller's vertex buffer.
+    pub(crate) fn render_raster_pass<'a>(
+        &'a self,
+        viewport: &'a Viewport,
+        pass: &mut RenderPass<'a>,
+        vertex_buffer: &'a Buffer,
+        count: u32,
+    ) {
+        if let Some(raster) = &self.raster {
+            raster.render_pass(&viewport.bind_group, pass, vertex_buffer, count);
+        }
     }
 
     /// Full atlas reset: recreate buffer at initial size, clear all caches.

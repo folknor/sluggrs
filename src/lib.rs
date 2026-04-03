@@ -9,6 +9,7 @@ pub mod viewport;
 // not part of the stable iced integration API. Internal representations
 // may change.
 pub mod band;
+pub(crate) mod raster_text;
 pub mod glyph_cache;
 pub mod outline;
 pub mod prepare;

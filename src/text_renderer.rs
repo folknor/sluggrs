@@ -2,6 +2,7 @@ use crate::GlyphInstance;
 use crate::glyph_cache::{GlyphKey, NON_VECTOR_GLYPH};
 use crate::outline::extract_outline;
 use crate::prepare::apply_italic_shear;
+use crate::raster_text::{NonVectorGlyph, RasterVertex};
 use crate::text_atlas::TextAtlas;
 use crate::types::{PrepareError, RenderError, TextArea};
 use crate::viewport::Viewport;
@@ -35,6 +36,7 @@ struct CachedTextArea {
     atlas_generation: u32,
     instances: Vec<GlyphInstance>,
     distinct_keys: Vec<GlyphKey>,
+    non_vector_glyphs: Vec<NonVectorGlyph>,
 }
 
 /// A text renderer that uses the Slug algorithm to render text into an
@@ -51,6 +53,11 @@ pub struct TextRenderer {
     text_area_cache: FxHashMap<*const cosmic_text::Buffer, CachedTextArea>,
     /// Resolution from last frame, for cache invalidation.
     cached_resolution: crate::types::Resolution,
+    // Raster fallback: per-frame instances drawn using TextAtlas's shared raster resources
+    raster_instances: Vec<RasterVertex>,
+    raster_vertex_buffer: Buffer,
+    raster_vertex_buffer_size: u64,
+    raster_glyphs_to_render: u32,
 }
 
 impl TextRenderer {
@@ -68,7 +75,17 @@ impl TextRenderer {
             mapped_at_creation: false,
         });
 
-        let pipeline = atlas.get_or_create_pipeline(device, multisample, depth_stencil);
+        let pipeline = atlas.get_or_create_pipeline(device, multisample, depth_stencil.clone());
+
+        atlas.init_raster(device, depth_stencil, multisample);
+
+        let raster_vertex_buffer_size = 4096u64;
+        let raster_vertex_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("sluggrs raster vertices"),
+            size: raster_vertex_buffer_size,
+            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         Self {
             vertex_buffer,
@@ -82,6 +99,10 @@ impl TextRenderer {
                 width: 0,
                 height: 0,
             },
+            raster_instances: Vec::new(),
+            raster_vertex_buffer,
+            raster_vertex_buffer_size,
+            raster_glyphs_to_render: 0,
         }
     }
 
@@ -105,6 +126,7 @@ impl TextRenderer {
         mut metadata_to_depth: impl FnMut(usize) -> f32,
     ) -> Result<(), PrepareError> {
         self.instances.clear();
+        let mut non_vector_collector: Vec<NonVectorGlyph> = Vec::new();
 
         let resolution = viewport.resolution();
         let atlas_gen = atlas.generation();
@@ -145,6 +167,7 @@ impl TextRenderer {
                         if dx == 0.0 && dy == 0.0 {
                             // Exact position match — extend from cache directly
                             self.instances.extend_from_slice(&cached.instances);
+                            non_vector_collector.extend_from_slice(&cached.non_vector_glyphs);
                         } else {
                             // Position shifted — adjust screen_rect and re-cull
                             any_position_changed = true;
@@ -174,6 +197,22 @@ impl TextRenderer {
                                 adjusted.screen_rect[1] = sy;
                                 self.instances.push(adjusted);
                             }
+
+                            // Replay non-vector glyphs with adjusted positions
+                            let dx_i = dx.round() as i32;
+                            let dy_i = dy.round() as i32;
+                            for nv in &cached.non_vector_glyphs {
+                                let mut adjusted = nv.clone();
+                                adjusted.physical.x += dx_i;
+                                adjusted.physical.y += dy_i;
+                                adjusted.clip_bounds = [
+                                    bounds_min_x as i32,
+                                    bounds_min_y as i32,
+                                    bounds_max_x as i32,
+                                    bounds_max_y as i32,
+                                ];
+                                non_vector_collector.push(adjusted);
+                            }
                         }
                         continue;
                     }
@@ -184,6 +223,7 @@ impl TextRenderer {
             all_hit = false;
             let instance_start = self.instances.len();
             let mut area_keys: Vec<GlyphKey> = Vec::new();
+            let mut area_non_vector: Vec<NonVectorGlyph> = Vec::new();
 
             let bounds_min_x = text_area.bounds.left.max(0);
             let bounds_min_y = text_area.bounds.top.max(0);
@@ -215,6 +255,21 @@ impl TextRenderer {
                     area_keys.push(key);
 
                     if entry.is_non_vector() {
+                        let physical = glyph.physical(
+                            (text_area.left, text_area.top),
+                            text_area.scale,
+                        );
+                        let color = match glyph.color_opt {
+                            Some(c) => color_to_f32(c),
+                            None => default_color,
+                        };
+                        area_non_vector.push(NonVectorGlyph {
+                            physical,
+                            color,
+                            depth: metadata_to_depth(glyph.metadata),
+                            line_y_scaled_rounded: (run.line_y * text_area.scale).round(),
+                            clip_bounds: [bounds_min_x, bounds_min_y, bounds_max_x, bounds_max_y],
+                        });
                         continue;
                     }
 
@@ -267,6 +322,7 @@ impl TextRenderer {
             area_keys.dedup();
 
             let area_instances = self.instances[instance_start..].to_vec();
+            non_vector_collector.extend_from_slice(&area_non_vector);
             self.text_area_cache.insert(
                 buffer_ptr,
                 CachedTextArea {
@@ -278,6 +334,7 @@ impl TextRenderer {
                     atlas_generation: atlas_gen,
                     instances: area_instances,
                     distinct_keys: area_keys,
+                    non_vector_glyphs: area_non_vector,
                 },
             );
         }
@@ -288,14 +345,22 @@ impl TextRenderer {
 
         atlas.flush_uploads(queue);
 
+        // Rasterize non-vector glyphs via the shared atlas
+        self.raster_instances = atlas.rasterize_glyphs(queue, font_system, &non_vector_collector);
+        self.raster_glyphs_to_render = self.raster_instances.len() as u32;
+
         // Whole-frame fast path: if all areas hit cache with no position changes,
-        // the GPU vertex buffer already contains the correct data.
+        // the GPU vertex buffer already contains the correct data and raster
+        // instances haven't changed.
         if all_hit && !any_position_changed && self.instances.len() == self.glyphs_to_render as usize
         {
+            // Still need to upload raster vertex buffer (raster atlas may have changed)
+            self.upload_raster_vertices(device, queue);
             return Ok(());
         }
 
         self.upload_vertices(device, queue);
+        self.upload_raster_vertices(device, queue);
         Ok(())
     }
 
@@ -394,6 +459,30 @@ impl TextRenderer {
         }
     }
 
+    fn upload_raster_vertices(&mut self, device: &Device, queue: &Queue) {
+        if self.raster_instances.is_empty() {
+            self.raster_glyphs_to_render = 0;
+            return;
+        }
+
+        let data = bytemuck::cast_slice(&self.raster_instances);
+
+        if self.raster_vertex_buffer_size >= data.len() as u64 {
+            queue.write_buffer(&self.raster_vertex_buffer, 0, data);
+        } else {
+            self.raster_vertex_buffer.destroy();
+            let new_size = (data.len() as u64).next_power_of_two().max(4096);
+            self.raster_vertex_buffer = device.create_buffer(&BufferDescriptor {
+                label: Some("sluggrs raster vertices"),
+                size: new_size,
+                usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            queue.write_buffer(&self.raster_vertex_buffer, 0, data);
+            self.raster_vertex_buffer_size = new_size;
+        }
+    }
+
     /// Prepares all of the provided text areas for rendering.
     #[allow(clippy::too_many_arguments)] // matches cryoglyph's API
     pub fn prepare<'a>(
@@ -421,23 +510,30 @@ impl TextRenderer {
     }
 
     /// Renders all layouts that were previously provided to `prepare`.
-    pub fn render(
-        &self,
-        atlas: &TextAtlas,
-        viewport: &Viewport,
-        pass: &mut RenderPass<'_>,
+    pub fn render<'a>(
+        &'a self,
+        atlas: &'a TextAtlas,
+        viewport: &'a Viewport,
+        pass: &mut RenderPass<'a>,
     ) -> Result<(), RenderError> {
-        if self.glyphs_to_render == 0 {
-            return Ok(());
+        if self.glyphs_to_render > 0 {
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &viewport.bind_group, &[]);
+            pass.set_bind_group(1, &atlas.bind_group, &[]);
+            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            pass.draw(0..4, 0..self.glyphs_to_render);
         }
 
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &viewport.bind_group, &[]);
-        pass.set_bind_group(1, &atlas.bind_group, &[]);
-        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        pass.draw(0..4, 0..self.glyphs_to_render);
+        // Raster fallback (emoji, bitmap fonts)
+        if self.raster_glyphs_to_render > 0 {
+            atlas.render_raster_pass(viewport, pass, &self.raster_vertex_buffer, self.raster_glyphs_to_render);
+        }
 
         Ok(())
+    }
+
+    pub fn trim(&mut self) {
+        // Raster trim is handled by TextAtlas::trim()
     }
 }
 
