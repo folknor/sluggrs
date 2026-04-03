@@ -30,10 +30,23 @@ Work in progress. The core rendering pipeline is functional and tested in produc
 - Cubic-to-quadratic subdivision for CFF fonts
 - Band acceleration structure for efficient per-pixel curve lookup
 - WGSL fragment shader with full Slug curve evaluation
-- Raster fallback for non-vector glyphs (color emoji, bitmap fonts) via SwashCache — renders textured quads in the same pass as vector text
+- Non-vector glyphs (color emoji, bitmap fonts) detected and classified — the [iced fork](https://github.com/folknor/iced/tree/sluggrs) routes these to cryoglyph's raster pipeline for two-pass rendering
 - Pressure-based trim/eviction matching cryoglyph's frame-boundary semantics
+- Retained prepared-text cache — skips glyph loop and GPU upload for unchanged text
 - cryoglyph-compatible API (Cache, TextAtlas, TextRenderer, Viewport)
 - Wired into iced's `text.rs` via [forked iced](https://github.com/folknor/iced/tree/sluggrs)
+
+## Performance
+
+Measured on an RTX 3080 at 1920x1080 with an email-client workload (5 text areas, ~8000 glyph instances, ~160 distinct glyphs, mixed 10-20px sizes, SansSerif + Monospace).
+
+**Steady-state (static text):** prepare takes ~5µs per frame — the retained cache detects unchanged text and skips both the glyph loop and GPU upload entirely. GPU fragment shader render: ~100µs.
+
+**Scrolling:** ~36µs per frame. Cached instances are position-adjusted and re-culled without rebuilding from font data.
+
+**Cold start (new text):** ~2ms for 160 distinct glyphs (~13µs per glyph for outline extraction, band building, and GPU upload). Subsequent frames with the same text hit the retained cache.
+
+**Memory:** ~4.8KB per distinct glyph in GPU storage buffer. Resolution-independent — the same cached glyph data serves all sizes without re-upload.
 
 ## Acknowledgements
 
