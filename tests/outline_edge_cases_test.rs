@@ -5,7 +5,7 @@
 
 use sluggrs::band::{build_bands, CurveLocation};
 use sluggrs::outline::{char_to_glyph_id, extract_outline};
-use sluggrs::prepare::{apply_italic_shear, prepare_outline};
+use sluggrs::prepare::apply_italic_shear;
 
 /// Path to the bundled Inter Variable font used across these tests.
 const INTER_FONT: &str = "examples/fonts/InterVariable.ttf";
@@ -26,7 +26,7 @@ fn fake_italic_changes_geometry() {
 
     let outline =
         extract_outline(&font_data, 0, glyph_id, &[]).expect("'A' should have an outline");
-    let base = prepare_outline(&outline);
+    let base = outline;
     let mut sheared = base.clone();
     apply_italic_shear(&mut sheared);
 
@@ -229,33 +229,14 @@ fn comma_line_only_glyph_regression() {
     );
     eprintln!("Confirmed: all {} comma curves are linear (p2 = p1)", outline.curves.len());
 
-    // Step 2: Prepare for GPU — line segments pass through unchanged,
-    // the shader handles them as normal quadratics (a = p3 - p1, nonzero).
-    let gpu_outline = prepare_outline(&outline);
-    assert_eq!(
-        gpu_outline.curves.len(),
-        outline.curves.len(),
-        "prepare_outline should preserve curve count"
-    );
-
-    // Lines should pass through with p2 still equal to p1.
-    let all_still_linear = gpu_outline.curves.iter().all(|c| {
-        (c.p2[0] - c.p1[0]).abs() < 1e-6 && (c.p2[1] - c.p1[1]).abs() < 1e-6
-    });
-    assert!(
-        all_still_linear,
-        "prepare_outline should pass line segments through unchanged"
-    );
-    eprintln!("Confirmed: line segments pass through unchanged after prepare_outline");
-
-    // Step 3: Build bands with a single band (1x1) — the simplest case.
-    let curve_locations: Vec<CurveLocation> = (0..gpu_outline.curves.len())
+    // Step 2: Build bands with a single band (1x1) — the simplest case.
+    let curve_locations: Vec<CurveLocation> = (0..outline.curves.len())
         .map(|i| CurveLocation {
             offset: (i * 3) as u32,
         })
         .collect();
 
-    let band_data = build_bands(&gpu_outline, &curve_locations, 1, 1, Vec::new());
+    let band_data = build_bands(&outline, &curve_locations, 1, 1, Vec::new());
 
     // Band data should be non-empty.
     assert!(
@@ -275,13 +256,13 @@ fn comma_line_only_glyph_regression() {
     // With axis-aligned curve filtering, horizontal curves are excluded from
     // hbands and vertical curves from vbands (they can never produce ray
     // crossings on that axis). Count expected curves per band type.
-    let num_curves = gpu_outline.curves.len();
-    let non_horizontal = gpu_outline.curves.iter().filter(|c| {
+    let num_curves = outline.curves.len();
+    let non_horizontal = outline.curves.iter().filter(|c| {
         let min_y = c.p1[1].min(c.p2[1]).min(c.p3[1]);
         let max_y = c.p1[1].max(c.p2[1]).max(c.p3[1]);
         min_y != max_y
     }).count();
-    let non_vertical = gpu_outline.curves.iter().filter(|c| {
+    let non_vertical = outline.curves.iter().filter(|c| {
         let min_x = c.p1[0].min(c.p2[0]).min(c.p3[0]);
         let max_x = c.p1[0].max(c.p2[0]).max(c.p3[0]);
         min_x != max_x

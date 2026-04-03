@@ -1,6 +1,6 @@
 use sluggrs::band::{self, CurveLocation, build_bands};
 use sluggrs::outline::{char_to_glyph_id, extract_outline};
-use sluggrs::prepare::{self, GpuOutline};
+use sluggrs::outline::GlyphOutline;
 
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -41,7 +41,7 @@ struct Params {
 
 /// Prepared glyph data ready for GPU upload.
 struct PreparedGlyph {
-    gpu_outline: GpuOutline,
+    outline: GlyphOutline,
     band_data: band::BandData,
 }
 
@@ -59,7 +59,7 @@ fn build_glyph_buffer(glyphs: &[PreparedGlyph]) -> Vec<[i32; 4]> {
     for glyph in glyphs {
         // Build curve texels
         let mut curve_texels: Vec<[i32; 4]> = Vec::new();
-        for curve in &glyph.gpu_outline.curves {
+        for curve in &glyph.outline.curves {
             curve_texels.push([q(curve.p1[0]), q(curve.p1[1]), q(curve.p2[0]), q(curve.p2[1])]);
             curve_texels.push([q(curve.p3[0]), q(curve.p3[1]), 0, 0]);
         }
@@ -162,8 +162,7 @@ fn prepare_text(
             }
         };
 
-        let gpu_outline = prepare::prepare_outline(&outline);
-        let num_curves = gpu_outline.curves.len();
+        let num_curves = outline.curves.len();
 
         // Curve locations are 0-based within curve region (will be fixupped in build_glyph_buffer)
         let curve_locations: Vec<CurveLocation> = (0..num_curves)
@@ -174,14 +173,14 @@ fn prepare_text(
 
         let band_count = (num_curves as u32).clamp(1, 16);
         let band_data = build_bands(
-            &gpu_outline,
+            &outline,
             &curve_locations,
             band_count,
             band_count,
             Vec::new(),
         );
 
-        let [min_x, min_y, max_x, max_y] = gpu_outline.bounds;
+        let [min_x, min_y, max_x, max_y] = outline.bounds;
 
         let screen_x = cursor_x + min_x * scale;
         let screen_y = start_y - max_y * scale;
@@ -209,7 +208,7 @@ fn prepare_text(
         });
 
         prepared.push(PreparedGlyph {
-            gpu_outline,
+            outline,
             band_data,
         });
 
@@ -515,7 +514,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
         );
         for g in &prepared {
             let band_elements = (g.band_data.entries.len() / 4) as u32;
-            let curve_elements = (g.gpu_outline.curves.len() as u32) * 2;
+            let curve_elements = (g.outline.curves.len() as u32) * 2;
             buffer_offset += band_elements + curve_elements;
         }
         all_prepared.extend(prepared);

@@ -9,7 +9,6 @@ use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
 use sluggrs::band::{CurveLocation, build_bands};
 use sluggrs::glyph_cache::{GlyphEntry, GlyphKey, GlyphMap, NON_VECTOR_GLYPH};
 use sluggrs::outline::extract_outline;
-use sluggrs::prepare::prepare_outline;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -336,21 +335,14 @@ fn outline_extraction_round_trip() {
         "Bounds height should be positive (max_y > min_y)"
     );
 
-    let gpu_outline = prepare_outline(&outline);
-    assert_eq!(
-        gpu_outline.curves.len(),
-        outline.curves.len(),
-        "GPU outline should preserve curve count"
-    );
-
-    // GPU bounds should be valid (may differ slightly from original due to perturbation)
+    // Outline bounds should be valid
     assert!(
-        gpu_outline.bounds[2] > gpu_outline.bounds[0],
-        "GPU bounds width should be positive"
+        outline.bounds[2] > outline.bounds[0],
+        "Outline bounds width should be positive"
     );
     assert!(
-        gpu_outline.bounds[3] > gpu_outline.bounds[1],
-        "GPU bounds height should be positive"
+        outline.bounds[3] > outline.bounds[1],
+        "Outline bounds height should be positive"
     );
 }
 
@@ -386,7 +378,7 @@ fn band_data_sanity() {
 
     let outline = extract_outline(font_data, 0, glyph.glyph_id, &[])
         .expect("Glyph 'B' should have an outline");
-    let gpu_outline = prepare_outline(&outline);
+    let gpu_outline = &outline;
 
     // Create curve locations (one per curve, sequentially laid out)
     let curve_locations: Vec<CurveLocation> = (0..gpu_outline.curves.len())
@@ -399,7 +391,7 @@ fn band_data_sanity() {
     let band_count_y = 4u32;
 
     let band_data = build_bands(
-        &gpu_outline,
+        gpu_outline,
         &curve_locations,
         band_count_x,
         band_count_y,
@@ -469,7 +461,7 @@ fn band_data_single_band() {
 
     let outline = extract_outline(font_data, 0, glyph.glyph_id, &[])
         .expect("Glyph 'O' should have an outline");
-    let gpu_outline = prepare_outline(&outline);
+    let gpu_outline = &outline;
 
     let curve_locations: Vec<CurveLocation> = (0..gpu_outline.curves.len())
         .map(|i| CurveLocation {
@@ -477,7 +469,7 @@ fn band_data_single_band() {
         })
         .collect();
 
-    let band_data = build_bands(&gpu_outline, &curve_locations, 1, 1, Vec::new());
+    let band_data = build_bands(gpu_outline, &curve_locations, 1, 1, Vec::new());
 
     assert_eq!(band_data.band_count_x, 1);
     assert_eq!(band_data.band_count_y, 1);

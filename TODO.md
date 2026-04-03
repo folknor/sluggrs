@@ -35,19 +35,19 @@ Baseline: 92 glyphs, ~753µs cold prepare on RTX 3080.
   on `TextAtlas` holding all temporary Vecs, clear and reuse each call.
   ~100µs cold (10-15%). Medium effort.
 
-- [ ] **Remove prepare_outline() clone** — `GpuOutline` is a type alias for
-  `GlyphOutline`, so `prepare_outline` is a pointless `Vec::clone()`. Take
-  `&GlyphOutline` through to upload, only clone for italic shear (~1% of
-  glyphs). ~30-80µs cold (5-10%). Trivial effort.
+- [x] **Remove prepare_outline() clone** — `GpuOutline` was a type alias for
+  `GlyphOutline`, `prepare_outline` was a pointless clone. Removed function,
+  type alias, and all references. Outline passed directly, only cloned for
+  italic shear.
 
 - [ ] **Batch queue.write_buffer** — each cold glyph does a separate
   `queue.write_buffer` (92 calls on cold frame). Accumulate blobs into
   `buffer_data`, single flush at end of `prepare_with_depth()`. ~20-90µs
   cold. Small effort.
 
-- [ ] **Eliminate band_i32 widening alloc** — `upload_glyph` allocates
-  `Vec<[i32; 4]>` per glyph to widen i16→i32. Widen directly into
-  `buffer_data` or use a scratch Vec. ~10-30µs cold. Trivial effort.
+- [x] **Eliminate band_i32 widening alloc** — replaced `collect()` into
+  temporary `Vec<[i32; 4]>` with direct `extend()` from iterator into
+  `buffer_data`. Zero-alloc widening.
 
 ### Strong consensus — 4-5 reviewers
 

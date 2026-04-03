@@ -1,7 +1,7 @@
 use crate::GlyphInstance;
 use crate::glyph_cache::{GlyphKey, NON_VECTOR_GLYPH};
 use crate::outline::extract_outline;
-use crate::prepare::{apply_italic_shear, prepare_outline};
+use crate::prepare::apply_italic_shear;
 use crate::text_atlas::TextAtlas;
 use crate::types::{PrepareError, RenderError, TextArea};
 use crate::viewport::Viewport;
@@ -210,16 +210,15 @@ impl TextRenderer {
         let location = [VariationSetting::new(wght_tag, glyph.font_weight.0 as f32)];
 
         let entry = match extract_outline(font.data(), face_index, glyph.glyph_id, &location) {
-            Some(outline) => {
-                let mut gpu_outline = prepare_outline(&outline);
+            Some(mut outline) => {
                 if glyph
                     .cache_key_flags
                     .contains(cosmic_text::CacheKeyFlags::FAKE_ITALIC)
                 {
-                    apply_italic_shear(&mut gpu_outline);
+                    apply_italic_shear(&mut outline);
                 }
-                let band_count = band_count_for_curves(gpu_outline.curves.len());
-                atlas.upload_glyph(device, queue, &gpu_outline, band_count, band_count)?
+                let band_count = band_count_for_curves(outline.curves.len());
+                atlas.upload_glyph(device, queue, &outline, band_count, band_count)?
             }
             None => NON_VECTOR_GLYPH,
         };

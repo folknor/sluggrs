@@ -1,7 +1,7 @@
 use crate::band::CurveLocation;
 use crate::glyph_cache::{GlyphEntry, GlyphMap};
 use crate::gpu_cache::Cache;
-use crate::prepare::GpuOutline;
+use crate::outline::GlyphOutline;
 use crate::types::ColorMode;
 
 use wgpu::{
@@ -146,7 +146,7 @@ impl TextAtlas {
         &mut self,
         device: &Device,
         queue: &Queue,
-        gpu_outline: &GpuOutline,
+        gpu_outline: &GlyphOutline,
         band_count_x: u32,
         band_count_y: u32,
     ) -> Result<GlyphEntry, crate::types::PrepareError> {
@@ -249,11 +249,11 @@ impl TextAtlas {
         }
 
         // Widen band entries from i16 to i32 and append to CPU copy
-        let band_i32: Vec<[i32; 4]> = band_entries
-            .chunks_exact(4)
-            .map(|c| [c[0] as i32, c[1] as i32, c[2] as i32, c[3] as i32])
-            .collect();
-        self.buffer_data.extend_from_slice(&band_i32);
+        self.buffer_data.extend(
+            band_entries
+                .chunks_exact(4)
+                .map(|c| [c[0] as i32, c[1] as i32, c[2] as i32, c[3] as i32]),
+        );
         self.buffer_data.extend_from_slice(&self.scratch_curve_texels);
 
         // Upload blob to GPU

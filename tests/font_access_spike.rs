@@ -4,7 +4,6 @@
 
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
 use sluggrs::outline::extract_outline;
-use sluggrs::prepare::prepare_outline;
 
 #[test]
 fn extract_outline_from_cosmic_text_layout() {
@@ -55,14 +54,6 @@ fn extract_outline_from_cosmic_text_layout() {
                     assert!(
                         outline.bounds[2] > outline.bounds[0],
                         "Bounds width should be positive"
-                    );
-
-                    // Prepare for GPU
-                    let gpu_outline = prepare_outline(&outline);
-                    assert_eq!(
-                        gpu_outline.curves.len(),
-                        outline.curves.len(),
-                        "GPU outline should have same curve count"
                     );
 
                     glyphs_extracted += 1;

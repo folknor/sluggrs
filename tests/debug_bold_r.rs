@@ -1,7 +1,6 @@
 use skrifa::setting::VariationSetting;
 use sluggrs::band::{CurveLocation, build_bands};
 use sluggrs::outline::extract_outline;
-use sluggrs::prepare::prepare_outline;
 
 #[test]
 fn dump_bold_r_geometry() {
@@ -13,7 +12,6 @@ fn dump_bold_r_geometry() {
     let wght = skrifa::Tag::new(b"wght");
     let location = [VariationSetting::new(wght, 700.0)];
     let outline = extract_outline(&font_data, 0, glyph_id, &location).expect("should have outline");
-    let gpu = prepare_outline(&outline);
 
     println!("=== ORIGINAL curves 2..5 ===");
     for i in 2..=5.min(outline.curves.len() - 1) {
@@ -25,8 +23,8 @@ fn dump_bold_r_geometry() {
     }
 
     println!("\n=== GPU-PREPARED curves 2..5 ===");
-    for i in 2..=5.min(gpu.curves.len() - 1) {
-        let c = &gpu.curves[i];
+    for i in 2..=5.min(outline.curves.len() - 1) {
+        let c = &outline.curves[i];
         let a_x = c.p1[0] - 2.0 * c.p2[0] + c.p3[0];
         let a_y = c.p1[1] - 2.0 * c.p2[1] + c.p3[1];
         println!(
@@ -36,7 +34,7 @@ fn dump_bold_r_geometry() {
     }
 
     println!("\n=== ALL GPU-PREPARED curves ===");
-    for (i, c) in gpu.curves.iter().enumerate() {
+    for (i, c) in outline.curves.iter().enumerate() {
         let mid_x = (c.p1[0] + c.p3[0]) * 0.5;
         let mid_y = (c.p1[1] + c.p3[1]) * 0.5;
         let was_linear = (c.p2[0] - mid_x).abs() < 0.02 && (c.p2[1] - mid_y).abs() < 0.02;
@@ -49,7 +47,7 @@ fn dump_bold_r_geometry() {
     }
 
     // Build bands
-    let num_curves = gpu.curves.len();
+    let num_curves = outline.curves.len();
     let band_count = if num_curves < 10 {
         4
     } else if num_curves < 30 {
@@ -62,7 +60,7 @@ fn dump_bold_r_geometry() {
             offset: (i as u32) * 2,
         })
         .collect();
-    let band_data = build_bands(&gpu, &curve_locs, band_count, band_count, Vec::new());
+    let band_data = build_bands(&outline, &curve_locs, band_count, band_count, Vec::new());
 
     // Dump which bands contain curves 2..5
     let hcount = band_data.band_count_y as usize;
@@ -103,7 +101,7 @@ fn dump_bold_r_geometry() {
     }
 
     // What are the band y-ranges?
-    let [_, min_y, _, max_y] = gpu.bounds;
+    let [_, min_y, _, max_y] = outline.bounds;
     let height = max_y - min_y;
     let band_h = height / band_count as f32;
     println!("\n=== BAND Y-RANGES (horizontal bands) ===");
@@ -113,7 +111,7 @@ fn dump_bold_r_geometry() {
         println!("  h{i}: y=[{lo:.1}, {hi:.1}]");
     }
 
-    let [min_x, _, max_x, _] = gpu.bounds;
+    let [min_x, _, max_x, _] = outline.bounds;
     let width = max_x - min_x;
     let band_w = width / band_count as f32;
     println!("\n=== BAND X-RANGES (vertical bands) ===");

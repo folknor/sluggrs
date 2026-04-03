@@ -3,7 +3,7 @@
 /// Divides the glyph bounding box into horizontal and vertical bands,
 /// recording which curves intersect each band. This lets the fragment
 /// shader skip curves that can't affect the current pixel.
-use crate::prepare::GpuOutline;
+use crate::outline::GlyphOutline;
 
 /// Band data ready for GPU upload.
 pub struct BandData {
@@ -77,7 +77,7 @@ fn find_split(
 /// `curve_locations` maps each curve index to its (x, y) position in the curve texture.
 #[hotpath::measure]
 pub fn build_bands(
-    outline: &GpuOutline,
+    outline: &GlyphOutline,
     curve_locations: &[CurveLocation],
     band_count_x: u32,
     band_count_y: u32,
@@ -353,7 +353,7 @@ mod tests {
     use super::*;
     use crate::outline::{GlyphOutline, QuadCurve};
 
-    fn make_outline(curves: Vec<QuadCurve>) -> GpuOutline {
+    fn make_outline(curves: Vec<QuadCurve>) -> GlyphOutline {
         let mut min = [f32::MAX; 2];
         let mut max = [f32::MIN; 2];
         for c in &curves {

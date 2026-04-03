@@ -560,7 +560,7 @@ impl RenderHarness {
             &mut self.font_system,
             &mut self.atlas,
             &self.viewport,
-            areas.iter().cloned(),
+            areas.iter().copied(),
             &mut self.swash_cache,
         )
     }

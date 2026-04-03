@@ -18,7 +18,7 @@ pub struct QuadCurve {
 ///
 /// Note: `bounds` is approximate for CFF fonts — cubic-to-quadratic subdivision
 /// can produce control points outside the original cubic hull. Use
-/// `prepare_outline()` for exact bounds over the actual quadratic geometry.
+/// `build_bands()` for exact bounds over the actual quadratic geometry.
 #[derive(Debug, Clone)]
 pub struct GlyphOutline {
     pub curves: Vec<QuadCurve>,
