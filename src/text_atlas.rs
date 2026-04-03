@@ -31,6 +31,8 @@ pub struct TextAtlas {
     scratch_curve_locations: Vec<CurveLocation>,
     scratch_band_entries: Vec<i16>,
     band_scratch: BandScratch,
+    /// How much of buffer_data is already on the GPU. A grow resets this to 0.
+    gpu_flush_cursor: u32,
 
     // Glyph cache
     pub(crate) glyphs: GlyphMap,
@@ -65,6 +67,7 @@ impl TextAtlas {
             scratch_curve_locations: Vec::new(),
             scratch_band_entries: Vec::new(),
             band_scratch: BandScratch::default(),
+            gpu_flush_cursor: 0,
             glyphs: GlyphMap::new(),
         }
     }
@@ -133,6 +136,7 @@ impl TextAtlas {
         self.glyphs.clear();
         self.buffer_cursor = 0;
         self.buffer_data.clear();
+        self.gpu_flush_cursor = 0;
 
         self.buffer_capacity = INITIAL_BUFFER_CAPACITY;
         self.glyph_buffer = create_glyph_buffer(&self.device, self.buffer_capacity);
@@ -141,13 +145,25 @@ impl TextAtlas {
             .create_atlas_bind_group(&self.device, &self.glyph_buffer);
     }
 
+    /// Flush all pending glyph uploads to the GPU in a single write_buffer call.
+    /// Call this once per frame after all upload_glyph calls are complete.
+    pub(crate) fn flush_uploads(&mut self, queue: &Queue) {
+        let start = self.gpu_flush_cursor as usize;
+        let end = self.buffer_cursor as usize;
+        if start < end {
+            let byte_offset = start as u64 * 16;
+            let blob_bytes: &[u8] = bytemuck::cast_slice(&self.buffer_data[start..end]);
+            queue.write_buffer(&self.glyph_buffer, byte_offset, blob_bytes);
+            self.gpu_flush_cursor = self.buffer_cursor;
+        }
+    }
+
     /// Upload a glyph's GPU-prepared outline and band data into the textures.
     /// Returns the GlyphEntry for vertex packing.
     #[hotpath::measure]
     pub(crate) fn upload_glyph(
         &mut self,
         device: &Device,
-        queue: &Queue,
         gpu_outline: &GlyphOutline,
         band_count_x: u32,
         band_count_y: u32,
@@ -248,7 +264,7 @@ impl TextAtlas {
                 self.scratch_band_entries = band_entries;
                 return Err(crate::types::PrepareError::AtlasFull);
             }
-            self.grow_buffer(device, queue, new_end);
+            self.grow_buffer(device, new_end);
         }
 
         // Widen band entries from i16 to i32 and append to CPU copy
@@ -258,13 +274,6 @@ impl TextAtlas {
                 .map(|c| [c[0] as i32, c[1] as i32, c[2] as i32, c[3] as i32]),
         );
         self.buffer_data.extend_from_slice(&self.scratch_curve_texels);
-
-        // Upload blob to GPU
-        let byte_offset = glyph_offset as u64 * 16; // 16 bytes per vec4<i32>
-        let blob_bytes: &[u8] = bytemuck::cast_slice(
-            &self.buffer_data[glyph_offset as usize..new_end as usize],
-        );
-        queue.write_buffer(&self.glyph_buffer, byte_offset, blob_bytes);
 
         // Reclaim scratch
         self.scratch_band_entries = band_entries;
@@ -280,7 +289,7 @@ impl TextAtlas {
         })
     }
 
-    fn grow_buffer(&mut self, device: &Device, queue: &Queue, min_capacity: u32) {
+    fn grow_buffer(&mut self, device: &Device, min_capacity: u32) {
         let mut new_cap = self.buffer_capacity;
         while new_cap < min_capacity {
             new_cap *= 2;
@@ -298,14 +307,8 @@ impl TextAtlas {
         self.glyph_buffer = create_glyph_buffer(device, new_cap);
         self.buffer_capacity = new_cap;
 
-        // Re-upload existing data
-        if !self.buffer_data.is_empty() {
-            queue.write_buffer(
-                &self.glyph_buffer,
-                0,
-                bytemuck::cast_slice(&self.buffer_data),
-            );
-        }
+        // Mark all data as needing flush to the new buffer
+        self.gpu_flush_cursor = 0;
 
         self.bind_group = self
             .cache

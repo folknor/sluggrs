@@ -39,10 +39,9 @@ Baseline: 92 glyphs, ~753µs cold prepare on RTX 3080.
   type alias, and all references. Outline passed directly, only cloned for
   italic shear.
 
-- [ ] **Batch queue.write_buffer** — each cold glyph does a separate
-  `queue.write_buffer` (92 calls on cold frame). Accumulate blobs into
-  `buffer_data`, single flush at end of `prepare_with_depth()`. ~20-90µs
-  cold. Small effort.
+- [x] **Batch queue.write_buffer** — per-glyph `write_buffer` replaced with
+  single `flush_uploads()` at end of prepare. `grow_buffer` no longer
+  re-uploads; sets flush cursor to 0 so flush covers everything.
 
 - [x] **Eliminate band_i32 widening alloc** — replaced `collect()` into
   temporary `Vec<[i32; 4]>` with direct `extend()` from iterator into

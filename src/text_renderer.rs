@@ -159,6 +159,7 @@ impl TextRenderer {
             }
         }
 
+        atlas.flush_uploads(queue);
         self.upload_vertices(device, queue);
         Ok(())
     }
@@ -218,7 +219,7 @@ impl TextRenderer {
                     apply_italic_shear(&mut outline);
                 }
                 let band_count = band_count_for_curves(outline.curves.len());
-                atlas.upload_glyph(device, queue, &outline, band_count, band_count)?
+                atlas.upload_glyph(device, &outline, band_count, band_count)?
             }
             None => NON_VECTOR_GLYPH,
         };
