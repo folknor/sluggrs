@@ -96,16 +96,13 @@ Baseline: 92 glyphs, ~753µs cold prepare on RTX 3080.
 - [x] **FxHash for GlyphMap** — switched from SipHash to rustc-hash FxHash.
   2-3x faster hashing for 12-byte GlyphKey.
 
-- [ ] **Inline cache-hit path in prepare_with_depth** — `resolve_glyph(&mut
-  self)` borrows mutably on every glyph, even warm hits. Inline the HashMap
-  lookup, only call `resolve_glyph_miss()` on miss. Better branch
-  prediction, fewer function call overheads. ~5-10µs warm. **hb review**
+- [x] **Inline cache-hit path in prepare_with_depth** — HashMap lookup
+  inlined into the glyph loop, `resolve_glyph` renamed to
+  `resolve_glyph_miss` and only called on cache miss.
 
-- [ ] **Add sluggrs-only warm benchmark** — hotpath.rs recreates and reshapes
-  a fresh `cosmic_text::Buffer` every iteration, so `warm_prepare_avg_us`
-  includes shaping/layout cost that isn't sluggrs. Add a benchmark with a
-  pre-shaped persistent Buffer. Needed before optimizing warm path.
-  *Multiple reviewers.*
+- [x] **Add sluggrs-only warm benchmark** — email_bench pre-shapes all
+  Buffers once, reuses across 50 warm iterations. `warm_prepare_avg_us`
+  is pure sluggrs cost (96µs vs hotpath's 676µs which includes reshaping).
 
 ## GPU — Shader
 

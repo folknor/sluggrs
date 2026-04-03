@@ -106,8 +106,12 @@ impl TextRenderer {
 
             for run in layout_runs {
                 for glyph in run.glyphs {
-                    // --- Phase 1: Cache lookup or extraction ---
-                    let entry = self.resolve_glyph(device, font_system, atlas, glyph)?;
+                    // --- Phase 1: Cache lookup (inline) or extraction (cold) ---
+                    let key = GlyphKey::from_layout_glyph(glyph);
+                    let entry = match atlas.glyphs.get_and_mark_used(&key) {
+                        Some(e) => e,
+                        None => self.resolve_glyph_miss(device, font_system, atlas, glyph, key)?,
+                    };
 
                     if entry.is_non_vector() {
                         continue;
@@ -164,19 +168,16 @@ impl TextRenderer {
     }
 
     /// Resolve a glyph: return cached entry or extract + upload on miss.
-    fn resolve_glyph(
+    /// Cold path: called only on cache miss. Extracts outline, builds bands,
+    /// uploads glyph blob, and inserts into cache.
+    fn resolve_glyph_miss(
         &mut self,
         device: &Device,
         font_system: &mut cosmic_text::FontSystem,
         atlas: &mut TextAtlas,
         glyph: &cosmic_text::LayoutGlyph,
+        key: GlyphKey,
     ) -> Result<crate::glyph_cache::GlyphEntry, PrepareError> {
-        let key = GlyphKey::from_layout_glyph(glyph);
-
-        if let Some(e) = atlas.glyphs.get_and_mark_used(&key) {
-            return Ok(e);
-        }
-
         // Cache miss — look up font from cache or populate
         let cache_key = (glyph.font_id, glyph.font_weight);
         if !self.font_cache.contains_key(&cache_key) {
