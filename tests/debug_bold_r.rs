@@ -60,7 +60,7 @@ fn dump_bold_r_geometry() {
             offset: (i as u32) * 2,
         })
         .collect();
-    let band_data = build_bands(&outline, &curve_locs, band_count, band_count, Vec::new());
+    let band_data = build_bands(&outline, &curve_locs, band_count, band_count, Vec::new(), &mut sluggrs::band::BandScratch::default());
 
     // Dump which bands contain curves 2..5
     let hcount = band_data.band_count_y as usize;

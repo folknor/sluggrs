@@ -236,7 +236,7 @@ fn comma_line_only_glyph_regression() {
         })
         .collect();
 
-    let band_data = build_bands(&outline, &curve_locations, 1, 1, Vec::new());
+    let band_data = build_bands(&outline, &curve_locations, 1, 1, Vec::new(), &mut sluggrs::band::BandScratch::default());
 
     // Band data should be non-empty.
     assert!(

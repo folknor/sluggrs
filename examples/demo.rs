@@ -178,6 +178,7 @@ fn prepare_text(
             band_count,
             band_count,
             Vec::new(),
+            &mut sluggrs::band::BandScratch::default(),
         );
 
         let [min_x, min_y, max_x, max_y] = outline.bounds;

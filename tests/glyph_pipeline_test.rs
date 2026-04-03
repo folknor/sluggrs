@@ -396,6 +396,7 @@ fn band_data_sanity() {
         band_count_x,
         band_count_y,
         Vec::new(),
+        &mut sluggrs::band::BandScratch::default(),
     );
 
     // Band counts should match requested
@@ -469,7 +470,7 @@ fn band_data_single_band() {
         })
         .collect();
 
-    let band_data = build_bands(gpu_outline, &curve_locations, 1, 1, Vec::new());
+    let band_data = build_bands(gpu_outline, &curve_locations, 1, 1, Vec::new(), &mut sluggrs::band::BandScratch::default());
 
     assert_eq!(band_data.band_count_x, 1);
     assert_eq!(band_data.band_count_y, 1);

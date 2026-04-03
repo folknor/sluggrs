@@ -30,10 +30,9 @@ Baseline: 92 glyphs, ~753µs cold prepare on RTX 3080.
 
 ### High priority — all 6 reviewers
 
-- [ ] **BandScratch — reuse all Vecs in build_bands()** — 14 fresh
-  allocations per glyph (1288 for 92 glyphs). Add a `BandScratch` struct
-  on `TextAtlas` holding all temporary Vecs, clear and reuse each call.
-  ~100µs cold (10-15%). Medium effort.
+- [x] **BandScratch — reuse all Vecs in build_bands()** — 14 fresh
+  allocations per glyph replaced with a `BandScratch` struct on `TextAtlas`,
+  cleared and reused each call.
 
 - [x] **Remove prepare_outline() clone** — `GpuOutline` was a type alias for
   `GlyphOutline`, `prepare_outline` was a pointless clone. Removed function,

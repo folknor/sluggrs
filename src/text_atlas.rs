@@ -1,4 +1,4 @@
-use crate::band::CurveLocation;
+use crate::band::{BandScratch, CurveLocation};
 use crate::glyph_cache::{GlyphEntry, GlyphMap};
 use crate::gpu_cache::Cache;
 use crate::outline::GlyphOutline;
@@ -30,6 +30,7 @@ pub struct TextAtlas {
     scratch_curve_texels: Vec<[i32; 4]>,
     scratch_curve_locations: Vec<CurveLocation>,
     scratch_band_entries: Vec<i16>,
+    band_scratch: BandScratch,
 
     // Glyph cache
     pub(crate) glyphs: GlyphMap,
@@ -63,6 +64,7 @@ impl TextAtlas {
             scratch_curve_texels: Vec::new(),
             scratch_curve_locations: Vec::new(),
             scratch_band_entries: Vec::new(),
+            band_scratch: BandScratch::default(),
             glyphs: GlyphMap::new(),
         }
     }
@@ -206,6 +208,7 @@ impl TextAtlas {
             band_count_x,
             band_count_y,
             std::mem::take(&mut self.scratch_band_entries),
+            &mut self.band_scratch,
         );
         let bd_count_x = band_data.band_count_x;
         let bd_count_y = band_data.band_count_y;
