@@ -21,7 +21,6 @@ pub struct TextRenderer {
     pipeline: RenderPipeline,
     instances: Vec<GlyphInstance>,
     glyphs_to_render: u32,
-    units_per_em_cache: std::collections::HashMap<cosmic_text::fontdb::ID, f32>,
 }
 
 impl TextRenderer {
@@ -47,7 +46,6 @@ impl TextRenderer {
             pipeline,
             instances: Vec::new(),
             glyphs_to_render: 0,
-            units_per_em_cache: std::collections::HashMap::new(),
         }
     }
 
@@ -97,25 +95,14 @@ impl TextRenderer {
             for run in layout_runs {
                 for glyph in run.glyphs {
                     // --- Phase 1: Cache lookup or extraction ---
-                    let entry = self.resolve_glyph(device, queue, font_system, atlas, glyph)?;
+                    let entry = self.resolve_glyph(device, font_system, atlas, glyph)?;
 
                     if entry.is_non_vector() {
                         continue;
                     }
 
-                    // --- Phase 2: Font metrics ---
-                    let units_per_em = match resolve_units_per_em(
-                        &mut self.units_per_em_cache,
-                        font_system,
-                        glyph.font_id,
-                        glyph.font_weight,
-                    ) {
-                        Some(v) => v,
-                        None => continue,
-                    };
-
-                    // --- Phase 3: Screen position + culling ---
-                    let scale = glyph.font_size * text_area.scale / units_per_em;
+                    // --- Phase 2: Screen position + culling ---
+                    let scale = glyph.font_size * text_area.scale / entry.units_per_em;
                     let [min_x, min_y, max_x, max_y] = entry.bounds;
 
                     let glyph_x = text_area.left + (glyph.x + glyph.x_offset) * text_area.scale;
@@ -168,7 +155,6 @@ impl TextRenderer {
     fn resolve_glyph(
         &mut self,
         device: &Device,
-        queue: &Queue,
         font_system: &mut cosmic_text::FontSystem,
         atlas: &mut TextAtlas,
         glyph: &cosmic_text::LayoutGlyph,
@@ -194,18 +180,14 @@ impl TextRenderer {
             }
         };
 
-        // Populate units_per_em cache while we have the font ref
-        if let std::collections::hash_map::Entry::Vacant(e) =
-            self.units_per_em_cache.entry(glyph.font_id)
-            && let Ok(skrifa_font) = skrifa::FontRef::from_index(font.data(), face_index)
-        {
-            use skrifa::raw::TableProvider;
-            let v = skrifa_font
-                .head()
-                .map(|h| h.units_per_em() as f32)
-                .unwrap_or(1000.0);
-            e.insert(v);
-        }
+        // Get units_per_em from the font header
+        let units_per_em = skrifa::FontRef::from_index(font.data(), face_index)
+            .ok()
+            .and_then(|f| {
+                use skrifa::raw::TableProvider;
+                f.head().map(|h| h.units_per_em() as f32).ok()
+            })
+            .unwrap_or(1000.0);
 
         let wght_tag = skrifa::Tag::new(b"wght");
         let location = [VariationSetting::new(wght_tag, glyph.font_weight.0 as f32)];
@@ -219,7 +201,7 @@ impl TextRenderer {
                     apply_italic_shear(&mut outline);
                 }
                 let band_count = band_count_for_curves(outline.curves.len());
-                atlas.upload_glyph(device, &outline, band_count, band_count)?
+                atlas.upload_glyph(device, &outline, band_count, band_count, units_per_em)?
             }
             None => NON_VECTOR_GLYPH,
         };
@@ -307,32 +289,6 @@ impl TextRenderer {
 /// Matches harfbuzz: 1:1 up to a cap of 16 bands.
 fn band_count_for_curves(num_curves: usize) -> u32 {
     (num_curves as u32).clamp(1, 16)
-}
-
-/// Look up units_per_em for a font, populating the cache on miss.
-fn resolve_units_per_em(
-    cache: &mut std::collections::HashMap<cosmic_text::fontdb::ID, f32>,
-    font_system: &mut cosmic_text::FontSystem,
-    font_id: cosmic_text::fontdb::ID,
-    font_weight: cosmic_text::Weight,
-) -> Option<f32> {
-    if let Some(&v) = cache.get(&font_id) {
-        return Some(v);
-    }
-    let face_index = font_system
-        .db()
-        .face(font_id)
-        .map(|info| info.index)
-        .unwrap_or(0);
-    let font = font_system.get_font(font_id, font_weight)?;
-    let skrifa_font = skrifa::FontRef::from_index(font.data(), face_index).ok()?;
-    use skrifa::raw::TableProvider;
-    let v = skrifa_font
-        .head()
-        .map(|h| h.units_per_em() as f32)
-        .unwrap_or(1000.0);
-    cache.insert(font_id, v);
-    Some(v)
 }
 
 /// Convert a cosmic_text Color to normalized [f32; 4].

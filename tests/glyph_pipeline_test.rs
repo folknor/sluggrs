@@ -42,6 +42,7 @@ fn make_dummy_entry(band_offset: u32) -> GlyphEntry {
         4,
         [1.0, 2.0, 3.0, 4.0],
         [0.0, 0.0, 100.0, 100.0],
+        1000.0,
     )
 }
 

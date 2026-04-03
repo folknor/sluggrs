@@ -2131,6 +2131,7 @@ dependencies = [
  "hotpath",
  "log",
  "pollster",
+ "rustc-hash 2.1.1",
  "skrifa 0.40.0",
  "wgpu",
  "wgpu-profiler",

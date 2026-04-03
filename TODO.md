@@ -90,14 +90,12 @@ Baseline: 92 glyphs, ~753µs cold prepare on RTX 3080.
 
 ## CPU — Warm path
 
-- [ ] **Store units_per_em on GlyphEntry** — capture during atlas upload,
-  eliminates second `get_font()` call and skrifa re-parse on warm path.
-  Adds 4 bytes to GlyphEntry. ~30% of warm per-glyph cost (~1.5-3µs for
-  92 glyphs). Small effort. *4-5 reviewers.*
+- [x] **Store units_per_em on GlyphEntry** — captured during atlas upload,
+  eliminates `resolve_units_per_em()` and `units_per_em_cache` HashMap
+  entirely. Warm path reads directly from entry.
 
-- [ ] **FxHash for GlyphMap** — `GlyphKey` uses SipHash. For a 12-byte key,
-  FxHash/AHash is 2-3x faster. ~1.5-3µs/frame for 92 glyphs. Trivial
-  effort. *4-5 reviewers.*
+- [x] **FxHash for GlyphMap** — switched from SipHash to rustc-hash FxHash.
+  2-3x faster hashing for 12-byte GlyphKey.
 
 - [ ] **Inline cache-hit path in prepare_with_depth** — `resolve_glyph(&mut
   self)` borrows mutably on every glyph, even warm hits. Inline the HashMap

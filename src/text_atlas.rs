@@ -167,6 +167,7 @@ impl TextAtlas {
         gpu_outline: &GlyphOutline,
         band_count_x: u32,
         band_count_y: u32,
+        units_per_em: f32,
     ) -> Result<GlyphEntry, crate::types::PrepareError> {
         let num_curves = gpu_outline.curves.len() as u32;
 
@@ -285,6 +286,7 @@ impl TextAtlas {
             band_max_y: bd_count_y.saturating_sub(1),
             band_transform: bd_transform,
             bounds: gpu_outline.bounds,
+            units_per_em,
             last_used_epoch: 0,
         })
     }

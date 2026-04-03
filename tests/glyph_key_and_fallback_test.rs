@@ -148,7 +148,7 @@ fn non_vector_entry_does_not_shadow_real_entries() {
         cache_key_flags: cosmic_text::CacheKeyFlags::empty(),
     };
 
-    let real_entry = GlyphEntry::new(42, 3, 4, [1.0, 2.0, 3.0, 4.0], [0.0, 0.0, 100.0, 100.0]);
+    let real_entry = GlyphEntry::new(42, 3, 4, [1.0, 2.0, 3.0, 4.0], [0.0, 0.0, 100.0, 100.0], 1000.0);
 
     map.insert_and_mark_used(non_vector_key, NON_VECTOR_GLYPH);
     map.insert_and_mark_used(real_key, real_entry);

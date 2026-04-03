@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::hash::{Hash, Hasher};
 
 /// Cache key for a glyph's outline geometry.
@@ -48,6 +48,8 @@ pub struct GlyphEntry {
     pub band_transform: [f32; 4],
     /// Glyph bounding box in em-space.
     pub bounds: [f32; 4],
+    /// Font units per em — avoids per-glyph font re-parse on warm path.
+    pub units_per_em: f32,
     /// Frame epoch when this glyph was last used (for trim heuristic).
     pub(crate) last_used_epoch: u32,
 }
@@ -59,6 +61,7 @@ pub const NON_VECTOR_GLYPH: GlyphEntry = GlyphEntry {
     band_max_y: 0,
     band_transform: [0.0; 4],
     bounds: [0.0; 4],
+    units_per_em: 1000.0,
     last_used_epoch: 0,
 };
 
@@ -70,6 +73,7 @@ impl GlyphEntry {
         band_max_y: u32,
         band_transform: [f32; 4],
         bounds: [f32; 4],
+        units_per_em: f32,
     ) -> Self {
         Self {
             band_offset,
@@ -77,6 +81,7 @@ impl GlyphEntry {
             band_max_y,
             band_transform,
             bounds,
+            units_per_em,
             last_used_epoch: 0,
         }
     }
@@ -89,7 +94,7 @@ impl GlyphEntry {
 /// The glyph cache maps GlyphKey → GlyphEntry, with per-frame usage tracking
 /// via epoch counter (no HashSet).
 pub struct GlyphMap {
-    map: HashMap<GlyphKey, GlyphEntry>,
+    map: FxHashMap<GlyphKey, GlyphEntry>,
     current_epoch: u32,
     frame_used: usize,
 }
@@ -97,7 +102,7 @@ pub struct GlyphMap {
 impl Default for GlyphMap {
     fn default() -> Self {
         Self {
-            map: HashMap::new(),
+            map: FxHashMap::default(),
             current_epoch: 1,
             frame_used: 0,
         }

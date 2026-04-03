@@ -16,6 +16,7 @@ skrifa = "0.40"
 bytemuck = { version = "1", features = ["derive"] }
 log = "0.4"
 hotpath = "0.14"
+rustc-hash = "2"
 
 [dev-dependencies]
 winit = "0.30"
