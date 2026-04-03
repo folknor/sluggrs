@@ -1,235 +1,282 @@
 # TODO
 
-## Bugs found by review (2026-03-27)
+## Bugs
 
-- [x] `prepare_with_depth` does too much — text_renderer.rs:57 handles font
-  lookup, TTC face resolution, variation setup, outline extraction, fake
-  italic, cache insertion, non-vector classification, instance packing, and
-  vertex upload. Renderer and atlas are tightly coupled through pub(crate)
-  internals.
+- [ ] **Emoji classification needs explicit API** — non-vector glyphs are a
+  sentinel `GlyphEntry`, skipped silently during prepare(). For two-pass
+  routing (sluggrs + cryoglyph fallback), classification must be a separate
+  step. Users see missing characters with no indication anything is wrong.
+  **arch review**
 
-- [x] Dead API surface — `RenderError` variants `RemovedFromAtlas` and
-  `ScreenResolutionChanged` are public but `render()` always returns
-  `Ok(())`. `SwashCache` and `CommandEncoder` are in the compatibility
-  signature but unused.
-
-- [ ] Emoji classification should be an explicit API — non-vector glyphs are
-  currently a sentinel `GlyphEntry` in glyph_cache.rs:53, skipped as a side
-  effect of prepare(). For clean two-pass routing (sluggrs + cryoglyph
-  fallback), classification needs to be a separate step, not incidental to
-  prepare(). **arch review**: the silent drop with no error/placeholder/signal
-  to iced violates the integration contract — users see missing characters
-  in otherwise normal text with no indication anything is wrong.
-
-- [ ] Signed/unsigned confusion in shader texture addressing — the shader
-  casts `vec2<u32>` to `vec2<i32>` for textureLoad coordinates, and uses
+- [ ] **Signed/unsigned confusion in shader texture addressing** — shader
+  casts `vec2<u32>` to `vec2<i32>` for textureLoad coordinates, uses
   arithmetic right shift on signed `i32` for row calculation. If band_loc.x
-  goes negative (from offset addition wrapping or a bug), the arithmetic
-  shift propagates the sign bit, corrupting row calculation with a silent
-  wrong-texel read. Works today because numbers are small, but no safety
-  margin or validation. **wgpu review**
+  wraps negative, sign bit propagates and corrupts row calculation silently.
+  Works today because numbers are small. **wgpu review**
 
-## Bugs found by deep review (2026-03-27)
-
-- [ ] trim() can invalidate already-prepared draw data — if
+- [ ] **trim() can invalidate already-prepared draw data** — if
   prepare→trim(reset)→render happens in sequence, render() draws from
-  the old instance buffer against the new (empty) atlas textures.
-  RemovedFromAtlas error variant exists but is never raised due to no
-  generation tracking. **bugs review**
+  the old instance buffer against new (empty) atlas. RemovedFromAtlas error
+  variant exists but is never raised — no generation tracking. **bugs review**
 
-- [ ] Scroll offset not accounted for in CPU-side culling —
-  text_renderer.rs clips glyphs against screen bounds without scroll_offset,
-  but shader applies scroll_offset to screen position. Dormant while
-  scroll_offset has no public setter on Viewport, but will cause
-  first/last visible glyphs to flicker once scroll API is exposed.
-  **bugs review**
+- [ ] **Scroll offset not in CPU-side culling** — glyphs clipped against
+  screen bounds without scroll_offset, but shader applies it. Dormant while
+  scroll_offset has no public setter on Viewport, but will cause first/last
+  visible glyphs to flicker once scroll API is exposed. **bugs review**
 
-- [x] Curve texel pair row-straddling invariant undocumented — shader reads
-  p3 at curve_loc.x + 1, same row. If curve_loc.x were 4095, this is OOB.
-  Currently safe because curve_cursor is always even and texture width is
-  even, so x is never 4095. Invariant is implicit. Add debug assertion
-  or document. **gpu, fonts, wgpu review**
+## CPU — Cold path
 
-## Optimization — CPU allocation reduction
+Baseline: 92 glyphs, ~753µs cold prepare on RTX 3080.
 
-Baseline: 92 glyphs, cold_prepare 1.9ms, warm_prepare 0.7ms, 9.7 MB total alloc.
+### High priority — all 6 reviewers
 
-### Done
+- [ ] **BandScratch — reuse all Vecs in build_bands()** — 14 fresh
+  allocations per glyph (1288 for 92 glyphs). Add a `BandScratch` struct
+  on `TextAtlas` holding all temporary Vecs, clear and reuse each call.
+  ~100µs cold (10-15%). Medium effort.
 
-- [x] Eliminate band_texels + add atlas scratch buffers — scratch_curve_texels and
-  scratch_curve_locations on TextAtlas, band_texels eliminated via bytemuck::cast_slice.
-  Result: upload_glyph alloc -37.5%, timing -23.8%.
+- [ ] **Remove prepare_outline() clone** — `GpuOutline` is a type alias for
+  `GlyphOutline`, so `prepare_outline` is a pointless `Vec::clone()`. Take
+  `&GlyphOutline` through to upload, only clone for italic shear (~1% of
+  glyphs). ~30-80µs cold (5-10%). Trivial effort.
 
-- [x] Persist units_per_em_cache on TextRenderer — HashMap moved from local to field.
-  Result: prepare_with_depth alloc -33.3%.
+- [ ] **Batch queue.write_buffer** — each cold glyph does a separate
+  `queue.write_buffer` (92 calls on cold frame). Accumulate blobs into
+  `buffer_data`, single flush at end of `prepare_with_depth()`. ~20-90µs
+  cold. Small effort.
 
-- [x] Cheap capacity fixes in build_bands — inner vectors pre-sized with heuristic,
-  offset vectors and entries with exact capacity. Result: build_bands alloc -43.3%.
+- [ ] **Eliminate band_i32 widening alloc** — `upload_glyph` allocates
+  `Vec<[i32; 4]>` per glyph to widen i16→i32. Widen directly into
+  `buffer_data` or use a scratch Vec. ~10-30µs cold. Trivial effort.
 
-- [x] Pre-compute band sort keys + sort_unstable_by — avoids redundant max() in
-  comparators, avoids sort temp allocation. Minimal timing impact (sort is cheap
-  at 3-8 elements/band), but cleaner code.
+### Strong consensus — 4-5 reviewers
 
-Cumulative: 9.7 MB → 9.1 MB total alloc (-6.2%).
+- [ ] **Cache FontRef per font_id** — `extract_outline` re-parses
+  `FontRef::from_index` (font table directory) per cache miss. Cache per
+  `(font_id, face_index)` on `TextRenderer`. ~50-150µs cold (3-5%).
+  Small-medium effort.
 
-The remaining 8.5 MB is dominated by cosmic_text shaping, wgpu buffer management,
-and font system internals — areas outside our control. Further micro-allocation
-cleanup in upload_glyph/build_bands/prepare_with_depth would be diminishing returns.
+- [ ] **Pre-compute curve_data_offset** — curve refs written with 0-based
+  offsets then fixed up in a separate pass. Pre-compute from band counts
+  (deterministic from Phase 1), write final offsets directly. Eliminates
+  fixup loop. ~10µs cold + correctness. Small effort.
 
-build_bands improving less in time (-18.5%) than allocation (-43.3%) confirms it is
-partly compute/sort bound (per-band sorting in band.rs), not just allocator bound.
+### Additional cold-path items
 
-### Cold-frame waste (found by deep perf review)
+- [ ] **Split prepare_with_depth into two passes** — currently miss
+  processing happens inline during glyph iteration. Pass 1: collect visible
+  glyphs and distinct misses. Pass 2: build missing blobs (enables future
+  parallelism). Pass 3: fast instance packing. Enables batching and cleaner
+  architecture. Medium effort. *Multiple reviewers independently.*
 
-- [ ] Per-glyph write_texture calls — each cache-miss glyph produces 2+
-  write_texture calls. Batching curve uploads for all glyphs into a single
-  write would reduce driver overhead. At 92 glyphs = 184+ wgpu command
-  submissions on cold frame. **perf review**
+- [ ] **Cache per-curve band metadata** — `build_bands` iterates all curves
+  twice (counting then assignment), recomputing min/max/band-range both
+  times. Cache `(hband_min, hband_max, vband_min, vband_max,
+  is_horizontal, is_vertical)` per curve in first pass. Avoids redundant
+  float math. Small effort. **hb review**
 
-- [ ] CPU-side texture mirrors only clear() on reset, not shrink — after a
-  large working-set spike, curve_data and band_data keep their capacity
-  indefinitely even though GPU textures are recreated at 1 row. Use
-  `shrink_to_fit()` or `= Vec::new()` in reset_atlas. **perf review**
+- [ ] **f32 cu2qu instead of f64** — cu2qu inherited f64 from harfbuzz. At
+  0.5 font-unit tolerance, f32 has sufficient precision. Halves register
+  pressure, improves vectorization. Also consider converting recursion to
+  iteration with explicit stack. 5-10% cold for CFF fonts. Medium effort.
 
-### Parked — pursue only if profiling points here again
+- [ ] **Atlas initial capacity** — starts at 8192 elements, `grow_buffer()`
+  doubles with full re-upload. Start at 1-4MB for known workloads, or
+  predict final size from glyph count and pre-allocate once. Eliminates
+  growth-copy stalls on first cold frame. Small effort.
 
-- [ ] Color multiplication constant — replace `/ 255.0` with `* INV_255`. Cleanup
-  win, not priority perf. Same for pre-computing default_color per text area.
+- [ ] **Shrink CPU buffer mirrors on reset** — `buffer_data` keeps capacity
+  after `reset_atlas()`. After a large working-set spike, CPU memory stays
+  high even though GPU buffer is recreated. Use `shrink_to_fit()` or
+  `= Vec::new()` in reset. **perf review**
 
-## Optimization — GPU shader
+## CPU — Warm path
+
+- [ ] **Store units_per_em on GlyphEntry** — capture during atlas upload,
+  eliminates second `get_font()` call and skrifa re-parse on warm path.
+  Adds 4 bytes to GlyphEntry. ~30% of warm per-glyph cost (~1.5-3µs for
+  92 glyphs). Small effort. *4-5 reviewers.*
+
+- [ ] **FxHash for GlyphMap** — `GlyphKey` uses SipHash. For a 12-byte key,
+  FxHash/AHash is 2-3x faster. ~1.5-3µs/frame for 92 glyphs. Trivial
+  effort. *4-5 reviewers.*
+
+- [ ] **Inline cache-hit path in prepare_with_depth** — `resolve_glyph(&mut
+  self)` borrows mutably on every glyph, even warm hits. Inline the HashMap
+  lookup, only call `resolve_glyph_miss()` on miss. Better branch
+  prediction, fewer function call overheads. ~5-10µs warm. **hb review**
+
+- [ ] **Add sluggrs-only warm benchmark** — hotpath.rs recreates and reshapes
+  a fresh `cosmic_text::Buffer` every iteration, so `warm_prepare_avg_us`
+  includes shaping/layout cost that isn't sluggrs. Add a benchmark with a
+  pre-shaped persistent Buffer. Needed before optimizing warm path.
+  *Multiple reviewers.*
+
+## GPU — Shader
+
+Baseline: 11µs headless / 71µs windowed (RTX 3080, 92 glyphs). Windowed
+dominated by compositor/surface, not text math.
 
 ### Profiling infrastructure (do first)
 
-- [ ] RenderDoc inspection — capture a frame via Vulkan backend
+- [ ] **RenderDoc inspection** — capture a frame via Vulkan backend
   (`WGPU_BACKEND=vulkan`), verify early-exit is triggering, check per-pixel
-  loop iteration counts. The `renderdoc` crate provides programmatic capture.
+  loop iteration counts. The `renderdoc` crate provides programmatic
+  capture.
 
-### Shader correctness / sync with reference
+### Optimization targets
 
-- [ ] Diff against Slug reference — our shaders were originally translated from
-  the Slug HLSL reference (github.com/EricLengyel/Slug, MIT). Check for any
-  upstream changes since our translation. Key areas:
-  - CalcRootCode: reference uses bitwise sign extraction (`asuint(y) >> 31`)
-    which reduces to a single LOP3 on NVIDIA. Ours uses `select()`. Verify
-    naga produces equivalent SPIR-V, or switch to bitcast if it doesn't.
-  - Band split (dual-sort) was removed from reference — we never had it, good.
-  - Supersampling was removed — we never had it, good.
+- [ ] **Pack i16 pairs into i32** — halve storage buffer bandwidth. Current
+  `array<vec4<i32>>` is 16 bytes/texel. Pack two i16 lanes per u32 with
+  shader unpack helpers. 10-20% GPU. Medium effort. *Majority consensus.*
+
+- [ ] **Analytical AA / reduce 5x MSAA** — below 16ppem, shader runs
+  `render_single` 5 times (full curve evaluation each). Biggest GPU cost
+  at small text sizes. Evaluate curve intersection once and compute
+  coverage analytically, or reduce to 2 samples. Up to 3-4x GPU at small
+  ppem. Large effort.
+
+- [ ] **Move em_rect/band_transform into blob header** — shrink
+  GlyphInstance from 96→64 bytes, reduce vertex bandwidth. Shader decodes
+  from blob header instead of per-instance vertex attributes. Medium effort.
+  *Majority consensus.*
+
+- [ ] **Precompute a,b from unshifted coords** — compute `a` and `b`
+  outside solver from unshifted `q12`/`q3`, pass as arguments. Matches
+  harfbuzz at `hb-gpu-fragment.wgsl:205-206`. Preserves exact zeros for
+  `== 0.0` branch, saves 2 vec2 subtractions per curve. **hb review**
+
+- [ ] **Eliminate redundant decode_offset per curve read** — every curve
+  does `decode_offset` (integer add of 32768) per fragment per ray
+  direction. Store curve refs as already-decoded offsets, or pre-add
+  `glyph_base` on CPU for absolute addressing. 16 adds/fragment saved.
+  Buffer is append-only so absolute addressing is safe. **perf review**
+
+- [ ] **Zero dilation for large text (48ppem+)** — coverage at exact glyph
+  boundary is already 0.0 or 1.0 at large sizes. Set dilation to 0 in
+  vertex shader, reducing fragment count ~4-8%. **hb review**
+
+- [ ] Texture fetch audit — verify no redundant loads in curve inner loop
+- [ ] Branch divergence assessment — `abs(a.y) < 0.25` warp divergence
+  between linear and quadratic paths. Confirm with Nsight/RGP if available.
+- [ ] Band bounding-box pre-check — skip band loop if y-range doesn't
+  intersect pixel (within half a pixel)
+
+### Correctness / reference sync
+
+- [ ] **Diff against Slug reference** — check for upstream changes since
+  translation. Key areas:
+  - CalcRootCode: reference uses bitwise sign extraction (`asuint(y) >> 31`,
+    single LOP3 on NVIDIA). Ours uses `select()`. Verify naga SPIR-V
+    equivalence or switch to bitcast.
   - Dilation: reference uses dynamic vertex-shader dilation via inverse
-    Jacobian. We use fixed 1px expansion — compare quality and performance.
-
-### Shader optimization targets
-
-- [ ] Texture fetch audit — each curve costs 2 textureLoad (p12, p3) + 1 for
-  band ref. With ~8 curves/band, that's ~24 fetches per ray direction. Our
-  2-texels-per-curve layout is already optimal for RGBA32Float. Verify we're
-  not doing redundant loads.
-
-- [ ] Branch divergence assessment — the `if abs(a.y) < 0.25` branch in
-  solve_horiz_poly causes warp divergence between linear and quadratic paths.
-  Threshold lowered from 0.5 to 0.25 (see bugs section), reducing the
-  number of genuine quadratics entering the linear path, but some shallow
-  CFF-derived curves may still qualify. Confirm divergence rate with
-  Nsight or RGP if available.
-
-- [ ] Band bounding-box pre-check — if a band's y-range doesn't intersect the
-  current pixel (within half a pixel), skip the entire band loop. Could
-  eliminate the band header textureLoad for edge pixels.
+    Jacobian. We use fixed 0.5px — compare quality and performance.
 
 ### Not worth pursuing
 
-- Band split (dual-sort) — Lengyel removed it; hurts small text more than
-  it helps large text. We never had it.
-- Supersampling — removed from reference; dilation handles it.
-- Compute shader rewrite — osor.io's wave-level approach is impressive but
-  requires fundamentally different architecture (compute dispatch, tile-based
-  curve caching). Not compatible with our render-pass integration.
+- Band split (dual-sort) — Lengyel removed it; hurts small text
+- Supersampling — removed from reference; dilation handles it
+- Compute shader rewrite — fundamentally different architecture, not
+  compatible with render-pass integration
 
-## Divergences from harfbuzz Slug implementation (found by hb review)
+## Architecture
 
-### Done
+- [ ] **GlyphInstance vertex bandwidth** — struct is 96 bytes with 8 bytes
+  of padding (`_pad: [f32; 2]`). Pack depth into `glyph_data.w` and ppem
+  into color.w (or similar) to shrink to 80 or 64 bytes. See also blob
+  header approach under GPU targets. **perf, arch review**
 
-- [x] Exact geometry for lines — p2=p1 encoding, removed CPU perturbation **hb review**
-- [x] Implicit p1 contour sharing — -45.6% curve texels **hb review**
-- [x] Axis-aligned curve filtering — skip horiz from hbands, vert from vbands **hb review**
-- [x] Dual sorted bands with split point — direction-aware early exit **hb review**
-- [x] RGBA16I texture format (Stages A+B) — halved texture memory **hb review**
-- [x] Half-pixel dilation — reduced from 1px to 0.5px **hb review**
-- [x] Zero-length curve rejection — filter p1==p3 in outline extraction **hb review**
-- [x] Shader MSAA — 4x supersampling below 16ppem, toggled with E key **hb review**
-- [x] Stem darkening — ppem-aware gamma, no-op above 48ppem **hb review**
-- [x] GpuOutline → type alias — prepare_outline is now a clone **hb review**
-- [x] Cu2qu — tangent-line intersection, f64, tolerance 0.5 font units **hb review**
-- [x] i16 overflow guard — reject glyphs exceeding quantization range **hb review**
-- [x] Band count policy — 1:1 up to cap of 16 (matching harfbuzz) **hb review**
-- [x] Unified storage buffer (Stage C) — single array<vec4<i32>>, -352 lines **hb review**
+- [ ] **Scroll offset has no public API** — Viewport::update only accepts
+  Resolution, scroll_offset in Params is always [0,0]. Shader reads it but
+  unreachable from library API. **wgpu, arch review**
 
-### Remaining
+- [ ] **ColorMode has no effect** — stored with `#[allow(dead_code)]`, never
+  read. Shader always does same blend. May produce wrong results in
+  linear-RGB framebuffers with sRGB colors. **arch review**
 
-- [ ] Jacobian-based vertex dilation — full MVP-aware half-pixel expansion.
-  Only needed if we support rotation/non-uniform scaling.
-  Harfbuzz: `hb-gpu-vertex.wgsl:49-81`. **hb review**
+- [ ] **TextRenderer/TextAtlas coupling** — renderer reaches into atlas via
+  pub(crate). Policy, cache state, and upload orchestration spread across
+  both. Any change to classification, eviction, or fallback routing cuts
+  across both. **arch review**
 
-## Future / long-term
+- [ ] **API doesn't encode TextRenderer↔TextAtlas lifetime** — render()
+  accepts any &TextAtlas but pipeline was baked from a specific atlas.
+  Mispairing is type-correct but wrong rendering. **arch review**
 
-- [ ] Unbounded retained memory — curve_data and band_data in TextAtlas
-  (text_atlas.rs:39-40) grow with each uploaded glyph and are never compacted.
-  This is intentional: they exist so texture growth can re-upload prior contents.
-  Not a leak (memory is reachable and purposeful), but unbounded retained memory
-  until eviction/compaction exists. Fix options: GPU texture-to-texture copy on
-  growth, or LRU eviction that compacts the staging buffers.
-
-- [ ] Store units_per_em on GlyphEntry — capture during atlas upload, eliminates the
-  second get_font() call and skrifa re-parse entirely. Adds 4 bytes to GlyphEntry.
-
-- [ ] Texture growth batching — if many glyphs are added in frame 1, the texture
-  may grow multiple times sequentially. Each growth does a full re-upload of all
-  accumulated texture data, so multiple growths in a single prepare() call
-  produce O(n) full re-uploads. On a frame that loads a new script (CJK, Arabic)
-  with 200+ new glyphs across growth boundaries, this is an unbounded stall.
-  Predict final size from glyph count and pre-allocate once. **arch review**
-
-- [ ] Band count heuristic tuning — currently 4/8/12 bands based on curve count
-  thresholds (10/30). Profile whether different thresholds or continuous scaling
-  improves shader early-exit rates.
-
-## Architecture (found by deep review)
-
-- [ ] GlyphInstance 84-byte stride not 16-byte aligned — depth field makes
-  struct 84 bytes (5×16 + 4). Some GPU architectures fetch vertex data in
-  16-byte chunks, wasting 12 bytes per instance on bus. Pad to 96 bytes
-  (add `_pad: [f32; 3]`) or pack depth into glyph_data.w. Verify
-  84-byte stride works on all backends first. **perf, arch review**
-
-- [ ] Scroll offset has no public API — Viewport::update only accepts
-  Resolution, scroll_offset in Params is always [0,0]. The shader reads
-  it but it's unreachable from the library API. Need
-  `Viewport::set_scroll_offset()` or extend `update()`. **wgpu, arch review**
-
-- [ ] ColorMode has no effect — TextAtlas::color_mode stored with
-  `#[allow(dead_code)]` but never read. Shader always does same blend.
-  May produce wrong results in linear-RGB framebuffers with sRGB colors
-  (the Web mode). **arch review**
-
-- [ ] TextRenderer/TextAtlas coupling — renderer reaches into atlas
-  internals via pub(crate). Policy, cache state, and upload orchestration
-  spread across both types. Any change to classification, eviction, or
-  fallback routing cuts across both modules. **arch review**
-
-- [ ] API doesn't encode TextRenderer↔TextAtlas lifetime relationship —
-  render() accepts any &TextAtlas but the pipeline was baked from a
-  specific atlas at construction. Mispairing is type-correct but
-  produces wrong rendering. **arch review**
-
-- [ ] CommandEncoder parameter is unnecessarily restrictive —
-  prepare_with_depth takes `&mut CommandEncoder` but never uses it.
-  The `&mut` borrow prevents caller from using encoder during prepare.
+- [ ] **CommandEncoder param unnecessarily restrictive** —
+  prepare_with_depth takes `&mut CommandEncoder` but never uses it. The
+  `&mut` borrow prevents caller from using encoder during prepare.
   Cryoglyph compatibility constraint. **arch review**
+
+## Future / Long-term
+
+- [ ] **Parallel cold glyph processing (rayon)** — miss processing is
+  embarrassingly parallel per distinct glyph. Collect missing keys, process
+  in parallel into blobs, commit serially. 2-4x cold speedup. Depends on
+  two-pass split. Medium effort.
+
+- [ ] **Second-level blob cache** — cache encoded glyph blobs independent of
+  atlas residency. Atlas reset drops GPU residency only, re-upload is
+  memcpy. Huge for mixed/trim workloads. Large effort.
+
+- [ ] **Retained prepared-text cache** — skip instance rebuild for unchanged
+  text. Cache per-text-area instances keyed by buffer generation, viewport,
+  transform. Biggest possible warm-path win. Large effort.
+
+- [ ] **Unbounded retained memory** — buffer_data grows with each uploaded
+  glyph, never compacted. Intentional (needed for growth re-upload). Fix:
+  GPU buffer-to-buffer copy on growth, or LRU eviction with compaction.
+
+- [ ] **Texture growth batching** — multiple growths in one prepare() produce
+  O(n) full re-uploads. Predict final size from glyph count and
+  pre-allocate once. **arch review**
+
+### Harfbuzz divergences remaining
+
+- [ ] **Jacobian-based vertex dilation** — full MVP-aware half-pixel
+  expansion. Only needed for rotation/non-uniform scaling. Harfbuzz:
+  `hb-gpu-vertex.wgsl:49-81`. **hb review**
 
 ## Polish
 
-- [ ] naga_oil for shader dedup — share fragment shader code between
-  simple_shader.wgsl and shader.wgsl via `#import`. Eliminates copy-paste
-  divergence risk. Alternative: WESL (wesl-rs) is newer but less mature.
-- [ ] Band texture width configurable rather than hardcoded 4096
+- [ ] naga_oil for shader dedup — `#import` to share code between
+  simple_shader.wgsl and shader.wgsl. Eliminates copy-paste divergence.
 - [ ] ColorMode handling (currently stubbed — Slug renders in linear space)
-- [ ] Texture growth under heavy load — stress test with CJK, mixed fonts
+- [ ] Texture growth stress test with CJK, mixed fonts
+
+### Parked
+
+- [ ] Color multiplication — `/ 255.0` → `* INV_255`. Cleanup, not priority.
+
+## Done
+
+### Bugs fixed
+- [x] prepare_with_depth decomposed (was doing too much)
+- [x] Dead API surface removed — unused RenderError variants, SwashCache, CommandEncoder
+- [x] Curve texel pair row-straddling invariant documented
+
+### CPU allocation reduction
+
+Baseline: 9.7 MB → 9.1 MB total alloc (-6.2%). Remaining ~8.5 MB dominated
+by cosmic_text shaping, wgpu buffer management, and font internals.
+
+- [x] Eliminate band_texels + add atlas scratch buffers (-37.5% upload_glyph alloc, -23.8% timing)
+- [x] Persist units_per_em_cache on TextRenderer (-33.3% prepare_with_depth alloc)
+- [x] Cheap capacity fixes in build_bands (-43.3% build_bands alloc)
+- [x] Pre-compute band sort keys + sort_unstable_by (minimal timing, cleaner code)
+
+### Harfbuzz convergence (14 items)
+- [x] Exact geometry for lines — p2=p1 encoding
+- [x] Implicit p1 contour sharing — -45.6% curve texels
+- [x] Axis-aligned curve filtering — skip horiz from hbands, vert from vbands
+- [x] Dual sorted bands with split point — direction-aware early exit
+- [x] RGBA16I texture format (Stages A+B) — halved texture memory
+- [x] Half-pixel dilation — reduced from 1px to 0.5px
+- [x] Zero-length curve rejection — filter p1==p3 in outline extraction
+- [x] Shader MSAA — 4x supersampling below 16ppem
+- [x] Stem darkening — ppem-aware gamma, no-op above 48ppem
+- [x] GpuOutline → type alias
+- [x] Cu2qu — tangent-line intersection, f64, tolerance 0.5 font units
+- [x] i16 overflow guard — reject glyphs exceeding quantization range
+- [x] Band count policy — 1:1 up to cap of 16 (matching harfbuzz)
+- [x] Unified storage buffer (Stage C) — single array<vec4<i32>>, -352 lines
