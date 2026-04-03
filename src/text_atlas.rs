@@ -232,19 +232,9 @@ impl TextAtlas {
         let bd_transform = band_data.band_transform;
         let band_element_count = (band_data.entries.len() / 4) as u32;
 
-        // Fixup curve ref offsets: add band_element_count so they point into
-        // the curve region of the blob (which comes after band data).
-        // Band entries layout: first num_headers * 4 i16 values are headers,
-        // rest are curve refs (4 i16 values each, first is the offset).
-        let num_headers = (bd_count_x + bd_count_y) as usize;
-        let mut band_entries = band_data.entries;
-        for ref_idx in num_headers..(band_element_count as usize) {
-            let i = ref_idx * 4; // offset i16 is at position 0 of each texel
-            // Decode biased offset, add band size, re-encode
-            let raw_offset = band_entries[i] as i32 + 32768;
-            let adjusted = raw_offset as u32 + band_element_count;
-            band_entries[i] = (adjusted as i32 - 32768) as i16;
-        }
+        // Curve ref offsets are already final — build_bands pre-adds
+        // band_element_count so refs point into the curve region.
+        let band_entries = band_data.entries;
 
         // Assemble glyph blob: [band_data] [curve_data]
         let blob_size = band_element_count + curve_element_count;

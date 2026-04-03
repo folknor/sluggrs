@@ -308,9 +308,11 @@ pub fn build_bands(
     // Header: (count, desc_offset, asc_offset, split_bits)
     let num_headers = band_count_y + band_count_x;
     let curve_lists_start = num_headers;
+    // Pre-compute band_element_count so curve refs can be written with final offsets
+    let band_element_count = num_headers + (total_refs * 2) as u32;
 
     scratch_entries.clear();
-    scratch_entries.reserve((num_headers as usize + total_refs * 2) * 4);
+    scratch_entries.reserve((band_element_count as usize) * 4);
 
     // Write horizontal band headers (biased offsets, quantized split)
     let mut texel_offset = curve_lists_start;
@@ -339,14 +341,14 @@ pub fn build_bands(
         let end = start + scratch.hband_counts[b] as usize;
         for &curve_idx in &scratch.desc_indices[start..end] {
             let loc = curve_locations[curve_idx];
-            scratch_entries.push(encode_offset(loc.offset));
+            scratch_entries.push(encode_offset(loc.offset + band_element_count));
             scratch_entries.push(0);
             scratch_entries.push(0);
             scratch_entries.push(0);
         }
         for &curve_idx in &scratch.asc_indices[start..end] {
             let loc = curve_locations[curve_idx];
-            scratch_entries.push(encode_offset(loc.offset));
+            scratch_entries.push(encode_offset(loc.offset + band_element_count));
             scratch_entries.push(0);
             scratch_entries.push(0);
             scratch_entries.push(0);
@@ -357,14 +359,14 @@ pub fn build_bands(
         let end = start + scratch.vband_counts[b] as usize;
         for &curve_idx in &scratch.desc_indices[start..end] {
             let loc = curve_locations[curve_idx];
-            scratch_entries.push(encode_offset(loc.offset));
+            scratch_entries.push(encode_offset(loc.offset + band_element_count));
             scratch_entries.push(0);
             scratch_entries.push(0);
             scratch_entries.push(0);
         }
         for &curve_idx in &scratch.asc_indices[start..end] {
             let loc = curve_locations[curve_idx];
-            scratch_entries.push(encode_offset(loc.offset));
+            scratch_entries.push(encode_offset(loc.offset + band_element_count));
             scratch_entries.push(0);
             scratch_entries.push(0);
             scratch_entries.push(0);

@@ -54,10 +54,9 @@ Baseline: 92 glyphs, ~753µs cold prepare on RTX 3080.
   Eliminates db().face(), get_font() lock, and FontRef re-parse on
   repeated misses from the same font.
 
-- [ ] **Pre-compute curve_data_offset** — curve refs written with 0-based
-  offsets then fixed up in a separate pass. Pre-compute from band counts
-  (deterministic from Phase 1), write final offsets directly. Eliminates
-  fixup loop. ~10µs cold + correctness. Small effort.
+- [x] **Pre-compute curve_data_offset** — `build_bands` now computes
+  `band_element_count` internally and adds it to curve ref offsets when
+  writing them. Eliminates the fixup loop in `upload_glyph`.
 
 ### Additional cold-path items
 
