@@ -36,7 +36,7 @@ name = "gpu-bench"
 path = "examples/gpu_bench.rs"
 
 [[example]]
-name = "email-bench"
+name = "email_bench"
 path = "examples/email_bench.rs"
 
 [lints.clippy]

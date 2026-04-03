@@ -47,6 +47,8 @@ brokkr hotpath                                # timing profile (1 run, stored in
 brokkr hotpath -n 3                           # 3 runs
 brokkr hotpath --alloc                        # allocation profile
 brokkr hotpath --alloc -n 5                   # 5 alloc runs
+brokkr hotpath --target email                 # email-client-scale benchmark (8k+ glyphs)
+brokkr hotpath --target email --alloc         # email benchmark with allocation tracking
 brokkr test [snapshot] [--all]                # run visual snapshot tests
 brokkr list                                   # list snapshots and approval state
 brokkr approve <snapshot>                     # record current output as accepted baseline
