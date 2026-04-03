@@ -49,10 +49,10 @@ Baseline: 92 glyphs, ~753µs cold prepare on RTX 3080.
 
 ### Strong consensus — 4-5 reviewers
 
-- [ ] **Cache FontRef per font_id** — `extract_outline` re-parses
-  `FontRef::from_index` (font table directory) per cache miss. Cache per
-  `(font_id, face_index)` on `TextRenderer`. ~50-150µs cold (3-5%).
-  Small-medium effort.
+- [x] **Cache FontRef per font_id** — `CachedFont` struct holds
+  `Arc<Font>`, face_index, and units_per_em per `(font_id, weight)`.
+  Eliminates db().face(), get_font() lock, and FontRef re-parse on
+  repeated misses from the same font.
 
 - [ ] **Pre-compute curve_data_offset** — curve refs written with 0-based
   offsets then fixed up in a separate pass. Pre-compute from band counts

@@ -6,12 +6,21 @@ use crate::text_atlas::TextAtlas;
 use crate::types::{PrepareError, RenderError, TextArea};
 use crate::viewport::Viewport;
 
+use rustc_hash::FxHashMap;
 use skrifa::setting::VariationSetting;
 
+use std::sync::Arc;
 use wgpu::{
     Buffer, BufferDescriptor, BufferUsages, COPY_BUFFER_ALIGNMENT, CommandEncoder,
     DepthStencilState, Device, MultisampleState, Queue, RenderPass, RenderPipeline,
 };
+
+/// Cached per-font data to avoid re-parsing font tables on every glyph miss.
+struct CachedFont {
+    font: Arc<cosmic_text::Font>,
+    face_index: u32,
+    units_per_em: f32,
+}
 
 /// A text renderer that uses the Slug algorithm to render text into an
 /// existing render pass.
@@ -21,6 +30,8 @@ pub struct TextRenderer {
     pipeline: RenderPipeline,
     instances: Vec<GlyphInstance>,
     glyphs_to_render: u32,
+    /// Per-font cache: avoids db().face(), get_font(), and FontRef parsing per miss.
+    font_cache: FxHashMap<(cosmic_text::fontdb::ID, cosmic_text::Weight), CachedFont>,
 }
 
 impl TextRenderer {
@@ -46,6 +57,7 @@ impl TextRenderer {
             pipeline,
             instances: Vec::new(),
             glyphs_to_render: 0,
+            font_cache: FxHashMap::default(),
         }
     }
 
@@ -165,34 +177,45 @@ impl TextRenderer {
             return Ok(e);
         }
 
-        // Cache miss — extract outline and upload
-        let face_index = font_system
-            .db()
-            .face(glyph.font_id)
-            .map(|info| info.index)
-            .unwrap_or(0);
-        let font = match font_system.get_font(glyph.font_id, glyph.font_weight) {
-            Some(f) => f,
-            None => {
-                log::warn!("Font not found for glyph {key:?}");
-                // Cache as non-vector to avoid re-attempting every frame
-                return Ok(atlas.glyphs.insert_and_mark_used(key, NON_VECTOR_GLYPH));
-            }
-        };
-
-        // Get units_per_em from the font header
-        let units_per_em = skrifa::FontRef::from_index(font.data(), face_index)
-            .ok()
-            .and_then(|f| {
-                use skrifa::raw::TableProvider;
-                f.head().map(|h| h.units_per_em() as f32).ok()
-            })
-            .unwrap_or(1000.0);
+        // Cache miss — look up font from cache or populate
+        let cache_key = (glyph.font_id, glyph.font_weight);
+        if !self.font_cache.contains_key(&cache_key) {
+            let face_index = font_system
+                .db()
+                .face(glyph.font_id)
+                .map(|info| info.index)
+                .unwrap_or(0);
+            let font = match font_system.get_font(glyph.font_id, glyph.font_weight) {
+                Some(f) => f,
+                None => {
+                    log::warn!("Font not found for glyph {key:?}");
+                    return Ok(atlas.glyphs.insert_and_mark_used(key, NON_VECTOR_GLYPH));
+                }
+            };
+            let units_per_em = skrifa::FontRef::from_index(font.data(), face_index)
+                .ok()
+                .and_then(|f| {
+                    use skrifa::raw::TableProvider;
+                    f.head().map(|h| h.units_per_em() as f32).ok()
+                })
+                .unwrap_or(1000.0);
+            self.font_cache.insert(
+                cache_key,
+                CachedFont {
+                    font,
+                    face_index,
+                    units_per_em,
+                },
+            );
+        }
+        let cached = &self.font_cache[&cache_key];
+        let (font_data, face_index, units_per_em) =
+            (cached.font.data(), cached.face_index, cached.units_per_em);
 
         let wght_tag = skrifa::Tag::new(b"wght");
         let location = [VariationSetting::new(wght_tag, glyph.font_weight.0 as f32)];
 
-        let entry = match extract_outline(font.data(), face_index, glyph.glyph_id, &location) {
+        let entry = match extract_outline(font_data, face_index, glyph.glyph_id, &location) {
             Some(mut outline) => {
                 if glyph
                     .cache_key_flags
