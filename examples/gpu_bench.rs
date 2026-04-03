@@ -234,6 +234,7 @@ fn main() {
     eprintln!("gpu_max_us={max:.0}");
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_frame(
     device: &wgpu::Device,
     queue: &wgpu::Queue,

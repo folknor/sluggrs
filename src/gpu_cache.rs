@@ -5,12 +5,11 @@ use std::sync::{Arc, Mutex};
 
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry,
-    BindingResource, BindingType, BlendState, Buffer, BufferBindingType, ColorTargetState,
-    ColorWrites, DepthStencilState, Device, FragmentState, MultisampleState,
-    PipelineCompilationOptions, PipelineLayout, PipelineLayoutDescriptor, PrimitiveState,
-    PrimitiveTopology, RenderPipeline, RenderPipelineDescriptor, ShaderModule,
-    ShaderModuleDescriptor, ShaderSource, ShaderStages, TextureFormat, TextureSampleType,
-    TextureViewDimension, VertexFormat, VertexState,
+    BindingType, BlendState, Buffer, BufferBindingType, ColorTargetState, ColorWrites,
+    DepthStencilState, Device, FragmentState, MultisampleState, PipelineCompilationOptions,
+    PipelineLayout, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, RenderPipeline,
+    RenderPipelineDescriptor, ShaderModule, ShaderModuleDescriptor, ShaderSource, ShaderStages,
+    TextureFormat, VertexFormat, VertexState,
 };
 
 use crate::GlyphInstance;

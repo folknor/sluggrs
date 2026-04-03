@@ -134,8 +134,8 @@ pub fn build_bands(
                 .clamp(0.0, hcount as f32 - 1.0) as usize;
             let hband_max = ((curve_max_y * scale_y + offset_y - BAND_EPSILON).floor())
                 .clamp(0.0, hcount as f32 - 1.0) as usize;
-            for b in hband_min..=hband_max {
-                hband_counts[b] += 1;
+            for count in &mut hband_counts[hband_min..=hband_max] {
+                *count += 1;
             }
         }
 
@@ -145,8 +145,8 @@ pub fn build_bands(
                 .clamp(0.0, vcount as f32 - 1.0) as usize;
             let vband_max = ((curve_max_x * scale_x + offset_x - BAND_EPSILON).floor())
                 .clamp(0.0, vcount as f32 - 1.0) as usize;
-            for b in vband_min..=vband_max {
-                vband_counts[b] += 1;
+            for count in &mut vband_counts[vband_min..=vband_max] {
+                *count += 1;
             }
         }
     }
@@ -190,11 +190,11 @@ pub fn build_bands(
                 .clamp(0.0, hcount as f32 - 1.0) as usize;
             let hband_max = ((curve_max_y * scale_y + offset_y - BAND_EPSILON).floor())
                 .clamp(0.0, hcount as f32 - 1.0) as usize;
-            for b in hband_min..=hband_max {
-                let idx = hband_fill[b] as usize;
+            for fill in &mut hband_fill[hband_min..=hband_max] {
+                let idx = *fill as usize;
                 desc_indices[idx] = i;
                 asc_indices[idx] = i;
-                hband_fill[b] += 1;
+                *fill += 1;
             }
         }
 
@@ -204,11 +204,11 @@ pub fn build_bands(
                 .clamp(0.0, vcount as f32 - 1.0) as usize;
             let vband_max = ((curve_max_x * scale_x + offset_x - BAND_EPSILON).floor())
                 .clamp(0.0, vcount as f32 - 1.0) as usize;
-            for b in vband_min..=vband_max {
-                let idx = vband_fill[b] as usize;
+            for fill in &mut vband_fill[vband_min..=vband_max] {
+                let idx = *fill as usize;
                 desc_indices[idx] = i;
                 asc_indices[idx] = i;
-                vband_fill[b] += 1;
+                *fill += 1;
             }
         }
     }

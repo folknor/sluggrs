@@ -222,6 +222,7 @@ fn approx_quadratic(c0: P, c1: P, c2: P, c3: P, tolerance: f64) -> Option<P> {
 
 /// Convert a cubic bezier to quadratic approximations using cu2qu.
 /// Pushes quadratics to `out`, tracks bounds in `bounds_min`/`bounds_max`.
+#[allow(clippy::too_many_arguments)]
 fn cubic_to_quadratics(
     out: &mut Vec<QuadCurve>,
     bounds_min: &mut [f32; 2],

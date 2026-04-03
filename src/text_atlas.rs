@@ -8,8 +8,6 @@ use wgpu::{
     BindGroup, DepthStencilState, Device, MultisampleState, Queue, RenderPipeline, TextureFormat,
 };
 
-/// Curve texture width. Fixed like the band texture — rows wrap at this boundary.
-
 /// An atlas containing cached glyph curve and band data for GPU rendering.
 /// Initial buffer capacity in vec4<i32> elements (16 bytes each).
 const INITIAL_BUFFER_CAPACITY: u32 = 8192;

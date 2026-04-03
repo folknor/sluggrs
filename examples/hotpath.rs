@@ -137,7 +137,7 @@ struct RenderHarness {
     swash_cache: SwashCache,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    render_target: wgpu::Texture,
+    _render_target: wgpu::Texture,
     render_view: wgpu::TextureView,
     gpu_profiler: Option<wgpu_profiler::GpuProfiler>,
 }
@@ -199,7 +199,7 @@ impl RenderHarness {
             swash_cache: SwashCache::new(),
             device: device.clone(),
             queue: queue.clone(),
-            render_target,
+            _render_target: render_target,
             render_view,
             gpu_profiler,
         }
