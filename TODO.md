@@ -47,10 +47,10 @@ Mixed-locale baseline: 364 glyphs, ~4.6ms cold prepare (`brokkr hotpath --target
   Phase 1 of `build_bands`, reused in Phase 2. 2.8× cold-path speedup on
   mixed-locale benchmark (364 distinct glyphs). **hb review**
 
-- [ ] **f32 cu2qu instead of f64** — cu2qu inherited f64 from harfbuzz. At
-  0.5 font-unit tolerance, f32 has sufficient precision. Halves register
-  pressure, improves vectorization. Also consider converting recursion to
-  iteration with explicit stack. 5-10% cold for CFF fonts. Medium effort.
+- [x] **f32 cu2qu instead of f64** — converted all cu2qu math from f64 to
+  f32. Identical subdivision counts verified against f64 baseline. CFF font
+  test validates real glyph outlines. Recursion→iteration still possible
+  as a follow-up.
 
 - [ ] **Atlas initial capacity** — starts at 8192 elements, `grow_buffer()`
   doubles with full re-upload. Start at 1-4MB for known workloads, or

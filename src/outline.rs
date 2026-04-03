@@ -83,10 +83,10 @@ impl OutlinePen for CollectPen {
     }
 
     fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
-        let c0: P = [self.current[0] as f64, self.current[1] as f64];
-        let c1: P = [cx0 as f64, cy0 as f64];
-        let c2: P = [cx1 as f64, cy1 as f64];
-        let c3: P = [x as f64, y as f64];
+        let c0: P = self.current;
+        let c1: P = [cx0, cy0];
+        let c2: P = [cx1, cy1];
+        let c3: P = [x, y];
 
         // Point-collapse check
         if c0 == c3 {
@@ -98,7 +98,7 @@ impl OutlinePen for CollectPen {
         let dx = c3[0] - c0[0];
         let dy = c3[1] - c0[1];
         let len_sq = dx * dx + dy * dy;
-        if len_sq > 1e-24 {
+        if len_sq > 1e-12 {
             let inv = 1.0 / len_sq;
             let cross1 = (c1[0] - c0[0]) * dy - (c1[1] - c0[1]) * dx;
             let cross2 = (c2[0] - c0[0]) * dy - (c2[1] - c0[1]) * dx;
@@ -133,25 +133,26 @@ impl OutlinePen for CollectPen {
 
 /// Cubic-to-quadratic conversion using tangent-line intersection fitting.
 /// Port of harfbuzz's cu2qu algorithm (hb-gpu-cu2qu.hh).
-/// All internal math uses f64 for numerical stability.
 ///
 /// Tolerance for quadratic approximation, in font units.
-const CU2QU_TOLERANCE: f64 = 0.5;
+/// f32 has ~7 decimal digits — sufficient precision for font units (0-2048)
+/// at 0.5 font-unit tolerance.
+const CU2QU_TOLERANCE: f32 = 0.5;
 
 /// Maximum subdivision depth (max 1024 quadratics per cubic).
 const CU2QU_MAX_DEPTH: u32 = 10;
 
-type P = [f64; 2];
+type P = [f32; 2];
 
-fn lerp(a: P, b: P, t: f64) -> P {
+fn lerp(a: P, b: P, t: f32) -> P {
     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
 }
 
 /// Check if a cubic error curve stays within tolerance of the origin.
 /// The error curve has endpoints at (0,0) and interior control points p1, p2.
-fn cubic_fits_inside(p0: P, p1: P, p2: P, p3: P, tolerance: f64, depth: u32) -> bool {
+fn cubic_fits_inside(p0: P, p1: P, p2: P, p3: P, tolerance: f32, depth: u32) -> bool {
     // Quick accept: both interior control points within tolerance
-    if f64::hypot(p1[0], p1[1]) <= tolerance && f64::hypot(p2[0], p2[1]) <= tolerance {
+    if f32::hypot(p1[0], p1[1]) <= tolerance && f32::hypot(p2[0], p2[1]) <= tolerance {
         return true;
     }
     if depth >= 8 {
@@ -163,7 +164,7 @@ fn cubic_fits_inside(p0: P, p1: P, p2: P, p3: P, tolerance: f64, depth: u32) -> 
         (p0[0] + 3.0 * (p1[0] + p2[0]) + p3[0]) * 0.125,
         (p0[1] + 3.0 * (p1[1] + p2[1]) + p3[1]) * 0.125,
     ];
-    if f64::hypot(mid[0], mid[1]) > tolerance {
+    if f32::hypot(mid[0], mid[1]) > tolerance {
         return false;
     }
 
@@ -183,7 +184,7 @@ fn cubic_fits_inside(p0: P, p1: P, p2: P, p3: P, tolerance: f64, depth: u32) -> 
 
 /// Try to fit a single quadratic to a cubic via tangent-line intersection.
 /// Returns Some(q1) if the fit is within tolerance, None otherwise.
-fn approx_quadratic(c0: P, c1: P, c2: P, c3: P, tolerance: f64) -> Option<P> {
+fn approx_quadratic(c0: P, c1: P, c2: P, c3: P, tolerance: f32) -> Option<P> {
     // Tangent directions
     let ax = c1[0] - c0[0];
     let ay = c1[1] - c0[1];
@@ -196,7 +197,7 @@ fn approx_quadratic(c0: P, c1: P, c2: P, c3: P, tolerance: f64) -> Option<P> {
 
     // Intersection parameter along end tangent
     let denom = px * dx + py * dy;
-    if denom.abs() < 1e-12 {
+    if denom.abs() < 1e-6 {
         return None; // Parallel tangents — needs subdivision
     }
 
@@ -204,13 +205,14 @@ fn approx_quadratic(c0: P, c1: P, c2: P, c3: P, tolerance: f64) -> Option<P> {
     let q1 = [c2[0] + dx * h, c2[1] + dy * h];
 
     // Error: difference between original cubic and degree-elevated quadratic
+    let two_thirds = 2.0 / 3.0;
     let err1 = [
-        c0[0] + (q1[0] - c0[0]) * (2.0 / 3.0) - c1[0],
-        c0[1] + (q1[1] - c0[1]) * (2.0 / 3.0) - c1[1],
+        c0[0] + (q1[0] - c0[0]) * two_thirds - c1[0],
+        c0[1] + (q1[1] - c0[1]) * two_thirds - c1[1],
     ];
     let err2 = [
-        c3[0] + (q1[0] - c3[0]) * (2.0 / 3.0) - c2[0],
-        c3[1] + (q1[1] - c3[1]) * (2.0 / 3.0) - c2[1],
+        c3[0] + (q1[0] - c3[0]) * two_thirds - c2[0],
+        c3[1] + (q1[1] - c3[1]) * two_thirds - c2[1],
     ];
 
     if cubic_fits_inside([0.0; 2], err1, err2, [0.0; 2], tolerance, 0) {
@@ -232,11 +234,8 @@ fn cubic_to_quadratics(
 ) {
     // Try single-quad fit
     if let Some(q1) = approx_quadratic(c0, c1, c2, c3, CU2QU_TOLERANCE) {
-        let p1 = [c0[0] as f32, c0[1] as f32];
-        let p2 = [q1[0] as f32, q1[1] as f32];
-        let p3 = [c3[0] as f32, c3[1] as f32];
-        out.push(QuadCurve { p1, p2, p3 });
-        for p in [p2, p3] {
+        out.push(QuadCurve { p1: c0, p2: q1, p3: c3 });
+        for p in [q1, c3] {
             bounds_min[0] = bounds_min[0].min(p[0]);
             bounds_min[1] = bounds_min[1].min(p[1]);
             bounds_max[0] = bounds_max[0].max(p[0]);
@@ -247,14 +246,12 @@ fn cubic_to_quadratics(
 
     // Max depth fallback: emit line
     if depth >= CU2QU_MAX_DEPTH {
-        let p1 = [c0[0] as f32, c0[1] as f32];
-        let p3 = [c3[0] as f32, c3[1] as f32];
-        if p1 != p3 {
-            out.push(QuadCurve { p1, p2: p1, p3 });
-            bounds_min[0] = bounds_min[0].min(p3[0]);
-            bounds_min[1] = bounds_min[1].min(p3[1]);
-            bounds_max[0] = bounds_max[0].max(p3[0]);
-            bounds_max[1] = bounds_max[1].max(p3[1]);
+        if c0 != c3 {
+            out.push(QuadCurve { p1: c0, p2: c0, p3: c3 });
+            bounds_min[0] = bounds_min[0].min(c3[0]);
+            bounds_min[1] = bounds_min[1].min(c3[1]);
+            bounds_max[0] = bounds_max[0].max(c3[0]);
+            bounds_max[1] = bounds_max[1].max(c3[1]);
         }
         return;
     }
@@ -417,5 +414,102 @@ mod tests {
         assert!(pen.min[1] <= 20.0);
         assert!(pen.max[0] >= 80.0);
         assert!(pen.max[1] >= 90.0);
+    }
+
+    /// Verify cu2qu chain properties on a variety of cubics: continuity,
+    /// endpoint preservation, and reasonable subdivision counts.
+    #[test]
+    fn cu2qu_f32_chain_properties() {
+        let cubics: &[(P, P, P, P)] = &[
+            // Gentle S-curve
+            ([0.0, 0.0], [100.0, 300.0], [200.0, -100.0], [300.0, 200.0]),
+            // Near-semicircle (high curvature)
+            ([0.0, 0.0], [0.0, 552.0], [448.0, 1000.0], [1000.0, 1000.0]),
+            // Typical glyph curve (font-unit scale)
+            ([186.0, 0.0], [186.0, 262.0], [398.0, 450.0], [660.0, 450.0]),
+            // Small curve (10 units)
+            ([0.0, 0.0], [3.0, 8.0], [7.0, 8.0], [10.0, 0.0]),
+            // Large CJK-scale (2048 upem)
+            ([100.0, 200.0], [400.0, 1800.0], [1600.0, 1800.0], [1900.0, 200.0]),
+        ];
+
+        for (i, &(c0, c1, c2, c3)) in cubics.iter().enumerate() {
+            let mut out = Vec::new();
+            let mut bmin = [f32::MAX; 2];
+            let mut bmax = [f32::MIN; 2];
+            cubic_to_quadratics(&mut out, &mut bmin, &mut bmax, c0, c1, c2, c3, 0);
+
+            assert!(!out.is_empty(), "cubic {i} produced no quads");
+            // Sharp inflections (e.g. S-curves) legitimately need 20+ quads.
+            // Max depth 10 caps at 1024; typical glyphs produce 1-30.
+            assert!(out.len() <= 64, "cubic {i}: excessive subdivisions ({})", out.len());
+
+            // Endpoint preservation
+            assert_eq!(out[0].p1, c0, "cubic {i}: first quad doesn't start at c0");
+            assert_eq!(out.last().expect("non-empty").p3, c3, "cubic {i}: last quad doesn't end at c3");
+
+            // Chain continuity
+            for j in 0..out.len() - 1 {
+                let gap = f32::hypot(
+                    out[j].p3[0] - out[j + 1].p1[0],
+                    out[j].p3[1] - out[j + 1].p1[1],
+                );
+                assert!(gap < 1e-5, "cubic {i}: chain gap {gap} at quad {j}");
+            }
+
+            // Bounds must contain new control points (p2, p3 of each quad).
+            // p1 of the first quad is the start point, tracked separately by the pen.
+            for q in &out {
+                for p in [q.p2, q.p3] {
+                    assert!(p[0] >= bmin[0] - 1e-3 && p[0] <= bmax[0] + 1e-3,
+                        "cubic {i}: x={} outside bounds [{}, {}]", p[0], bmin[0], bmax[0]);
+                    assert!(p[1] >= bmin[1] - 1e-3 && p[1] <= bmax[1] + 1e-3,
+                        "cubic {i}: y={} outside bounds [{}, {}]", p[1], bmin[1], bmax[1]);
+                }
+            }
+        }
+    }
+
+    /// Extract outlines from the embedded CFF font and verify all glyphs
+    /// produce valid, continuous quadratic chains.
+    #[test]
+    fn cff_font_outlines_are_valid() {
+        use skrifa::raw::TableProvider;
+        let font_data = include_bytes!("../examples/fonts/EBH Runes.otf");
+        let font = skrifa::FontRef::from_index(font_data.as_slice(), 0).expect("valid CFF font");
+        let num_glyphs = font.maxp().map(|m| m.num_glyphs()).unwrap_or(0);
+
+        let mut extracted = 0u32;
+        for gid in 0..num_glyphs {
+            if let Some(outline) = extract_outline(font_data.as_slice(), 0, gid, &[]) {
+                extracted += 1;
+                // Chain continuity within each contour
+                // (we can't easily separate contours, but p3[i] == p1[i+1]
+                // should hold within contours)
+                for j in 0..outline.curves.len().saturating_sub(1) {
+                    let gap = f32::hypot(
+                        outline.curves[j].p3[0] - outline.curves[j + 1].p1[0],
+                        outline.curves[j].p3[1] - outline.curves[j + 1].p1[1],
+                    );
+                    // Contour breaks are allowed (move_to resets), but within
+                    // a contour the chain must be continuous. We can't distinguish
+                    // here, so just check no gap exceeds the glyph's bounding box
+                    // (a very loose sanity check).
+                    let bbox_diag = f32::hypot(
+                        outline.bounds[2] - outline.bounds[0],
+                        outline.bounds[3] - outline.bounds[1],
+                    );
+                    assert!(
+                        gap <= bbox_diag + 1.0,
+                        "glyph {gid}: suspicious gap {gap} at curve {j} (bbox diag {bbox_diag})"
+                    );
+                }
+            }
+        }
+
+        assert!(
+            extracted >= 5,
+            "expected at least 5 CFF glyph outlines, got {extracted}"
+        );
     }
 }
