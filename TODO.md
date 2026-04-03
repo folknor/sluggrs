@@ -211,9 +211,11 @@ dominated by compositor/surface, not text math.
   atlas residency. Atlas reset drops GPU residency only, re-upload is
   memcpy. Huge for mixed/trim workloads. Large effort.
 
-- [ ] **Retained prepared-text cache** — skip instance rebuild for unchanged
-  text. Cache per-text-area instances keyed by buffer generation, viewport,
-  transform. Biggest possible warm-path win. Large effort.
+- [x] **Retained prepared-text cache** — per-TextArea cache keyed by buffer
+  pointer in FxHashMap. Stores instances + distinct GlyphKeys. Whole-frame
+  fast path skips glyph loop AND vertex upload when all areas hit.
+  Position-only changes (scroll) adjust screen_rect.xy and re-cull.
+  Atlas generation counter invalidates on reset. warm_prepare: 96µs→5µs.
 
 - [ ] **Unbounded retained memory** — buffer_data grows with each uploaded
   glyph, never compacted. Intentional (needed for growth re-upload). Fix:

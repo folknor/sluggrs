@@ -15,11 +15,26 @@ use wgpu::{
     DepthStencilState, Device, MultisampleState, Queue, RenderPass, RenderPipeline,
 };
 
+use crate::types::TextBounds;
+
 /// Cached per-font data to avoid re-parsing font tables on every glyph miss.
 struct CachedFont {
     font: Arc<cosmic_text::Font>,
     face_index: u32,
     units_per_em: f32,
+}
+
+/// Cached prepared output for a single TextArea. Reusable when the text
+/// content, styling, and atlas state haven't changed.
+struct CachedTextArea {
+    left: f32,
+    top: f32,
+    scale: f32,
+    bounds: TextBounds,
+    default_color: cosmic_text::Color,
+    atlas_generation: u32,
+    instances: Vec<GlyphInstance>,
+    distinct_keys: Vec<GlyphKey>,
 }
 
 /// A text renderer that uses the Slug algorithm to render text into an
@@ -32,6 +47,10 @@ pub struct TextRenderer {
     glyphs_to_render: u32,
     /// Per-font cache: avoids db().face(), get_font(), and FontRef parsing per miss.
     font_cache: FxHashMap<(cosmic_text::fontdb::ID, cosmic_text::Weight), CachedFont>,
+    /// Per-TextArea retained cache, keyed by buffer pointer.
+    text_area_cache: FxHashMap<*const cosmic_text::Buffer, CachedTextArea>,
+    /// Resolution from last frame, for cache invalidation.
+    cached_resolution: crate::types::Resolution,
 }
 
 impl TextRenderer {
@@ -58,6 +77,11 @@ impl TextRenderer {
             instances: Vec::new(),
             glyphs_to_render: 0,
             font_cache: FxHashMap::default(),
+            text_area_cache: FxHashMap::default(),
+            cached_resolution: crate::types::Resolution {
+                width: 0,
+                height: 0,
+            },
         }
     }
 
@@ -83,8 +107,84 @@ impl TextRenderer {
         self.instances.clear();
 
         let resolution = viewport.resolution();
+        let atlas_gen = atlas.generation();
+
+        // Invalidate all cached entries if resolution changed
+        if resolution != self.cached_resolution {
+            self.text_area_cache.clear();
+            self.cached_resolution = resolution;
+        }
+
+        let mut all_hit = true;
+        let mut any_position_changed = false;
+        // Track which cache entries were used this frame for cleanup
+        let mut used_ptrs: Vec<*const cosmic_text::Buffer> = Vec::new();
 
         for text_area in text_areas {
+            let buffer_ptr: *const cosmic_text::Buffer = text_area.buffer;
+            used_ptrs.push(buffer_ptr);
+
+            // Try cache hit
+            if let Some(cached) = self.text_area_cache.get(&buffer_ptr) {
+                if !text_area.buffer.redraw()
+                    && cached.scale == text_area.scale
+                    && cached.bounds == text_area.bounds
+                    && cached.default_color == text_area.default_color
+                    && cached.atlas_generation == atlas_gen
+                {
+                    // Validate all distinct glyphs still in atlas
+                    let glyphs_valid = cached
+                        .distinct_keys
+                        .iter()
+                        .all(|k| atlas.glyphs.get_and_mark_used(k).is_some());
+
+                    if glyphs_valid {
+                        let dx = text_area.left - cached.left;
+                        let dy = text_area.top - cached.top;
+
+                        if dx == 0.0 && dy == 0.0 {
+                            // Exact position match — extend from cache directly
+                            self.instances.extend_from_slice(&cached.instances);
+                        } else {
+                            // Position shifted — adjust screen_rect and re-cull
+                            any_position_changed = true;
+                            let bounds_min_x = text_area.bounds.left.max(0) as f32;
+                            let bounds_min_y = text_area.bounds.top.max(0) as f32;
+                            let bounds_max_x =
+                                text_area.bounds.right.min(resolution.width as i32) as f32;
+                            let bounds_max_y =
+                                text_area.bounds.bottom.min(resolution.height as i32) as f32;
+
+                            for inst in &cached.instances {
+                                let sx = inst.screen_rect[0] + dx;
+                                let sy = inst.screen_rect[1] + dy;
+                                let sw = inst.screen_rect[2];
+                                let sh = inst.screen_rect[3];
+
+                                if sx + sw + 1.0 < bounds_min_x
+                                    || sx - 1.0 > bounds_max_x
+                                    || sy + sh + 1.0 < bounds_min_y
+                                    || sy - 1.0 > bounds_max_y
+                                {
+                                    continue;
+                                }
+
+                                let mut adjusted = *inst;
+                                adjusted.screen_rect[0] = sx;
+                                adjusted.screen_rect[1] = sy;
+                                self.instances.push(adjusted);
+                            }
+                        }
+                        continue;
+                    }
+                }
+            }
+
+            // Cache miss — full glyph loop for this TextArea
+            all_hit = false;
+            let instance_start = self.instances.len();
+            let mut area_keys: Vec<GlyphKey> = Vec::new();
+
             let bounds_min_x = text_area.bounds.left.max(0);
             let bounds_min_y = text_area.bounds.top.max(0);
             let bounds_max_x = text_area.bounds.right.min(resolution.width as i32);
@@ -106,23 +206,25 @@ impl TextRenderer {
 
             for run in layout_runs {
                 for glyph in run.glyphs {
-                    // --- Phase 1: Cache lookup (inline) or extraction (cold) ---
                     let key = GlyphKey::from_layout_glyph(glyph);
                     let entry = match atlas.glyphs.get_and_mark_used(&key) {
                         Some(e) => e,
                         None => self.resolve_glyph_miss(device, font_system, atlas, glyph, key)?,
                     };
 
+                    area_keys.push(key);
+
                     if entry.is_non_vector() {
                         continue;
                     }
 
-                    // --- Phase 2: Screen position + culling ---
                     let scale = glyph.font_size * text_area.scale / entry.units_per_em;
                     let [min_x, min_y, max_x, max_y] = entry.bounds;
 
-                    let glyph_x = text_area.left + (glyph.x + glyph.x_offset) * text_area.scale;
-                    let glyph_y = text_area.top + (run.line_y + glyph.y_offset) * text_area.scale;
+                    let glyph_x =
+                        text_area.left + (glyph.x + glyph.x_offset) * text_area.scale;
+                    let glyph_y =
+                        text_area.top + (run.line_y + glyph.y_offset) * text_area.scale;
 
                     let screen_x = glyph_x + min_x * scale;
                     let screen_y = glyph_y - max_y * scale;
@@ -137,7 +239,6 @@ impl TextRenderer {
                         continue;
                     }
 
-                    // --- Phase 4: Instance packing ---
                     let color = match glyph.color_opt {
                         Some(c) => color_to_f32(c),
                         None => default_color,
@@ -160,9 +261,40 @@ impl TextRenderer {
                     });
                 }
             }
+
+            // Deduplicate keys for efficient mark-used on future hits
+            area_keys.sort_unstable();
+            area_keys.dedup();
+
+            let area_instances = self.instances[instance_start..].to_vec();
+            self.text_area_cache.insert(
+                buffer_ptr,
+                CachedTextArea {
+                    left: text_area.left,
+                    top: text_area.top,
+                    scale: text_area.scale,
+                    bounds: text_area.bounds,
+                    default_color: text_area.default_color,
+                    atlas_generation: atlas_gen,
+                    instances: area_instances,
+                    distinct_keys: area_keys,
+                },
+            );
         }
 
+        // Remove stale cache entries (buffers no longer in the text_areas set)
+        self.text_area_cache
+            .retain(|ptr, _| used_ptrs.contains(ptr));
+
         atlas.flush_uploads(queue);
+
+        // Whole-frame fast path: if all areas hit cache with no position changes,
+        // the GPU vertex buffer already contains the correct data.
+        if all_hit && !any_position_changed && self.instances.len() == self.glyphs_to_render as usize
+        {
+            return Ok(());
+        }
+
         self.upload_vertices(device, queue);
         Ok(())
     }

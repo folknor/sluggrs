@@ -5,7 +5,7 @@ use std::hash::{Hash, Hasher};
 ///
 /// Captures everything that affects outline shape. Deliberately excludes
 /// size, position, and subpixel offset — outlines are resolution-independent.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct GlyphKey {
     pub font_id: cosmic_text::fontdb::ID,
     pub glyph_id: u16,

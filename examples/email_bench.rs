@@ -226,7 +226,7 @@ fn main() {
     let mut harness = RenderHarness::new(&device, &queue);
 
     // Build all email buffers (shape once, reuse across phases)
-    let buffers = build_email_buffers(&mut harness.font_system);
+    let mut buffers = build_email_buffers(&mut harness.font_system);
     let text_areas = layout_text_areas(&buffers);
 
     // -- Cold prepare: all caches empty --
@@ -235,6 +235,14 @@ fn main() {
         .prepare_areas(&text_areas)
         .expect("Cold prepare failed");
     let cold_us = cold_start.elapsed().as_micros();
+
+    // Clear redraw flags after cold prepare, simulating iced's post-render behavior.
+    // This allows the retained cache to detect unchanged buffers on warm iterations.
+    for buf in &mut buffers {
+        buf.set_redraw(false);
+    }
+    // Rebuild text_areas with the same (now redraw=false) buffers
+    let text_areas = layout_text_areas(&buffers);
 
     let distinct_glyphs = harness.atlas.glyph_count();
     let total_instances: usize = text_areas

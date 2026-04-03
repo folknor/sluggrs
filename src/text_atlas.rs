@@ -36,6 +36,9 @@ pub struct TextAtlas {
 
     // Glyph cache
     pub(crate) glyphs: GlyphMap,
+    /// Monotonic counter incremented on atlas reset. Used by TextRenderer's
+    /// retained cache to detect when cached glyph offsets are invalidated.
+    generation: u32,
 }
 
 impl TextAtlas {
@@ -68,6 +71,7 @@ impl TextAtlas {
             scratch_band_entries: Vec::new(),
             band_scratch: BandScratch::default(),
             gpu_flush_cursor: 0,
+            generation: 0,
             glyphs: GlyphMap::new(),
         }
     }
@@ -83,6 +87,10 @@ impl TextAtlas {
     }
 
     /// Buffer elements used (in vec4<i32> units).
+    pub fn generation(&self) -> u32 {
+        self.generation
+    }
+
     pub fn buffer_elements_used(&self) -> u32 {
         self.buffer_cursor
     }
@@ -137,6 +145,7 @@ impl TextAtlas {
         self.buffer_cursor = 0;
         self.buffer_data.clear();
         self.gpu_flush_cursor = 0;
+        self.generation = self.generation.wrapping_add(1);
 
         self.buffer_capacity = INITIAL_BUFFER_CAPACITY;
         self.glyph_buffer = create_glyph_buffer(&self.device, self.buffer_capacity);
