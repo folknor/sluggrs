@@ -48,6 +48,7 @@ brokkr hotpath -n 3                           # 3 runs
 brokkr hotpath --alloc                        # allocation profile
 brokkr hotpath --alloc -n 5                   # 5 alloc runs
 brokkr hotpath --target email                 # email-client-scale benchmark (8k+ glyphs)
+brokkr hotpath --target email2                # mixed-locale inbox (CJK/Arabic/Hindi, 200 messages)
 brokkr hotpath --target email --alloc         # email benchmark with allocation tracking
 brokkr test [snapshot] [--all]                # run visual snapshot tests
 brokkr list                                   # list snapshots and approval state
@@ -62,6 +63,11 @@ brokkr env                                    # show environment info
 brokkr clean                                  # clean build artifacts and scratch data
 brokkr history                                # browse command history
 ```
+
+The `--target` flag is a free-form string. `brokkr hotpath --target foo` builds
+`examples/foo_bench.rs` and stores results with variant "foo". To add a new
+benchmark target, create `examples/{name}_bench.rs` and a `[[example]]` entry
+in `Cargo.toml`.
 
 ## Profiling
 

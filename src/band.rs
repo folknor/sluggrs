@@ -7,8 +7,20 @@ use crate::outline::GlyphOutline;
 
 /// Reusable scratch buffers for `build_bands()`.
 /// Avoids 14 per-glyph allocations by clearing and reusing across calls.
+/// Per-curve metadata cached in Phase 1 to avoid redundant recomputation.
+#[derive(Clone, Copy)]
+struct CurveMeta {
+    hband_min: usize,
+    hband_max: usize,
+    vband_min: usize,
+    vband_max: usize,
+    is_horizontal: bool,
+    is_vertical: bool,
+}
+
 #[derive(Default)]
 pub struct BandScratch {
+    curve_meta: Vec<CurveMeta>,
     max_x_keys: Vec<f32>,
     max_y_keys: Vec<f32>,
     min_x_keys: Vec<f32>,
@@ -123,6 +135,8 @@ pub fn build_bands(
 
     // Clear and reuse scratch buffers
     let num_curves = outline.curves.len();
+    scratch.curve_meta.clear();
+    scratch.curve_meta.reserve(num_curves);
     scratch.max_x_keys.clear();
     scratch.max_y_keys.clear();
     scratch.min_x_keys.clear();
@@ -132,7 +146,9 @@ pub fn build_bands(
     scratch.min_x_keys.reserve(num_curves);
     scratch.min_y_keys.reserve(num_curves);
 
-    // Phase 1: count curves per band
+    // Phase 1: compute per-curve metadata and count curves per band.
+    // CurveMeta caches min/max band indices and axis-alignment flags so
+    // Phase 2 can skip recomputing them.
     scratch.hband_counts.clear();
     scratch.hband_counts.resize(hcount, 0);
     scratch.vband_counts.clear();
@@ -155,27 +171,40 @@ pub fn build_bands(
         let is_horizontal = curve_min_y == curve_max_y;
         let is_vertical = curve_min_x == curve_max_x;
 
+        let mut hband_min = 0;
+        let mut hband_max = 0;
         if !is_horizontal {
-            let hband_min = (curve_min_y * scale_y + offset_y)
+            hband_min = (curve_min_y * scale_y + offset_y)
                 .floor()
                 .clamp(0.0, hcount as f32 - 1.0) as usize;
-            let hband_max = ((curve_max_y * scale_y + offset_y - BAND_EPSILON).floor())
+            hband_max = ((curve_max_y * scale_y + offset_y - BAND_EPSILON).floor())
                 .clamp(0.0, hcount as f32 - 1.0) as usize;
             for count in &mut scratch.hband_counts[hband_min..=hband_max] {
                 *count += 1;
             }
         }
 
+        let mut vband_min = 0;
+        let mut vband_max = 0;
         if !is_vertical {
-            let vband_min = (curve_min_x * scale_x + offset_x)
+            vband_min = (curve_min_x * scale_x + offset_x)
                 .floor()
                 .clamp(0.0, vcount as f32 - 1.0) as usize;
-            let vband_max = ((curve_max_x * scale_x + offset_x - BAND_EPSILON).floor())
+            vband_max = ((curve_max_x * scale_x + offset_x - BAND_EPSILON).floor())
                 .clamp(0.0, vcount as f32 - 1.0) as usize;
             for count in &mut scratch.vband_counts[vband_min..=vband_max] {
                 *count += 1;
             }
         }
+
+        scratch.curve_meta.push(CurveMeta {
+            hband_min,
+            hband_max,
+            vband_min,
+            vband_max,
+            is_horizontal,
+            is_vertical,
+        });
     }
 
     // Phase 2: build dual sorted lists (desc by max, asc by min) for each band.
@@ -206,22 +235,9 @@ pub fn build_bands(
     scratch.vband_fill.clear();
     scratch.vband_fill.extend_from_slice(&scratch.vband_offsets);
 
-    for (i, curve) in outline.curves.iter().enumerate() {
-        let curve_min_y = curve.p1[1].min(curve.p2[1]).min(curve.p3[1]);
-        let curve_max_y = curve.p1[1].max(curve.p2[1]).max(curve.p3[1]);
-        let curve_min_x = curve.p1[0].min(curve.p2[0]).min(curve.p3[0]);
-        let curve_max_x = curve.p1[0].max(curve.p2[0]).max(curve.p3[0]);
-
-        let is_horizontal = curve_min_y == curve_max_y;
-        let is_vertical = curve_min_x == curve_max_x;
-
-        if !is_horizontal {
-            let hband_min = (curve_min_y * scale_y + offset_y)
-                .floor()
-                .clamp(0.0, hcount as f32 - 1.0) as usize;
-            let hband_max = ((curve_max_y * scale_y + offset_y - BAND_EPSILON).floor())
-                .clamp(0.0, hcount as f32 - 1.0) as usize;
-            for fill in &mut scratch.hband_fill[hband_min..=hband_max] {
+    for (i, meta) in scratch.curve_meta.iter().enumerate() {
+        if !meta.is_horizontal {
+            for fill in &mut scratch.hband_fill[meta.hband_min..=meta.hband_max] {
                 let idx = *fill as usize;
                 scratch.desc_indices[idx] = i;
                 scratch.asc_indices[idx] = i;
@@ -229,13 +245,8 @@ pub fn build_bands(
             }
         }
 
-        if !is_vertical {
-            let vband_min = (curve_min_x * scale_x + offset_x)
-                .floor()
-                .clamp(0.0, vcount as f32 - 1.0) as usize;
-            let vband_max = ((curve_max_x * scale_x + offset_x - BAND_EPSILON).floor())
-                .clamp(0.0, vcount as f32 - 1.0) as usize;
-            for fill in &mut scratch.vband_fill[vband_min..=vband_max] {
+        if !meta.is_vertical {
+            for fill in &mut scratch.vband_fill[meta.vband_min..=meta.vband_max] {
                 let idx = *fill as usize;
                 scratch.desc_indices[idx] = i;
                 scratch.asc_indices[idx] = i;

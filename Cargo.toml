@@ -40,6 +40,10 @@ path = "examples/gpu_bench.rs"
 name = "email_bench"
 path = "examples/email_bench.rs"
 
+[[example]]
+name = "email2_bench"
+path = "examples/email2_bench.rs"
+
 [lints.clippy]
 # Style: modern idiomatic Rust
 uninlined_format_args = "deny"
