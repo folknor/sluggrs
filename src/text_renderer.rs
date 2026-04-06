@@ -1,6 +1,8 @@
 use crate::GlyphInstance;
-use crate::glyph_cache::{GlyphKey, NON_VECTOR_GLYPH};
-use crate::outline::extract_outline;
+use crate::glyph_cache::{
+    ColorGlyphEntry, ColorGlyphLayer, GlyphKey, COLOR_VECTOR_GLYPH, NON_VECTOR_GLYPH,
+};
+use crate::outline::{ColorGlyphInfo, extract_color_info, extract_outline};
 use crate::prepare::apply_italic_shear;
 use crate::raster_text::{NonVectorGlyph, RasterVertex};
 use crate::text_atlas::TextAtlas;
@@ -23,6 +25,7 @@ struct CachedFont {
     font: Arc<cosmic_text::Font>,
     face_index: u32,
     units_per_em: f32,
+    has_colr: bool,
 }
 
 /// Cached prepared output for a single TextArea. Reusable when the text
@@ -255,10 +258,8 @@ impl TextRenderer {
                     area_keys.push(key);
 
                     if entry.is_non_vector() {
-                        let physical = glyph.physical(
-                            (text_area.left, text_area.top),
-                            text_area.scale,
-                        );
+                        let physical =
+                            glyph.physical((text_area.left, text_area.top), text_area.scale);
                         let color = match glyph.color_opt {
                             Some(c) => color_to_f32(c),
                             None => default_color,
@@ -273,13 +274,68 @@ impl TextRenderer {
                         continue;
                     }
 
+                    if entry.is_color_vector() {
+                        // COLRv0: emit one instance per layer, back-to-front.
+                        if let Some(color_entry) = atlas.color_glyphs.get(&key) {
+                            let foreground_color = match glyph.color_opt {
+                                Some(c) => color_to_f32(c),
+                                None => default_color,
+                            };
+                            let scale =
+                                glyph.font_size * text_area.scale / color_entry.units_per_em;
+                            let glyph_x =
+                                text_area.left + (glyph.x + glyph.x_offset) * text_area.scale;
+                            let glyph_y =
+                                text_area.top + (run.line_y + glyph.y_offset) * text_area.scale;
+                            let depth = metadata_to_depth(glyph.metadata);
+                            let ppem = glyph.font_size * text_area.scale;
+
+                            for layer in &color_entry.layers {
+                                let [min_x, min_y, max_x, max_y] = layer.entry.bounds;
+                                let screen_x = glyph_x + min_x * scale;
+                                let screen_y = glyph_y - max_y * scale;
+                                let screen_w = (max_x - min_x) * scale;
+                                let screen_h = (max_y - min_y) * scale;
+
+                                if screen_x + screen_w + 1.0 < bounds_min_x as f32
+                                    || screen_x - 1.0 > bounds_max_x as f32
+                                    || screen_y + screen_h + 1.0 < bounds_min_y as f32
+                                    || screen_y - 1.0 > bounds_max_y as f32
+                                {
+                                    continue;
+                                }
+
+                                let color = if layer.use_foreground {
+                                    foreground_color
+                                } else {
+                                    layer.color
+                                };
+
+                                self.instances.push(GlyphInstance {
+                                    screen_rect: [screen_x, screen_y, screen_w, screen_h],
+                                    em_rect: [min_x, min_y, max_x, max_y],
+                                    band_transform: layer.entry.band_transform,
+                                    glyph_data: [
+                                        layer.entry.band_offset,
+                                        layer.entry.band_max_x,
+                                        layer.entry.band_max_y,
+                                        0,
+                                    ],
+                                    color,
+                                    depth,
+                                    ppem,
+                                    _pad: [0.0; 2],
+                                });
+                            }
+                        }
+                        continue;
+                    }
+
                     let scale = glyph.font_size * text_area.scale / entry.units_per_em;
                     let [min_x, min_y, max_x, max_y] = entry.bounds;
 
-                    let glyph_x =
-                        text_area.left + (glyph.x + glyph.x_offset) * text_area.scale;
-                    let glyph_y =
-                        text_area.top + (run.line_y + glyph.y_offset) * text_area.scale;
+                    let glyph_x = text_area.left + (glyph.x + glyph.x_offset) * text_area.scale;
+                    let glyph_y = text_area.top + (run.line_y + glyph.y_offset) * text_area.scale;
 
                     let screen_x = glyph_x + min_x * scale;
                     let screen_y = glyph_y - max_y * scale;
@@ -303,12 +359,7 @@ impl TextRenderer {
                         screen_rect: [screen_x, screen_y, screen_w, screen_h],
                         em_rect: [min_x, min_y, max_x, max_y],
                         band_transform: entry.band_transform,
-                        glyph_data: [
-                            entry.band_offset,
-                            entry.band_max_x,
-                            entry.band_max_y,
-                            0,
-                        ],
+                        glyph_data: [entry.band_offset, entry.band_max_x, entry.band_max_y, 0],
                         color,
                         depth: metadata_to_depth(glyph.metadata),
                         ppem: glyph.font_size * text_area.scale,
@@ -352,7 +403,9 @@ impl TextRenderer {
         // Whole-frame fast path: if all areas hit cache with no position changes,
         // the GPU vertex buffer already contains the correct data and raster
         // instances haven't changed.
-        if all_hit && !any_position_changed && self.instances.len() == self.glyphs_to_render as usize
+        if all_hit
+            && !any_position_changed
+            && self.instances.len() == self.glyphs_to_render as usize
         {
             // Still need to upload raster vertex buffer (raster atlas may have changed)
             self.upload_raster_vertices(device, queue);
@@ -390,44 +443,137 @@ impl TextRenderer {
                     return Ok(atlas.glyphs.insert_and_mark_used(key, NON_VECTOR_GLYPH));
                 }
             };
-            let units_per_em = skrifa::FontRef::from_index(font.data(), face_index)
-                .ok()
+            let skrifa_font = skrifa::FontRef::from_index(font.data(), face_index).ok();
+            let units_per_em = skrifa_font
+                .as_ref()
                 .and_then(|f| {
                     use skrifa::raw::TableProvider;
                     f.head().map(|h| h.units_per_em() as f32).ok()
                 })
                 .unwrap_or(1000.0);
+            let has_colr = skrifa_font
+                .as_ref()
+                .map(|f| {
+                    use skrifa::raw::TableProvider;
+                    f.colr().is_ok()
+                })
+                .unwrap_or(false);
             self.font_cache.insert(
                 cache_key,
                 CachedFont {
                     font,
                     face_index,
                     units_per_em,
+                    has_colr,
                 },
             );
         }
         let cached = &self.font_cache[&cache_key];
-        let (font_data, face_index, units_per_em) =
-            (cached.font.data(), cached.face_index, cached.units_per_em);
+        let (font_data, face_index, units_per_em, has_colr) =
+            (cached.font.data(), cached.face_index, cached.units_per_em, cached.has_colr);
 
         let wght_tag = skrifa::Tag::new(b"wght");
         let location = [VariationSetting::new(wght_tag, glyph.font_weight.0 as f32)];
 
-        let entry = match extract_outline(font_data, face_index, glyph.glyph_id, &location) {
-            Some(mut outline) => {
-                if glyph
+        // Check for COLR color glyph first — COLRv0 fonts often have fallback
+        // monochrome outlines, so extract_outline would succeed but miss the color.
+        // Skip the COLR check entirely for fonts without a COLR table.
+        let color_info = if has_colr {
+            extract_color_info(font_data, face_index, glyph.glyph_id, &location)
+        } else {
+            None
+        };
+        let entry = match color_info {
+            Some(ColorGlyphInfo::V0Layers(layers)) => {
+                let fake_italic = glyph
                     .cache_key_flags
-                    .contains(cosmic_text::CacheKeyFlags::FAKE_ITALIC)
-                {
-                    apply_italic_shear(&mut outline);
+                    .contains(cosmic_text::CacheKeyFlags::FAKE_ITALIC);
+                match self.upload_colr_v0_layers(
+                    device, atlas, font_data, face_index, units_per_em,
+                    &location, &layers, fake_italic, key,
+                ) {
+                    Ok(entry) => entry,
+                    Err(_) => NON_VECTOR_GLYPH,
                 }
-                let band_count = band_count_for_curves(outline.curves.len());
-                atlas.upload_glyph(device, &outline, band_count, band_count, units_per_em)?
             }
-            None => NON_VECTOR_GLYPH,
+            Some(ColorGlyphInfo::V1) => {
+                // Phase 2: COLRv1 not yet implemented, fall back to raster.
+                NON_VECTOR_GLYPH
+            }
+            None => {
+                // No color data — try regular outline, else raster fallback.
+                match extract_outline(font_data, face_index, glyph.glyph_id, &location) {
+                    Some(mut outline) => {
+                        if glyph
+                            .cache_key_flags
+                            .contains(cosmic_text::CacheKeyFlags::FAKE_ITALIC)
+                        {
+                            apply_italic_shear(&mut outline);
+                        }
+                        let band_count = band_count_for_curves(outline.curves.len());
+                        atlas.upload_glyph(
+                            device, &outline, band_count, band_count, units_per_em,
+                        )?
+                    }
+                    None => NON_VECTOR_GLYPH,
+                }
+            }
         };
 
         Ok(atlas.glyphs.insert_and_mark_used(key, entry))
+    }
+
+    /// Upload all sub-glyph outlines for a COLRv0 color glyph and store the
+    /// ColorGlyphEntry. Returns COLOR_VECTOR_GLYPH sentinel for the main cache.
+    #[allow(clippy::too_many_arguments)]
+    fn upload_colr_v0_layers(
+        &self,
+        device: &Device,
+        atlas: &mut TextAtlas,
+        font_data: &[u8],
+        face_index: u32,
+        units_per_em: f32,
+        location: &[VariationSetting],
+        layers: &[crate::outline::ColorLayer],
+        fake_italic: bool,
+        key: GlyphKey,
+    ) -> Result<crate::glyph_cache::GlyphEntry, PrepareError> {
+        let mut entries = Vec::with_capacity(layers.len());
+
+        for layer in layers {
+            let outline = extract_outline(font_data, face_index, layer.glyph_id, location);
+            let mut outline = match outline {
+                Some(o) => o,
+                None => continue, // Skip layers with no outline (e.g. empty glyphs)
+            };
+
+            if fake_italic {
+                apply_italic_shear(&mut outline);
+            }
+
+            let band_count = band_count_for_curves(outline.curves.len());
+            let entry =
+                atlas.upload_glyph(device, &outline, band_count, band_count, units_per_em)?;
+            entries.push(ColorGlyphLayer {
+                entry,
+                color: layer.color,
+                use_foreground: layer.use_foreground,
+            });
+        }
+
+        if entries.is_empty() {
+            return Ok(NON_VECTOR_GLYPH);
+        }
+
+        atlas.color_glyphs.insert(
+            key,
+            ColorGlyphEntry {
+                layers: entries,
+                units_per_em,
+            },
+        );
+
+        Ok(COLOR_VECTOR_GLYPH)
     }
 
     /// Upload the instance buffer to the GPU.
@@ -526,7 +672,12 @@ impl TextRenderer {
 
         // Raster fallback (emoji, bitmap fonts)
         if self.raster_glyphs_to_render > 0 {
-            atlas.render_raster_pass(viewport, pass, &self.raster_vertex_buffer, self.raster_glyphs_to_render);
+            atlas.render_raster_pass(
+                viewport,
+                pass,
+                &self.raster_vertex_buffer,
+                self.raster_glyphs_to_render,
+            );
         }
 
         Ok(())

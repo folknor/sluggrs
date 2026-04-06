@@ -65,6 +65,31 @@ pub const NON_VECTOR_GLYPH: GlyphEntry = GlyphEntry {
     last_used_epoch: 0,
 };
 
+/// Sentinel for COLRv0 color glyphs — look up `color_glyphs` map for layers.
+pub const COLOR_VECTOR_GLYPH: GlyphEntry = GlyphEntry {
+    band_offset: u32::MAX - 1,
+    band_max_x: 0,
+    band_max_y: 0,
+    band_transform: [0.0; 4],
+    bounds: [0.0; 4],
+    units_per_em: 1000.0,
+    last_used_epoch: 0,
+};
+
+/// A single layer in a COLRv0 color glyph.
+pub struct ColorGlyphLayer {
+    pub entry: GlyphEntry,
+    pub color: [f32; 4],
+    /// True if this layer uses the foreground text color (palette_index 0xFFFF).
+    pub use_foreground: bool,
+}
+
+/// A COLRv0 color glyph: multiple solid-colored layers composited back-to-front.
+pub struct ColorGlyphEntry {
+    pub layers: Vec<ColorGlyphLayer>,
+    pub units_per_em: f32,
+}
+
 impl GlyphEntry {
     /// Construct a new GlyphEntry. Sets `last_used_epoch` to 0 (not yet used).
     pub fn new(
@@ -88,6 +113,10 @@ impl GlyphEntry {
 
     pub fn is_non_vector(&self) -> bool {
         self.band_offset == u32::MAX
+    }
+
+    pub fn is_color_vector(&self) -> bool {
+        self.band_offset == u32::MAX - 1
     }
 }
 

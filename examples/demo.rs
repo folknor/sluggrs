@@ -1,5 +1,5 @@
 use sluggrs::band::{self, CurveLocation, build_bands};
-use sluggrs::outline::{char_to_glyph_id, extract_outline};
+use sluggrs::outline::{char_to_glyph_id, extract_color_info, extract_outline, ColorGlyphInfo};
 use sluggrs::outline::GlyphOutline;
 
 use std::sync::Arc;
@@ -15,6 +15,7 @@ const ROBOTO_THIN: &[u8] = include_bytes!("fonts/Roboto-Thin.ttf");
 const ROBOTO_BOLD: &[u8] = include_bytes!("fonts/Roboto-Bold.ttf");
 const CASKAYDIA: &[u8] = include_bytes!("fonts/CaskaydiaCoveNerdFont-Regular.ttf");
 const RUNES: &[u8] = include_bytes!("fonts/EBH Runes.otf");
+const TWEMOJI_COLR: &[u8] = include_bytes!("fonts/TwemojiCOLRv0.ttf");
 
 /// Per-instance vertex data for a glyph (matches GlyphInstance in shader).
 #[repr(C)]
@@ -144,66 +145,61 @@ fn prepare_text(
         let location: Vec<skrifa::setting::VariationSetting> = weight
             .map(|w| vec![skrifa::setting::VariationSetting::new(wght_tag, w)])
             .unwrap_or_default();
-        let outline = match extract_outline(font_data, 0, glyph_id, &location) {
-            Some(o) => o,
-            None => {
-                cursor_x += advance * scale;
-                continue;
-            }
+        // Helper: push one outline as a glyph instance + prepared data.
+        let push_outline = |outline: GlyphOutline,
+                                inst_color: [f32; 4],
+                                instances: &mut Vec<GlyphInstance>,
+                                prepared: &mut Vec<PreparedGlyph>,
+                                buffer_offset: &mut u32| {
+            let num_curves = outline.curves.len();
+            let curve_locations: Vec<CurveLocation> = (0..num_curves)
+                .map(|i| CurveLocation {
+                    offset: (i as u32) * 2,
+                })
+                .collect();
+            let band_count = (num_curves as u32).clamp(1, 16);
+            let band_data = build_bands(
+                &outline,
+                &curve_locations,
+                band_count,
+                band_count,
+                Vec::new(),
+                &mut sluggrs::band::BandScratch::default(),
+            );
+            let [min_x, min_y, max_x, max_y] = outline.bounds;
+            let screen_x = cursor_x + min_x * scale;
+            let screen_y = start_y - max_y * scale;
+            let screen_w = (max_x - min_x) * scale;
+            let screen_h = (max_y - min_y) * scale;
+            let band_element_count = (band_data.entries.len() / 4) as u32;
+            let curve_element_count = (num_curves as u32) * 2;
+            instances.push(GlyphInstance {
+                screen_rect: [screen_x, screen_y, screen_w, screen_h],
+                em_rect: [min_x, min_y, max_x, max_y],
+                band_transform: band_data.band_transform,
+                glyph_data: [*buffer_offset, band_count - 1, band_count - 1, 0],
+                color: inst_color,
+                depth: 0.0,
+                ppem: font_size,
+                _pad: [0.0; 2],
+            });
+            prepared.push(PreparedGlyph { outline, band_data });
+            *buffer_offset += band_element_count + curve_element_count;
         };
 
-        let num_curves = outline.curves.len();
+        if let Some(ColorGlyphInfo::V0Layers(layers)) =
+            extract_color_info(font_data, 0, glyph_id, &location)
+        {
+            for layer in &layers {
+                if let Some(outline) = extract_outline(font_data, 0, layer.glyph_id, &location) {
+                    let c = if layer.use_foreground { color } else { layer.color };
+                    push_outline(outline, c, &mut instances, &mut prepared, &mut buffer_offset);
+                }
+            }
+        } else if let Some(outline) = extract_outline(font_data, 0, glyph_id, &location) {
+            push_outline(outline, color, &mut instances, &mut prepared, &mut buffer_offset);
+        }
 
-        // Curve locations are 0-based within curve region (will be fixupped in build_glyph_buffer)
-        let curve_locations: Vec<CurveLocation> = (0..num_curves)
-            .map(|i| CurveLocation {
-                offset: (i as u32) * 2,
-            })
-            .collect();
-
-        let band_count = (num_curves as u32).clamp(1, 16);
-        let band_data = build_bands(
-            &outline,
-            &curve_locations,
-            band_count,
-            band_count,
-            Vec::new(),
-            &mut sluggrs::band::BandScratch::default(),
-        );
-
-        let [min_x, min_y, max_x, max_y] = outline.bounds;
-
-        let screen_x = cursor_x + min_x * scale;
-        let screen_y = start_y - max_y * scale;
-        let screen_w = (max_x - min_x) * scale;
-        let screen_h = (max_y - min_y) * scale;
-
-        let band_element_count = (band_data.entries.len() / 4) as u32;
-        let curve_element_count = (num_curves as u32) * 2;
-        let blob_size = band_element_count + curve_element_count;
-
-        instances.push(GlyphInstance {
-            screen_rect: [screen_x, screen_y, screen_w, screen_h],
-            em_rect: [min_x, min_y, max_x, max_y],
-            band_transform: band_data.band_transform,
-            glyph_data: [
-                buffer_offset,
-                band_count - 1,
-                band_count - 1,
-                0,
-            ],
-            color,
-            depth: 0.0,
-            ppem: font_size,
-            _pad: [0.0; 2],
-        });
-
-        prepared.push(PreparedGlyph {
-            outline,
-            band_data,
-        });
-
-        buffer_offset += blob_size;
         cursor_x += advance * scale;
     }
 
@@ -723,6 +719,20 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
         y,
         light_gray,
         None,
+    );
+    y += 40.0;
+
+    // --- COLRv0 color emoji test ---
+    y += 16.0; // extra space — emoji bounds exceed 1em in this font
+    add_line(
+        TWEMOJI_COLR,
+        "\u{1F600}\u{1F60D}\u{1F525}\u{2764}\u{1F680}\u{1F308}\u{1F3B5}\u{2B50}",
+        48.0, left, y, white, None,
+    );
+    y += 24.0;
+    add_line(
+        INTER_VARIABLE, "48px Twemoji COLRv0: color vector emoji",
+        14.0, left, y, light_gray, None,
     );
     y += 40.0;
 

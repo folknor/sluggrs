@@ -1,10 +1,11 @@
 use crate::band::{BandScratch, CurveLocation};
-use crate::glyph_cache::{GlyphEntry, GlyphMap};
+use crate::glyph_cache::{ColorGlyphEntry, GlyphEntry, GlyphKey, GlyphMap};
 use crate::gpu_cache::Cache;
 use crate::outline::GlyphOutline;
 use crate::raster_text::{NonVectorGlyph, RasterState, RasterVertex};
 use crate::types::ColorMode;
 use crate::viewport::Viewport;
+use rustc_hash::FxHashMap;
 
 use wgpu::{
     BindGroup, Buffer, DepthStencilState, Device, MultisampleState, Queue, RenderPass,
@@ -25,8 +26,8 @@ pub struct TextAtlas {
     pub(crate) color_mode: ColorMode,
 
     // Buffer state
-    buffer_capacity: u32, // in vec4<i32> elements
-    buffer_cursor: u32,   // append cursor in elements
+    buffer_capacity: u32,       // in vec4<i32> elements
+    buffer_cursor: u32,         // append cursor in elements
     buffer_data: Vec<[i32; 4]>, // CPU-side copy for re-upload on growth
 
     // Scratch buffers reused across upload_glyph() calls
@@ -39,6 +40,8 @@ pub struct TextAtlas {
 
     // Glyph cache
     pub(crate) glyphs: GlyphMap,
+    /// COLRv0 color glyph layers, keyed by the same GlyphKey as the main map.
+    pub(crate) color_glyphs: FxHashMap<GlyphKey, ColorGlyphEntry>,
     /// Monotonic counter incremented on atlas reset. Used by TextRenderer's
     /// retained cache to detect when cached glyph offsets are invalidated.
     generation: u32,
@@ -80,6 +83,7 @@ impl TextAtlas {
             gpu_flush_cursor: 0,
             generation: 0,
             glyphs: GlyphMap::new(),
+            color_glyphs: FxHashMap::default(),
             raster: None,
             swash_cache: cosmic_text::SwashCache::new(),
         }
@@ -204,6 +208,7 @@ impl TextAtlas {
         );
 
         self.glyphs.clear();
+        self.color_glyphs.clear();
         self.buffer_cursor = 0;
         self.buffer_data.clear();
         self.gpu_flush_cursor = 0;
@@ -245,7 +250,11 @@ impl TextAtlas {
         // Reject glyphs with coordinates that would overflow i16 quantization.
         // i16 range ±32767 at 4 units/em → ±8191.75 font units.
         let [bmin_x, bmin_y, bmax_x, bmax_y] = gpu_outline.bounds;
-        let max_coord = bmin_x.abs().max(bmin_y.abs()).max(bmax_x.abs()).max(bmax_y.abs());
+        let max_coord = bmin_x
+            .abs()
+            .max(bmin_y.abs())
+            .max(bmax_x.abs())
+            .max(bmax_y.abs());
         if max_coord * 4.0 > 32767.0 {
             return Ok(crate::glyph_cache::NON_VECTOR_GLYPH);
         }
@@ -261,18 +270,23 @@ impl TextAtlas {
         let q = |v: f32| -> i32 { (v * 4.0).round() as i32 };
 
         for (i, curve) in gpu_outline.curves.iter().enumerate() {
-            let is_continuation = i > 0
-                && curve.p1 == gpu_outline.curves[i - 1].p3;
+            let is_continuation = i > 0 && curve.p1 == gpu_outline.curves[i - 1].p3;
 
             if is_continuation {
                 // Overwrite previous p3 texel's .zw with our p2
-                let last = self.scratch_curve_texels.last_mut().expect("continuation curve must have preceding texel");
+                let last = self
+                    .scratch_curve_texels
+                    .last_mut()
+                    .expect("continuation curve must have preceding texel");
                 last[2] = q(curve.p2[0]);
                 last[3] = q(curve.p2[1]);
             } else {
                 // New contour: emit fresh p12 texel
                 self.scratch_curve_texels.push([
-                    q(curve.p1[0]), q(curve.p1[1]), q(curve.p2[0]), q(curve.p2[1]),
+                    q(curve.p1[0]),
+                    q(curve.p1[1]),
+                    q(curve.p2[0]),
+                    q(curve.p2[1]),
                 ]);
             }
 
@@ -283,7 +297,8 @@ impl TextAtlas {
             });
 
             // Emit p3 texel
-            self.scratch_curve_texels.push([q(curve.p3[0]), q(curve.p3[1]), 0, 0]);
+            self.scratch_curve_texels
+                .push([q(curve.p3[0]), q(curve.p3[1]), 0, 0]);
         }
         let curve_element_count = self.scratch_curve_texels.len() as u32;
 
@@ -335,7 +350,8 @@ impl TextAtlas {
                 .chunks_exact(4)
                 .map(|c| [c[0] as i32, c[1] as i32, c[2] as i32, c[3] as i32]),
         );
-        self.buffer_data.extend_from_slice(&self.scratch_curve_texels);
+        self.buffer_data
+            .extend_from_slice(&self.scratch_curve_texels);
 
         // Reclaim scratch
         self.scratch_band_entries = band_entries;

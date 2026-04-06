@@ -4,6 +4,7 @@ use skrifa::{
     MetadataProvider,
     instance::Size,
     outline::{DrawSettings, OutlinePen},
+    color::{Brush, ColorGlyphFormat, ColorPainter, CompositeMode, Transform},
 };
 
 /// A quadratic bezier curve: 3 control points in em-space.
@@ -107,14 +108,27 @@ impl OutlinePen for CollectPen {
             {
                 // Flat enough — emit as line (p2=p1 encoding)
                 let p3f = [x, y];
-                self.curves.push(QuadCurve { p1: self.current, p2: self.current, p3: p3f });
+                self.curves.push(QuadCurve {
+                    p1: self.current,
+                    p2: self.current,
+                    p3: p3f,
+                });
                 self.current = p3f;
                 self.update_bounds(p3f);
                 return;
             }
         }
 
-        cubic_to_quadratics(&mut self.curves, &mut self.min, &mut self.max, c0, c1, c2, c3, 0);
+        cubic_to_quadratics(
+            &mut self.curves,
+            &mut self.min,
+            &mut self.max,
+            c0,
+            c1,
+            c2,
+            c3,
+            0,
+        );
         self.current = [x, y];
     }
 
@@ -229,12 +243,19 @@ fn cubic_to_quadratics(
     out: &mut Vec<QuadCurve>,
     bounds_min: &mut [f32; 2],
     bounds_max: &mut [f32; 2],
-    c0: P, c1: P, c2: P, c3: P,
+    c0: P,
+    c1: P,
+    c2: P,
+    c3: P,
     depth: u32,
 ) {
     // Try single-quad fit
     if let Some(q1) = approx_quadratic(c0, c1, c2, c3, CU2QU_TOLERANCE) {
-        out.push(QuadCurve { p1: c0, p2: q1, p3: c3 });
+        out.push(QuadCurve {
+            p1: c0,
+            p2: q1,
+            p3: c3,
+        });
         for p in [q1, c3] {
             bounds_min[0] = bounds_min[0].min(p[0]);
             bounds_min[1] = bounds_min[1].min(p[1]);
@@ -247,7 +268,11 @@ fn cubic_to_quadratics(
     // Max depth fallback: emit line
     if depth >= CU2QU_MAX_DEPTH {
         if c0 != c3 {
-            out.push(QuadCurve { p1: c0, p2: c0, p3: c3 });
+            out.push(QuadCurve {
+                p1: c0,
+                p2: c0,
+                p3: c3,
+            });
             bounds_min[0] = bounds_min[0].min(c3[0]);
             bounds_min[1] = bounds_min[1].min(c3[1]);
             bounds_max[0] = bounds_max[0].max(c3[0]);
@@ -310,9 +335,153 @@ pub fn char_to_glyph_id(font_data: &[u8], face_index: u32, ch: char) -> Option<u
     Some(glyph_id.to_u32() as u16)
 }
 
+/// A single layer of a COLRv0 color glyph.
+#[derive(Debug, Clone)]
+pub struct ColorLayer {
+    /// Sub-glyph ID to extract the outline from.
+    pub glyph_id: u16,
+    /// RGBA color for this layer. If `use_foreground` is true, this is zeroed
+    /// and the caller should substitute the text's foreground color.
+    pub color: [f32; 4],
+    /// True if palette_index was 0xFFFF (foreground color sentinel).
+    pub use_foreground: bool,
+}
+
+/// Result of COLR table inspection for a glyph.
+pub enum ColorGlyphInfo {
+    /// COLRv0: flat solid-color layers, back-to-front.
+    V0Layers(Vec<ColorLayer>),
+    /// COLRv1: gradient/transform/composite tree (not yet handled in Phase 1).
+    V1,
+}
+
+/// Check whether a glyph has COLR color data. Returns the color info if so.
+///
+/// `location`: variable font axis settings (e.g. weight).
+pub fn extract_color_info(
+    font_data: &[u8],
+    face_index: u32,
+    glyph_id: u16,
+    location: &[skrifa::setting::VariationSetting],
+) -> Option<ColorGlyphInfo> {
+    let font = skrifa::FontRef::from_index(font_data, face_index).ok()?;
+    let color_glyphs = font.color_glyphs();
+    let color_glyph = color_glyphs.get(skrifa::GlyphId::new(glyph_id as u32))?;
+
+    match color_glyph.format() {
+        ColorGlyphFormat::ColrV1 => Some(ColorGlyphInfo::V1),
+        ColorGlyphFormat::ColrV0 => {
+            let palettes = font.color_palettes();
+            let palette = palettes.get(0);
+            let palette_colors = palette.as_ref().map(skrifa::color::ColorPalette::colors);
+
+            let mut collector = ColrV0Collector {
+                layers: Vec::new(),
+                palette_colors,
+            };
+
+            let axes = font.axes();
+            let loc = axes.location(location);
+            if color_glyph.paint(&loc, &mut collector).is_err() {
+                return None;
+            }
+
+            if collector.layers.is_empty() {
+                return None;
+            }
+
+            Some(ColorGlyphInfo::V0Layers(collector.layers))
+        }
+    }
+}
+
+/// Minimal ColorPainter that collects COLRv0 layers (solid-color fill_glyph calls).
+struct ColrV0Collector<'a> {
+    layers: Vec<ColorLayer>,
+    palette_colors: Option<&'a [skrifa::color::Color]>,
+}
+
+impl ColorPainter for ColrV0Collector<'_> {
+    fn push_transform(&mut self, _transform: Transform) {}
+    fn pop_transform(&mut self) {}
+    fn push_clip_glyph(&mut self, _glyph_id: skrifa::GlyphId) {}
+    fn push_clip_box(&mut self, _clip_box: skrifa::metrics::BoundingBox) {}
+    fn pop_clip(&mut self) {}
+    fn push_layer(&mut self, _composite_mode: CompositeMode) {}
+    fn pop_layer(&mut self) {}
+
+    fn fill(&mut self, _brush: Brush<'_>) {
+        // COLRv0 should only use fill_glyph, not bare fill.
+    }
+
+    fn fill_glyph(
+        &mut self,
+        glyph_id: skrifa::GlyphId,
+        _brush_transform: Option<Transform>,
+        brush: Brush<'_>,
+    ) {
+        let Brush::Solid {
+            palette_index,
+            alpha,
+        } = brush
+        else {
+            return; // COLRv0 only has solid fills
+        };
+
+        let use_foreground = palette_index == 0xFFFF;
+        let color = if use_foreground {
+            [0.0; 4]
+        } else if let Some(colors) = self.palette_colors {
+            if let Some(c) = colors.get(palette_index as usize) {
+                [
+                    c.red as f32 / 255.0 * alpha,
+                    c.green as f32 / 255.0 * alpha,
+                    c.blue as f32 / 255.0 * alpha,
+                    c.alpha as f32 / 255.0 * alpha,
+                ]
+            } else {
+                [0.0, 0.0, 0.0, alpha]
+            }
+        } else {
+            [0.0, 0.0, 0.0, alpha]
+        };
+
+        self.layers.push(ColorLayer {
+            glyph_id: glyph_id.to_u32() as u16,
+            color,
+            use_foreground,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn twemoji_colrv0_layers() {
+        let font_data = include_bytes!("../examples/fonts/TwemojiCOLRv0.ttf");
+        let emojis = ['\u{1F600}', '\u{1F60D}', '\u{1F525}', '\u{2764}'];
+        for ch in emojis {
+            let gid = char_to_glyph_id(font_data.as_slice(), 0, ch)
+                .unwrap_or_else(|| panic!("U+{:04X} not in cmap", ch as u32));
+            let color_info = extract_color_info(font_data.as_slice(), 0, gid, &[]);
+            match &color_info {
+                Some(ColorGlyphInfo::V0Layers(layers)) => {
+                    assert!(!layers.is_empty(),
+                        "U+{:04X}: V0 but no layers", ch as u32);
+                    for (i, l) in layers.iter().enumerate() {
+                        let outline = extract_outline(font_data.as_slice(), 0, l.glyph_id, &[]);
+                        assert!(outline.is_some(),
+                            "U+{:04X} layer {i}: glyph_id={} has no outline",
+                            ch as u32, l.glyph_id,
+                        );
+                    }
+                }
+                _ => panic!("U+{:04X}: expected V0Layers", ch as u32),
+            }
+        }
+    }
 
     #[test]
     fn cu2qu_produces_at_least_one_quad() {
@@ -320,8 +489,13 @@ mod tests {
         let mut bmin = [f32::MAX; 2];
         let mut bmax = [f32::MIN; 2];
         cubic_to_quadratics(
-            &mut out, &mut bmin, &mut bmax,
-            [0.0, 0.0], [10.0, 100.0], [90.0, 100.0], [100.0, 0.0],
+            &mut out,
+            &mut bmin,
+            &mut bmax,
+            [0.0, 0.0],
+            [10.0, 100.0],
+            [90.0, 100.0],
+            [100.0, 0.0],
             0,
         );
         assert!(!out.is_empty(), "cu2qu must produce at least one curve");
@@ -335,8 +509,13 @@ mod tests {
         let mut bmin = [f32::MAX; 2];
         let mut bmax = [f32::MIN; 2];
         cubic_to_quadratics(
-            &mut out, &mut bmin, &mut bmax,
-            [0.0, 0.0], [0.0, 100.0], [100.0, 100.0], [100.0, 0.0],
+            &mut out,
+            &mut bmin,
+            &mut bmax,
+            [0.0, 0.0],
+            [0.0, 100.0],
+            [100.0, 100.0],
+            [100.0, 0.0],
             0,
         );
         for i in 0..out.len() - 1 {
@@ -355,8 +534,13 @@ mod tests {
         let mut bmin = [f32::MAX; 2];
         let mut bmax = [f32::MIN; 2];
         cubic_to_quadratics(
-            &mut out, &mut bmin, &mut bmax,
-            [0.0, 0.0], [0.0, 1000.0], [1000.0, 1000.0], [1000.0, 0.0],
+            &mut out,
+            &mut bmin,
+            &mut bmax,
+            [0.0, 0.0],
+            [0.0, 1000.0],
+            [1000.0, 1000.0],
+            [1000.0, 0.0],
             0,
         );
         assert!(
@@ -430,7 +614,12 @@ mod tests {
             // Small curve (10 units)
             ([0.0, 0.0], [3.0, 8.0], [7.0, 8.0], [10.0, 0.0]),
             // Large CJK-scale (2048 upem)
-            ([100.0, 200.0], [400.0, 1800.0], [1600.0, 1800.0], [1900.0, 200.0]),
+            (
+                [100.0, 200.0],
+                [400.0, 1800.0],
+                [1600.0, 1800.0],
+                [1900.0, 200.0],
+            ),
         ];
 
         for (i, &(c0, c1, c2, c3)) in cubics.iter().enumerate() {
@@ -442,11 +631,19 @@ mod tests {
             assert!(!out.is_empty(), "cubic {i} produced no quads");
             // Sharp inflections (e.g. S-curves) legitimately need 20+ quads.
             // Max depth 10 caps at 1024; typical glyphs produce 1-30.
-            assert!(out.len() <= 64, "cubic {i}: excessive subdivisions ({})", out.len());
+            assert!(
+                out.len() <= 64,
+                "cubic {i}: excessive subdivisions ({})",
+                out.len()
+            );
 
             // Endpoint preservation
             assert_eq!(out[0].p1, c0, "cubic {i}: first quad doesn't start at c0");
-            assert_eq!(out.last().expect("non-empty").p3, c3, "cubic {i}: last quad doesn't end at c3");
+            assert_eq!(
+                out.last().expect("non-empty").p3,
+                c3,
+                "cubic {i}: last quad doesn't end at c3"
+            );
 
             // Chain continuity
             for j in 0..out.len() - 1 {
@@ -461,10 +658,20 @@ mod tests {
             // p1 of the first quad is the start point, tracked separately by the pen.
             for q in &out {
                 for p in [q.p2, q.p3] {
-                    assert!(p[0] >= bmin[0] - 1e-3 && p[0] <= bmax[0] + 1e-3,
-                        "cubic {i}: x={} outside bounds [{}, {}]", p[0], bmin[0], bmax[0]);
-                    assert!(p[1] >= bmin[1] - 1e-3 && p[1] <= bmax[1] + 1e-3,
-                        "cubic {i}: y={} outside bounds [{}, {}]", p[1], bmin[1], bmax[1]);
+                    assert!(
+                        p[0] >= bmin[0] - 1e-3 && p[0] <= bmax[0] + 1e-3,
+                        "cubic {i}: x={} outside bounds [{}, {}]",
+                        p[0],
+                        bmin[0],
+                        bmax[0]
+                    );
+                    assert!(
+                        p[1] >= bmin[1] - 1e-3 && p[1] <= bmax[1] + 1e-3,
+                        "cubic {i}: y={} outside bounds [{}, {}]",
+                        p[1],
+                        bmin[1],
+                        bmax[1]
+                    );
                 }
             }
         }
