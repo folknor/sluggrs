@@ -64,20 +64,10 @@ fn build_glyph_buffer(glyphs: &[PreparedGlyph]) -> Vec<[i32; 4]> {
             curve_texels.push([q(curve.p3[0]), q(curve.p3[1]), 0, 0]);
         }
 
-        // Band data with fixedup curve refs
-        let band_element_count = glyph.band_data.entries.len() / 4;
-        let num_headers = (glyph.band_data.band_count_x + glyph.band_data.band_count_y) as usize;
-
-        // Widen band entries to i32, fixing up curve ref offsets
-        for (texel_idx, chunk) in glyph.band_data.entries.chunks(4).enumerate() {
-            let mut t = [chunk[0] as i32, chunk[1] as i32, chunk[2] as i32, chunk[3] as i32];
-            // Curve refs come after headers — fixup their offset by adding band size
-            if texel_idx >= num_headers {
-                let raw_offset = t[0] + 32768; // decode bias
-                let adjusted = raw_offset + band_element_count as i32;
-                t[0] = adjusted - 32768; // re-encode
-            }
-            buffer.push(t);
+        // Widen band entries to i32. Curve ref offsets are already final —
+        // build_bands pre-adds band_element_count since 12ad65d.
+        for chunk in glyph.band_data.entries.chunks(4) {
+            buffer.push([chunk[0] as i32, chunk[1] as i32, chunk[2] as i32, chunk[3] as i32]);
         }
 
         // Append curve texels
