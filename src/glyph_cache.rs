@@ -90,6 +90,28 @@ pub struct ColorGlyphEntry {
     pub units_per_em: f32,
 }
 
+/// A COLRv1 color glyph: command sequence interpreted by the fragment shader.
+pub struct ColorV1GlyphEntry {
+    /// Offset of the command blob in the storage buffer.
+    pub blob_offset: u32,
+    /// Number of command texels the shader iterates.
+    pub cmd_count: u32,
+    /// Union of all sub-glyph bounds in em-space.
+    pub bounds: [f32; 4],
+    pub units_per_em: f32,
+}
+
+/// Sentinel for COLRv1 color glyphs — look up `color_v1_glyphs` map.
+pub const COLOR_V1_VECTOR_GLYPH: GlyphEntry = GlyphEntry {
+    band_offset: u32::MAX - 2,
+    band_max_x: 0,
+    band_max_y: 0,
+    band_transform: [0.0; 4],
+    bounds: [0.0; 4],
+    units_per_em: 1000.0,
+    last_used_epoch: 0,
+};
+
 impl GlyphEntry {
     /// Construct a new GlyphEntry. Sets `last_used_epoch` to 0 (not yet used).
     pub fn new(
@@ -117,6 +139,10 @@ impl GlyphEntry {
 
     pub fn is_color_vector(&self) -> bool {
         self.band_offset == u32::MAX - 1
+    }
+
+    pub fn is_color_v1_vector(&self) -> bool {
+        self.band_offset == u32::MAX - 2
     }
 }
 

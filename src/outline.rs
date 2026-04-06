@@ -351,9 +351,32 @@ pub struct ColorLayer {
 pub enum ColorGlyphInfo {
     /// COLRv0: flat solid-color layers, back-to-front.
     V0Layers(Vec<ColorLayer>),
-    /// COLRv1: gradient/transform/composite tree (not yet handled in Phase 1).
-    V1,
+    /// COLRv1: command sequence + sub-glyph outlines for GPU interpreter.
+    V1(ColorV1Data),
 }
+
+/// Encoded COLRv1 glyph data ready for GPU upload.
+pub struct ColorV1Data {
+    /// Command sequence (vec4<i32> texels).
+    pub commands: Vec<[i32; 4]>,
+    /// Sub-glyph outlines with their band data, in order of first reference.
+    pub sub_glyphs: Vec<ColorV1SubGlyph>,
+    /// Number of commands the shader needs to iterate.
+    pub cmd_count: u32,
+}
+
+/// A single sub-glyph within a COLRv1 command sequence.
+pub struct ColorV1SubGlyph {
+    pub outline: GlyphOutline,
+    /// Offset from blob start to this sub-glyph's header (set during upload).
+    pub blob_offset: u32,
+}
+
+// Command opcodes for the shader interpreter.
+pub const CMD_PUSH_GROUP: i32 = 1;
+pub const CMD_DRAW_SOLID: i32 = 2;
+pub const CMD_DRAW_GRADIENT: i32 = 3;
+pub const CMD_POP_GROUP: i32 = 4;
 
 /// Check whether a glyph has COLR color data. Returns the color info if so.
 ///
@@ -369,7 +392,10 @@ pub fn extract_color_info(
     let color_glyph = color_glyphs.get(skrifa::GlyphId::new(glyph_id as u32))?;
 
     match color_glyph.format() {
-        ColorGlyphFormat::ColrV1 => Some(ColorGlyphInfo::V1),
+        ColorGlyphFormat::ColrV1 => {
+            encode_colr_v1(font_data, face_index, glyph_id, location)
+                .map(ColorGlyphInfo::V1)
+        }
         ColorGlyphFormat::ColrV0 => {
             let palettes = font.color_palettes();
             let palette = palettes.get(0);
@@ -454,9 +480,426 @@ impl ColorPainter for ColrV0Collector<'_> {
     }
 }
 
+/// Encode a COLRv1 color glyph into a command sequence for the GPU shader.
+///
+/// Walks the paint tree via skrifa's ColorPainter, applying transforms to
+/// bezier control points on the CPU. Emits a linear command stream that the
+/// fragment shader interprets with a small color stack.
+pub fn encode_colr_v1(
+    font_data: &[u8],
+    face_index: u32,
+    glyph_id: u16,
+    location: &[skrifa::setting::VariationSetting],
+) -> Option<ColorV1Data> {
+    let font = skrifa::FontRef::from_index(font_data, face_index).ok()?;
+    let color_glyphs = font.color_glyphs();
+    let color_glyph =
+        color_glyphs.get_with_format(skrifa::GlyphId::new(glyph_id as u32), ColorGlyphFormat::ColrV1)?;
+
+    let palettes = font.color_palettes();
+    let palette = palettes.get(0);
+    let palette_colors = palette.as_ref().map(skrifa::color::ColorPalette::colors);
+
+    let mut encoder = CommandEncoder {
+        font_data,
+        face_index,
+        location,
+        palette_colors,
+        commands: Vec::new(),
+        sub_glyphs: Vec::new(),
+        transform_stack: vec![AffineTransform::identity()],
+        clip_glyph: None,
+        composite_mode_stack: Vec::new(),
+    };
+
+    let axes = font.axes();
+    let loc = axes.location(location);
+    if color_glyph.paint(&loc, &mut encoder).is_err() {
+        return None;
+    }
+
+    if encoder.commands.is_empty() {
+        return None;
+    }
+
+    let cmd_count = encoder.commands.len() as u32;
+    Some(ColorV1Data {
+        commands: encoder.commands,
+        sub_glyphs: encoder.sub_glyphs,
+        cmd_count,
+    })
+}
+
+/// 2D affine transform: [xx, yx, xy, yy, dx, dy]
+/// x' = xx*x + xy*y + dx
+/// y' = yx*x + yy*y + dy
+#[derive(Debug, Clone, Copy)]
+struct AffineTransform {
+    xx: f32, yx: f32,
+    xy: f32, yy: f32,
+    dx: f32, dy: f32,
+}
+
+impl AffineTransform {
+    fn identity() -> Self {
+        Self { xx: 1.0, yx: 0.0, xy: 0.0, yy: 1.0, dx: 0.0, dy: 0.0 }
+    }
+
+    /// Concatenate: self * other (apply other first, then self).
+    fn then(&self, other: &Self) -> Self {
+        Self {
+            xx: self.xx * other.xx + self.xy * other.yx,
+            yx: self.yx * other.xx + self.yy * other.yx,
+            xy: self.xx * other.xy + self.xy * other.yy,
+            yy: self.yx * other.xy + self.yy * other.yy,
+            dx: self.xx * other.dx + self.xy * other.dy + self.dx,
+            dy: self.yx * other.dx + self.yy * other.dy + self.dy,
+        }
+    }
+
+    fn transform_point(&self, x: f32, y: f32) -> [f32; 2] {
+        [
+            self.xx * x + self.xy * y + self.dx,
+            self.yx * x + self.yy * y + self.dy,
+        ]
+    }
+
+    fn invert(&self) -> Option<Self> {
+        let det = self.xx * self.yy - self.xy * self.yx;
+        if det.abs() < 1e-12 {
+            return None;
+        }
+        let inv_det = 1.0 / det;
+        Some(Self {
+            xx: self.yy * inv_det,
+            yx: -self.yx * inv_det,
+            xy: -self.xy * inv_det,
+            yy: self.xx * inv_det,
+            dx: (self.xy * self.dy - self.yy * self.dx) * inv_det,
+            dy: (self.yx * self.dx - self.xx * self.dy) * inv_det,
+        })
+    }
+
+    fn from_skrifa(t: &Transform) -> Self {
+        Self { xx: t.xx, yx: t.yx, xy: t.xy, yy: t.yy, dx: t.dx, dy: t.dy }
+    }
+}
+
+/// Pack an RGBA color into two i32 values: [R_G, B_A] with 8-bit components.
+fn pack_color_i32(r: f32, g: f32, b: f32, a: f32) -> [i32; 2] {
+    let ri = (r.clamp(0.0, 1.0) * 255.0).round() as u32;
+    let gi = (g.clamp(0.0, 1.0) * 255.0).round() as u32;
+    let bi = (b.clamp(0.0, 1.0) * 255.0).round() as u32;
+    let ai = (a.clamp(0.0, 1.0) * 255.0).round() as u32;
+    [(ri << 8 | gi) as i32, (bi << 8 | ai) as i32]
+}
+
+/// Pack a fixed-point f32 into two i16-in-i32 values (integer + fractional).
+fn pack_fixed(v: f32) -> [i32; 2] {
+    let integer = v.floor() as i32;
+    let fractional = ((v - v.floor()) * (1 << 15) as f32).round() as i32;
+    [integer, fractional]
+}
+
+struct CommandEncoder<'a> {
+    font_data: &'a [u8],
+    face_index: u32,
+    location: &'a [skrifa::setting::VariationSetting],
+    palette_colors: Option<&'a [skrifa::color::Color]>,
+    commands: Vec<[i32; 4]>,
+    sub_glyphs: Vec<ColorV1SubGlyph>,
+    transform_stack: Vec<AffineTransform>,
+    clip_glyph: Option<skrifa::GlyphId>,
+    composite_mode_stack: Vec<i32>,
+}
+
+impl<'a> CommandEncoder<'a> {
+    fn current_transform(&self) -> &AffineTransform {
+        self.transform_stack.last().expect("transform stack not empty")
+    }
+
+    /// Extract a glyph outline and apply the current transform to all control points.
+    fn extract_transformed_outline(&self, glyph_id: skrifa::GlyphId) -> Option<GlyphOutline> {
+        let mut outline = extract_outline(
+            self.font_data, self.face_index, glyph_id.to_u32() as u16, self.location,
+        )?;
+
+        let t = self.current_transform();
+        if t.xx != 1.0 || t.xy != 0.0 || t.yx != 0.0 || t.yy != 1.0
+            || t.dx != 0.0 || t.dy != 0.0
+        {
+            let mut min = [f32::MAX; 2];
+            let mut max = [f32::MIN; 2];
+            for curve in &mut outline.curves {
+                curve.p1 = t.transform_point(curve.p1[0], curve.p1[1]);
+                curve.p2 = t.transform_point(curve.p2[0], curve.p2[1]);
+                curve.p3 = t.transform_point(curve.p3[0], curve.p3[1]);
+                for p in [curve.p1, curve.p2, curve.p3] {
+                    min[0] = min[0].min(p[0]);
+                    min[1] = min[1].min(p[1]);
+                    max[0] = max[0].max(p[0]);
+                    max[1] = max[1].max(p[1]);
+                }
+            }
+            outline.bounds = [min[0], min[1], max[0], max[1]];
+        }
+
+        Some(outline)
+    }
+
+    /// Add a sub-glyph and return its index (offset will be set during upload).
+    fn add_sub_glyph(&mut self, outline: GlyphOutline) -> u32 {
+        let idx = self.sub_glyphs.len() as u32;
+        self.sub_glyphs.push(ColorV1SubGlyph { outline, blob_offset: 0 });
+        idx
+    }
+
+    fn resolve_color(&self, palette_index: u16, alpha: f32) -> [f32; 4] {
+        if palette_index == 0xFFFF {
+            // Foreground color — shader will use instance color
+            [1.0, 1.0, 1.0, alpha]
+        } else if let Some(colors) = self.palette_colors {
+            if let Some(c) = colors.get(palette_index as usize) {
+                [
+                    c.red as f32 / 255.0,
+                    c.green as f32 / 255.0,
+                    c.blue as f32 / 255.0,
+                    c.alpha as f32 / 255.0 * alpha,
+                ]
+            } else {
+                [0.0, 0.0, 0.0, alpha]
+            }
+        } else {
+            [0.0, 0.0, 0.0, alpha]
+        }
+    }
+
+    fn emit_draw_solid(&mut self, sub_glyph_idx: u32, color: [f32; 4]) {
+        let [rg, ba] = pack_color_i32(color[0], color[1], color[2], color[3]);
+        self.commands.push([CMD_DRAW_SOLID, sub_glyph_idx as i32, rg, ba]);
+    }
+
+    fn emit_draw_gradient(
+        &mut self,
+        sub_glyph_idx: u32,
+        brush: &Brush<'_>,
+        brush_transform: Option<&AffineTransform>,
+    ) {
+        // Compute inverse of the full brush transform for gradient evaluation.
+        // The brush transform maps from gradient space to glyph space.
+        // The shader needs the inverse to go from pixel coords to gradient coords.
+        let current = *self.current_transform();
+        let full_transform = if let Some(bt) = brush_transform {
+            current.then(bt)
+        } else {
+            current
+        };
+        let inv = full_transform.invert().unwrap_or_else(AffineTransform::identity);
+
+        match brush {
+            Brush::LinearGradient { p0, p1, color_stops, extend: _ } => {
+                // Command header
+                self.commands.push([CMD_DRAW_GRADIENT, sub_glyph_idx as i32, 0, color_stops.len() as i32]);
+                // Inverse transform (2 texels, 6 fixed-point values)
+                let [ixx_i, ixx_f] = pack_fixed(inv.xx);
+                let [ixy_i, ixy_f] = pack_fixed(inv.xy);
+                self.commands.push([ixx_i, ixx_f, ixy_i, ixy_f]);
+                let [iyx_i, iyx_f] = pack_fixed(inv.yx);
+                let [iyy_i, iyy_f] = pack_fixed(inv.yy);
+                self.commands.push([iyx_i, iyx_f, iyy_i, iyy_f]);
+                let [idx_i, idx_f] = pack_fixed(inv.dx);
+                let [idy_i, idy_f] = pack_fixed(inv.dy);
+                self.commands.push([idx_i, idx_f, idy_i, idy_f]);
+                // Gradient params: p0, p1 as fixed-point
+                let [p0x_i, p0x_f] = pack_fixed(p0.x);
+                let [p0y_i, p0y_f] = pack_fixed(p0.y);
+                self.commands.push([p0x_i, p0x_f, p0y_i, p0y_f]);
+                let [p1x_i, p1x_f] = pack_fixed(p1.x);
+                let [p1y_i, p1y_f] = pack_fixed(p1.y);
+                self.commands.push([p1x_i, p1x_f, p1y_i, p1y_f]);
+                // Color stops
+                for stop in *color_stops {
+                    let c = self.resolve_color(stop.palette_index, stop.alpha);
+                    let [rg, ba] = pack_color_i32(c[0], c[1], c[2], c[3]);
+                    let [off_i, off_f] = pack_fixed(stop.offset);
+                    self.commands.push([off_i, off_f, rg, ba]);
+                }
+            }
+            Brush::RadialGradient { c0, r0, c1, r1, color_stops, extend: _ } => {
+                self.commands.push([CMD_DRAW_GRADIENT, sub_glyph_idx as i32, 1, color_stops.len() as i32]);
+                // Inverse transform (3 texels)
+                let [ixx_i, ixx_f] = pack_fixed(inv.xx);
+                let [ixy_i, ixy_f] = pack_fixed(inv.xy);
+                self.commands.push([ixx_i, ixx_f, ixy_i, ixy_f]);
+                let [iyx_i, iyx_f] = pack_fixed(inv.yx);
+                let [iyy_i, iyy_f] = pack_fixed(inv.yy);
+                self.commands.push([iyx_i, iyx_f, iyy_i, iyy_f]);
+                let [idx_i, idx_f] = pack_fixed(inv.dx);
+                let [idy_i, idy_f] = pack_fixed(inv.dy);
+                self.commands.push([idx_i, idx_f, idy_i, idy_f]);
+                // Radial params: c0, r0, c1, r1
+                let [c0x_i, c0x_f] = pack_fixed(c0.x);
+                let [c0y_i, c0y_f] = pack_fixed(c0.y);
+                self.commands.push([c0x_i, c0x_f, c0y_i, c0y_f]);
+                let [r0_i, r0_f] = pack_fixed(*r0);
+                let [c1x_i, c1x_f] = pack_fixed(c1.x);
+                self.commands.push([r0_i, r0_f, c1x_i, c1x_f]);
+                let [c1y_i, c1y_f] = pack_fixed(c1.y);
+                let [r1_i, r1_f] = pack_fixed(*r1);
+                self.commands.push([c1y_i, c1y_f, r1_i, r1_f]);
+                // Color stops
+                for stop in *color_stops {
+                    let c = self.resolve_color(stop.palette_index, stop.alpha);
+                    let [rg, ba] = pack_color_i32(c[0], c[1], c[2], c[3]);
+                    let [off_i, off_f] = pack_fixed(stop.offset);
+                    self.commands.push([off_i, off_f, rg, ba]);
+                }
+            }
+            Brush::SweepGradient { c0, start_angle, end_angle, color_stops, extend: _ } => {
+                self.commands.push([CMD_DRAW_GRADIENT, sub_glyph_idx as i32, 2, color_stops.len() as i32]);
+                // Inverse transform (3 texels)
+                let [ixx_i, ixx_f] = pack_fixed(inv.xx);
+                let [ixy_i, ixy_f] = pack_fixed(inv.xy);
+                self.commands.push([ixx_i, ixx_f, ixy_i, ixy_f]);
+                let [iyx_i, iyx_f] = pack_fixed(inv.yx);
+                let [iyy_i, iyy_f] = pack_fixed(inv.yy);
+                self.commands.push([iyx_i, iyx_f, iyy_i, iyy_f]);
+                let [idx_i, idx_f] = pack_fixed(inv.dx);
+                let [idy_i, idy_f] = pack_fixed(inv.dy);
+                self.commands.push([idx_i, idx_f, idy_i, idy_f]);
+                // Sweep params: center, start_angle, end_angle
+                let [cx_i, cx_f] = pack_fixed(c0.x);
+                let [cy_i, cy_f] = pack_fixed(c0.y);
+                self.commands.push([cx_i, cx_f, cy_i, cy_f]);
+                let [sa_i, sa_f] = pack_fixed(*start_angle);
+                let [ea_i, ea_f] = pack_fixed(*end_angle);
+                self.commands.push([sa_i, sa_f, ea_i, ea_f]);
+                // Color stops
+                for stop in *color_stops {
+                    let c = self.resolve_color(stop.palette_index, stop.alpha);
+                    let [rg, ba] = pack_color_i32(c[0], c[1], c[2], c[3]);
+                    let [off_i, off_f] = pack_fixed(stop.offset);
+                    self.commands.push([off_i, off_f, rg, ba]);
+                }
+            }
+            Brush::Solid { palette_index, alpha } => {
+                let color = self.resolve_color(*palette_index, *alpha);
+                self.emit_draw_solid(sub_glyph_idx, color);
+            }
+        }
+    }
+}
+
+impl ColorPainter for CommandEncoder<'_> {
+    fn push_transform(&mut self, transform: Transform) {
+        let new = self.current_transform().then(&AffineTransform::from_skrifa(&transform));
+        self.transform_stack.push(new);
+    }
+
+    fn pop_transform(&mut self) {
+        if self.transform_stack.len() > 1 {
+            self.transform_stack.pop();
+        }
+    }
+
+    fn push_clip_glyph(&mut self, glyph_id: skrifa::GlyphId) {
+        self.clip_glyph = Some(glyph_id);
+    }
+
+    fn push_clip_box(&mut self, _clip_box: skrifa::metrics::BoundingBox) {
+        // COLRv1 clip boxes are just optimization hints — we don't need them
+        // for correctness since the glyph coverage handles clipping.
+    }
+
+    fn pop_clip(&mut self) {
+        self.clip_glyph = None;
+    }
+
+    fn fill(&mut self, brush: Brush<'_>) {
+        // fill() is called after push_clip_glyph(). The clip glyph IS the shape.
+        let clip_glyph = match self.clip_glyph {
+            Some(g) => g,
+            None => return,
+        };
+
+        let outline = match self.extract_transformed_outline(clip_glyph) {
+            Some(o) => o,
+            None => return,
+        };
+        let sub_idx = self.add_sub_glyph(outline);
+
+        match &brush {
+            Brush::Solid { palette_index, alpha } => {
+                let color = self.resolve_color(*palette_index, *alpha);
+                self.emit_draw_solid(sub_idx, color);
+            }
+            _ => {
+                self.emit_draw_gradient(sub_idx, &brush, None);
+            }
+        }
+    }
+
+    fn fill_glyph(
+        &mut self,
+        glyph_id: skrifa::GlyphId,
+        brush_transform: Option<Transform>,
+        brush: Brush<'_>,
+    ) {
+        let outline = match self.extract_transformed_outline(glyph_id) {
+            Some(o) => o,
+            None => return,
+        };
+        let sub_idx = self.add_sub_glyph(outline);
+
+        match &brush {
+            Brush::Solid { palette_index, alpha } => {
+                let color = self.resolve_color(*palette_index, *alpha);
+                self.emit_draw_solid(sub_idx, color);
+            }
+            _ => {
+                let bt = brush_transform.map(|t| {
+                    self.current_transform().then(&AffineTransform::from_skrifa(&t))
+                });
+                self.emit_draw_gradient(sub_idx, &brush, bt.as_ref());
+            }
+        }
+    }
+
+    fn push_layer(&mut self, composite_mode: CompositeMode) {
+        self.commands.push([CMD_PUSH_GROUP, 0, 0, 0]);
+        self.composite_mode_stack.push(composite_mode as i32);
+    }
+
+    fn pop_layer(&mut self) {
+        let mode = self.composite_mode_stack.pop().unwrap_or(3); // default SourceOver
+        self.commands.push([CMD_POP_GROUP, mode, 0, 0]);
+    }
+
+    fn pop_layer_with_mode(&mut self, composite_mode: CompositeMode) {
+        self.composite_mode_stack.pop(); // discard stored mode
+        self.commands.push([CMD_POP_GROUP, composite_mode as i32, 0, 0]);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn noto_color_emoji_colrv1() {
+        let font_data = include_bytes!("../examples/fonts/NotoColorEmoji-Regular.ttf");
+        let gid = char_to_glyph_id(font_data.as_slice(), 0, '\u{1F600}')
+            .expect("U+1F600 in cmap");
+        let info = extract_color_info(font_data.as_slice(), 0, gid, &[]);
+        match &info {
+            Some(ColorGlyphInfo::V1(v1)) => {
+                assert!(v1.cmd_count > 0, "expected commands, got 0");
+                assert!(!v1.sub_glyphs.is_empty(), "expected sub-glyphs");
+            }
+            Some(ColorGlyphInfo::V0Layers(_)) => panic!("expected V1, got V0"),
+            None => panic!("no color info for U+1F600"),
+        }
+    }
 
     #[test]
     fn twemoji_colrv0_layers() {

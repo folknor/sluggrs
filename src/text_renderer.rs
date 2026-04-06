@@ -1,6 +1,7 @@
 use crate::GlyphInstance;
 use crate::glyph_cache::{
-    ColorGlyphEntry, ColorGlyphLayer, GlyphKey, COLOR_VECTOR_GLYPH, NON_VECTOR_GLYPH,
+    ColorGlyphEntry, ColorGlyphLayer, ColorV1GlyphEntry, GlyphKey,
+    COLOR_V1_VECTOR_GLYPH, COLOR_VECTOR_GLYPH, NON_VECTOR_GLYPH,
 };
 use crate::outline::{ColorGlyphInfo, extract_color_info, extract_outline};
 use crate::prepare::apply_italic_shear;
@@ -274,6 +275,49 @@ impl TextRenderer {
                         continue;
                     }
 
+                    if entry.is_color_v1_vector() {
+                        // COLRv1: single instance, shader interprets command sequence.
+                        if let Some(v1_entry) = atlas.color_v1_glyphs.get(&key) {
+                            let scale =
+                                glyph.font_size * text_area.scale / v1_entry.units_per_em;
+                            let glyph_x =
+                                text_area.left + (glyph.x + glyph.x_offset) * text_area.scale;
+                            let glyph_y =
+                                text_area.top + (run.line_y + glyph.y_offset) * text_area.scale;
+                            let [min_x, min_y, max_x, max_y] = v1_entry.bounds;
+                            let screen_x = glyph_x + min_x * scale;
+                            let screen_y = glyph_y - max_y * scale;
+                            let screen_w = (max_x - min_x) * scale;
+                            let screen_h = (max_y - min_y) * scale;
+
+                            if screen_x + screen_w + 1.0 >= bounds_min_x as f32
+                                && screen_x - 1.0 <= bounds_max_x as f32
+                                && screen_y + screen_h + 1.0 >= bounds_min_y as f32
+                                && screen_y - 1.0 <= bounds_max_y as f32
+                            {
+                                self.instances.push(GlyphInstance {
+                                    screen_rect: [screen_x, screen_y, screen_w, screen_h],
+                                    em_rect: [min_x, min_y, max_x, max_y],
+                                    band_transform: [0.0; 4], // unused for V1
+                                    glyph_data: [
+                                        v1_entry.blob_offset,
+                                        0,
+                                        0,
+                                        v1_entry.cmd_count,
+                                    ],
+                                    color: match glyph.color_opt {
+                                        Some(c) => color_to_f32(c),
+                                        None => default_color,
+                                    },
+                                    depth: metadata_to_depth(glyph.metadata),
+                                    ppem: glyph.font_size * text_area.scale,
+                                    _pad: [0.0; 2],
+                                });
+                            }
+                        }
+                        continue;
+                    }
+
                     if entry.is_color_vector() {
                         // COLRv0: emit one instance per layer, back-to-front.
                         if let Some(color_entry) = atlas.color_glyphs.get(&key) {
@@ -496,9 +540,14 @@ impl TextRenderer {
                     Err(_) => NON_VECTOR_GLYPH,
                 }
             }
-            Some(ColorGlyphInfo::V1) => {
-                // Phase 2: COLRv1 not yet implemented, fall back to raster.
-                NON_VECTOR_GLYPH
+            Some(ColorGlyphInfo::V1(mut v1_data)) => {
+                match atlas.upload_color_v1(device, &mut v1_data, units_per_em) {
+                    Ok(v1_entry) => {
+                        atlas.color_v1_glyphs.insert(key, v1_entry);
+                        COLOR_V1_VECTOR_GLYPH
+                    }
+                    Err(_) => NON_VECTOR_GLYPH,
+                }
             }
             None => {
                 // No color data — try regular outline, else raster fallback.

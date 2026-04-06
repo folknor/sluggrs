@@ -1,5 +1,5 @@
 use crate::band::{BandScratch, CurveLocation};
-use crate::glyph_cache::{ColorGlyphEntry, GlyphEntry, GlyphKey, GlyphMap};
+use crate::glyph_cache::{ColorGlyphEntry, ColorV1GlyphEntry, GlyphEntry, GlyphKey, GlyphMap};
 use crate::gpu_cache::Cache;
 use crate::outline::GlyphOutline;
 use crate::raster_text::{NonVectorGlyph, RasterState, RasterVertex};
@@ -42,6 +42,8 @@ pub struct TextAtlas {
     pub(crate) glyphs: GlyphMap,
     /// COLRv0 color glyph layers, keyed by the same GlyphKey as the main map.
     pub(crate) color_glyphs: FxHashMap<GlyphKey, ColorGlyphEntry>,
+    /// COLRv1 color glyph command sequences.
+    pub(crate) color_v1_glyphs: FxHashMap<GlyphKey, ColorV1GlyphEntry>,
     /// Monotonic counter incremented on atlas reset. Used by TextRenderer's
     /// retained cache to detect when cached glyph offsets are invalidated.
     generation: u32,
@@ -84,6 +86,7 @@ impl TextAtlas {
             generation: 0,
             glyphs: GlyphMap::new(),
             color_glyphs: FxHashMap::default(),
+            color_v1_glyphs: FxHashMap::default(),
             raster: None,
             swash_cache: cosmic_text::SwashCache::new(),
         }
@@ -209,6 +212,7 @@ impl TextAtlas {
 
         self.glyphs.clear();
         self.color_glyphs.clear();
+        self.color_v1_glyphs.clear();
         self.buffer_cursor = 0;
         self.buffer_data.clear();
         self.gpu_flush_cursor = 0;
@@ -365,6 +369,146 @@ impl TextAtlas {
             bounds: gpu_outline.bounds,
             units_per_em,
             last_used_epoch: 0,
+        })
+    }
+
+    /// Upload a COLRv1 color glyph command blob.
+    ///
+    /// Layout: [commands...] [sub_glyph_0: header + bands + curves] [sub_glyph_1: ...] ...
+    /// Sub-glyph header (2 texels): band_max + band_transform as bitcast f32→i32.
+    /// Command DRAW opcodes reference sub-glyphs by blob-relative offset.
+    pub(crate) fn upload_color_v1(
+        &mut self,
+        device: &wgpu::Device,
+        v1: &mut crate::outline::ColorV1Data,
+        units_per_em: f32,
+    ) -> Result<ColorV1GlyphEntry, crate::types::PrepareError> {
+        // Phase 1: build each sub-glyph's blob (header + bands + curves).
+        struct SubGlyphBlob {
+            header: [[i32; 4]; 2],
+            band_entries_i32: Vec<[i32; 4]>,
+            curve_texels: Vec<[i32; 4]>,
+        }
+
+        let cmd_texel_count = v1.commands.len() as u32;
+        let mut sub_blobs: Vec<SubGlyphBlob> = Vec::with_capacity(v1.sub_glyphs.len());
+        let mut union_bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+
+        for sub in &v1.sub_glyphs {
+            let outline = &sub.outline;
+            let num_curves = outline.curves.len() as u32;
+
+            // Union bounds
+            union_bounds[0] = union_bounds[0].min(outline.bounds[0]);
+            union_bounds[1] = union_bounds[1].min(outline.bounds[1]);
+            union_bounds[2] = union_bounds[2].max(outline.bounds[2]);
+            union_bounds[3] = union_bounds[3].max(outline.bounds[3]);
+
+            // Build curve texels
+            let q = |v: f32| -> i32 { (v * 4.0).round() as i32 };
+            let mut curve_texels = Vec::with_capacity(num_curves as usize * 2);
+            let mut curve_locations = Vec::with_capacity(num_curves as usize);
+
+            for (i, curve) in outline.curves.iter().enumerate() {
+                let is_continuation = i > 0 && curve.p1 == outline.curves[i - 1].p3;
+                if is_continuation {
+                    let last: &mut [i32; 4] = curve_texels.last_mut().expect("continuation");
+                    last[2] = q(curve.p2[0]);
+                    last[3] = q(curve.p2[1]);
+                } else {
+                    curve_texels.push([
+                        q(curve.p1[0]), q(curve.p1[1]), q(curve.p2[0]), q(curve.p2[1]),
+                    ]);
+                }
+                curve_locations.push(CurveLocation {
+                    offset: curve_texels.len() as u32 - 1,
+                });
+                curve_texels.push([q(curve.p3[0]), q(curve.p3[1]), 0, 0]);
+            }
+
+            let band_count_x = (num_curves).clamp(1, 16);
+            let band_count_y = band_count_x;
+            let band_data = crate::band::build_bands(
+                outline,
+                &curve_locations,
+                band_count_x,
+                band_count_y,
+                self.scratch_band_entries.split_off(0),
+                &mut self.band_scratch,
+            );
+            self.scratch_band_entries = band_data.entries;
+
+            let band_entries_i32: Vec<[i32; 4]> = self.scratch_band_entries
+                .chunks_exact(4)
+                .map(|c| [c[0] as i32, c[1] as i32, c[2] as i32, c[3] as i32])
+                .collect();
+
+            let bt = band_data.band_transform;
+            let header: [[i32; 4]; 2] = [
+                [
+                    band_count_x.saturating_sub(1) as i32,
+                    band_count_y.saturating_sub(1) as i32,
+                    f32::to_bits(bt[0]) as i32,
+                    f32::to_bits(bt[1]) as i32,
+                ],
+                [
+                    f32::to_bits(bt[2]) as i32,
+                    f32::to_bits(bt[3]) as i32,
+                    0,
+                    0,
+                ],
+            ];
+
+            sub_blobs.push(SubGlyphBlob { header, band_entries_i32, curve_texels });
+        }
+
+        // Phase 2: compute sub-glyph offsets within the blob.
+        // Blob layout: [commands] [sub0: header(2) + bands + curves] [sub1: ...]
+        let mut offset = cmd_texel_count;
+        for (i, blob) in sub_blobs.iter().enumerate() {
+            v1.sub_glyphs[i].blob_offset = offset;
+            // header(2) + bands + curves
+            offset += 2 + blob.band_entries_i32.len() as u32 + blob.curve_texels.len() as u32;
+        }
+        let total_blob_size = offset;
+
+        // Phase 3: fixup command sub-glyph indices → blob-relative offsets.
+        for cmd in &mut v1.commands {
+            let opcode = cmd[0];
+            if opcode == crate::outline::CMD_DRAW_SOLID || opcode == crate::outline::CMD_DRAW_GRADIENT {
+                let sub_idx = cmd[1] as usize;
+                if sub_idx < v1.sub_glyphs.len() {
+                    // Point to the sub-glyph's header within the blob.
+                    // The shader adds blob_base to get the absolute offset.
+                    cmd[1] = v1.sub_glyphs[sub_idx].blob_offset as i32;
+                }
+            }
+        }
+
+        // Phase 4: ensure capacity and append to buffer.
+        let glyph_offset = self.buffer_cursor;
+        let new_end = glyph_offset + total_blob_size;
+        if new_end > self.buffer_capacity {
+            self.grow_buffer(device, new_end);
+        }
+
+        // Append commands
+        self.buffer_data.extend_from_slice(&v1.commands);
+        // Append sub-glyph blobs
+        for blob in &sub_blobs {
+            self.buffer_data.push(blob.header[0]);
+            self.buffer_data.push(blob.header[1]);
+            self.buffer_data.extend_from_slice(&blob.band_entries_i32);
+            self.buffer_data.extend_from_slice(&blob.curve_texels);
+        }
+
+        self.buffer_cursor = new_end;
+
+        Ok(ColorV1GlyphEntry {
+            blob_offset: glyph_offset,
+            cmd_count: v1.cmd_count,
+            bounds: union_bounds,
+            units_per_em,
         })
     }
 

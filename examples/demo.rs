@@ -1,5 +1,8 @@
 use sluggrs::band::{self, CurveLocation, build_bands};
-use sluggrs::outline::{char_to_glyph_id, extract_color_info, extract_outline, ColorGlyphInfo};
+use sluggrs::outline::{
+    char_to_glyph_id, encode_colr_v1, extract_color_info, extract_outline,
+    ColorGlyphInfo, CMD_DRAW_GRADIENT, CMD_DRAW_SOLID,
+};
 use sluggrs::outline::GlyphOutline;
 
 use std::sync::Arc;
@@ -16,6 +19,7 @@ const ROBOTO_BOLD: &[u8] = include_bytes!("fonts/Roboto-Bold.ttf");
 const CASKAYDIA: &[u8] = include_bytes!("fonts/CaskaydiaCoveNerdFont-Regular.ttf");
 const RUNES: &[u8] = include_bytes!("fonts/EBH Runes.otf");
 const TWEMOJI_COLR: &[u8] = include_bytes!("fonts/TwemojiCOLRv0.ttf");
+const NOTO_COLRV1: &[u8] = include_bytes!("fonts/NotoColorEmoji-Regular.ttf");
 
 /// Per-instance vertex data for a glyph (matches GlyphInstance in shader).
 #[repr(C)]
@@ -41,9 +45,11 @@ struct Params {
 }
 
 /// Prepared glyph data ready for GPU upload.
-struct PreparedGlyph {
-    outline: GlyphOutline,
-    band_data: band::BandData,
+enum PreparedGlyph {
+    /// Standard monochrome or COLRv0 layer glyph.
+    Normal { outline: GlyphOutline, band_data: band::BandData },
+    /// Pre-built COLRv1 blob (commands + sub-glyph data).
+    RawBlob { data: Vec<[i32; 4]> },
 }
 
 /// Quantize f32 em-space coordinate to i32 at 4 units/em.
@@ -52,27 +58,26 @@ fn q(v: f32) -> i32 {
 }
 
 /// Build unified glyph buffer from prepared glyphs.
-/// Each glyph blob is [band_data][curve_data], with curve refs
-/// fixedup to account for band data size.
 fn build_glyph_buffer(glyphs: &[PreparedGlyph]) -> Vec<[i32; 4]> {
     let mut buffer: Vec<[i32; 4]> = Vec::new();
 
     for glyph in glyphs {
-        // Build curve texels
-        let mut curve_texels: Vec<[i32; 4]> = Vec::new();
-        for curve in &glyph.outline.curves {
-            curve_texels.push([q(curve.p1[0]), q(curve.p1[1]), q(curve.p2[0]), q(curve.p2[1])]);
-            curve_texels.push([q(curve.p3[0]), q(curve.p3[1]), 0, 0]);
+        match glyph {
+            PreparedGlyph::Normal { outline, band_data } => {
+                let mut curve_texels: Vec<[i32; 4]> = Vec::new();
+                for curve in &outline.curves {
+                    curve_texels.push([q(curve.p1[0]), q(curve.p1[1]), q(curve.p2[0]), q(curve.p2[1])]);
+                    curve_texels.push([q(curve.p3[0]), q(curve.p3[1]), 0, 0]);
+                }
+                for chunk in band_data.entries.chunks(4) {
+                    buffer.push([chunk[0] as i32, chunk[1] as i32, chunk[2] as i32, chunk[3] as i32]);
+                }
+                buffer.extend_from_slice(&curve_texels);
+            }
+            PreparedGlyph::RawBlob { data } => {
+                buffer.extend_from_slice(data);
+            }
         }
-
-        // Widen band entries to i32. Curve ref offsets are already final —
-        // build_bands pre-adds band_element_count since 12ad65d.
-        for chunk in glyph.band_data.entries.chunks(4) {
-            buffer.push([chunk[0] as i32, chunk[1] as i32, chunk[2] as i32, chunk[3] as i32]);
-        }
-
-        // Append curve texels
-        buffer.extend_from_slice(&curve_texels);
     }
 
     if buffer.is_empty() {
@@ -183,7 +188,7 @@ fn prepare_text(
                 ppem: font_size,
                 _pad: [0.0; 2],
             });
-            prepared.push(PreparedGlyph { outline, band_data });
+            prepared.push(PreparedGlyph::Normal { outline, band_data });
             *buffer_offset += band_element_count + curve_element_count;
         };
 
@@ -196,6 +201,105 @@ fn prepare_text(
                     push_outline(outline, c, &mut instances, &mut prepared, &mut buffer_offset);
                 }
             }
+        } else if let Some(mut v1_data) = encode_colr_v1(font_data, 0, glyph_id, &location) {
+            // COLRv1: build the full blob and emit a single instance.
+            let cmd_count = v1_data.cmd_count;
+
+            // Build sub-glyph blobs (header + bands + curves)
+            struct SubBlob {
+                header: [[i32; 4]; 2],
+                band_entries: Vec<[i32; 4]>,
+                curve_texels: Vec<[i32; 4]>,
+            }
+            let mut sub_blobs: Vec<SubBlob> = Vec::new();
+            let mut union_bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+
+            for sub in &v1_data.sub_glyphs {
+                let o = &sub.outline;
+                union_bounds[0] = union_bounds[0].min(o.bounds[0]);
+                union_bounds[1] = union_bounds[1].min(o.bounds[1]);
+                union_bounds[2] = union_bounds[2].max(o.bounds[2]);
+                union_bounds[3] = union_bounds[3].max(o.bounds[3]);
+
+                let num_curves = o.curves.len();
+                let mut curve_texels = Vec::new();
+                let mut curve_locs = Vec::new();
+                for (ci, curve) in o.curves.iter().enumerate() {
+                    let is_cont = ci > 0 && curve.p1 == o.curves[ci - 1].p3;
+                    if is_cont {
+                        let last: &mut [i32; 4] = curve_texels.last_mut().expect("cont");
+                        last[2] = q(curve.p2[0]);
+                        last[3] = q(curve.p2[1]);
+                    } else {
+                        curve_texels.push([q(curve.p1[0]), q(curve.p1[1]), q(curve.p2[0]), q(curve.p2[1])]);
+                    }
+                    curve_locs.push(CurveLocation { offset: curve_texels.len() as u32 - 1 });
+                    curve_texels.push([q(curve.p3[0]), q(curve.p3[1]), 0, 0]);
+                }
+
+                let bc = (num_curves as u32).clamp(1, 16);
+                let bd = build_bands(o, &curve_locs, bc, bc, Vec::new(), &mut band::BandScratch::default());
+                let band_entries: Vec<[i32; 4]> = bd.entries.chunks(4)
+                    .map(|c| [c[0] as i32, c[1] as i32, c[2] as i32, c[3] as i32])
+                    .collect();
+
+                let bt = bd.band_transform;
+                let header: [[i32; 4]; 2] = [
+                    [bc.saturating_sub(1) as i32, bc.saturating_sub(1) as i32,
+                     f32::to_bits(bt[0]) as i32, f32::to_bits(bt[1]) as i32],
+                    [f32::to_bits(bt[2]) as i32, f32::to_bits(bt[3]) as i32, 0, 0],
+                ];
+                sub_blobs.push(SubBlob { header, band_entries, curve_texels });
+            }
+
+            // Compute sub-glyph offsets
+            let cmd_texels = v1_data.commands.len() as u32;
+            let mut offset = cmd_texels;
+            for (i, blob) in sub_blobs.iter().enumerate() {
+                v1_data.sub_glyphs[i].blob_offset = offset;
+                offset += 2 + blob.band_entries.len() as u32 + blob.curve_texels.len() as u32;
+            }
+            let total_size = offset;
+
+            // Fixup command sub-glyph indices → offsets
+            for cmd in &mut v1_data.commands {
+                if cmd[0] == CMD_DRAW_SOLID || cmd[0] == CMD_DRAW_GRADIENT {
+                    let idx = cmd[1] as usize;
+                    if idx < v1_data.sub_glyphs.len() {
+                        cmd[1] = v1_data.sub_glyphs[idx].blob_offset as i32;
+                    }
+                }
+            }
+
+            // Build the blob
+            let mut blob_data: Vec<[i32; 4]> = Vec::with_capacity(total_size as usize);
+            blob_data.extend_from_slice(&v1_data.commands);
+            for sb in &sub_blobs {
+                blob_data.push(sb.header[0]);
+                blob_data.push(sb.header[1]);
+                blob_data.extend_from_slice(&sb.band_entries);
+                blob_data.extend_from_slice(&sb.curve_texels);
+            }
+
+            let [min_x, min_y, max_x, max_y] = union_bounds;
+            let screen_x = cursor_x + min_x * scale;
+            let screen_y = start_y - max_y * scale;
+            let screen_w = (max_x - min_x) * scale;
+            let screen_h = (max_y - min_y) * scale;
+
+            instances.push(GlyphInstance {
+                screen_rect: [screen_x, screen_y, screen_w, screen_h],
+                em_rect: union_bounds,
+                band_transform: [0.0; 4],
+                glyph_data: [buffer_offset, 0, 0, cmd_count],
+                color,
+                depth: 0.0,
+                ppem: font_size,
+                _pad: [0.0; 2],
+            });
+
+            prepared.push(PreparedGlyph::RawBlob { data: blob_data });
+            buffer_offset += total_size;
         } else if let Some(outline) = extract_outline(font_data, 0, glyph_id, &location) {
             push_outline(outline, color, &mut instances, &mut prepared, &mut buffer_offset);
         }
@@ -500,9 +604,16 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
             buffer_offset,
         );
         for g in &prepared {
-            let band_elements = (g.band_data.entries.len() / 4) as u32;
-            let curve_elements = (g.outline.curves.len() as u32) * 2;
-            buffer_offset += band_elements + curve_elements;
+            match g {
+                PreparedGlyph::Normal { outline, band_data } => {
+                    let band_elements = (band_data.entries.len() / 4) as u32;
+                    let curve_elements = (outline.curves.len() as u32) * 2;
+                    buffer_offset += band_elements + curve_elements;
+                }
+                PreparedGlyph::RawBlob { data } => {
+                    buffer_offset += data.len() as u32;
+                }
+            }
         }
         all_prepared.extend(prepared);
         all_instances.extend(instances);
@@ -732,6 +843,20 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     y += 24.0;
     add_line(
         INTER_VARIABLE, "48px Twemoji COLRv0: color vector emoji",
+        14.0, left, y, light_gray, None,
+    );
+    y += 40.0;
+
+    // --- COLRv1 gradient emoji test ---
+    y += 16.0;
+    add_line(
+        NOTO_COLRV1,
+        "\u{1F600}\u{1F60D}\u{1F525}\u{2764}\u{1F680}\u{1F308}\u{1F3B5}\u{2B50}",
+        48.0, left, y, white, None,
+    );
+    y += 24.0;
+    add_line(
+        INTER_VARIABLE, "48px Noto COLRv1: gradient vector emoji",
         14.0, left, y, light_gray, None,
     );
     y += 40.0;
