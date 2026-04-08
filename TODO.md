@@ -20,15 +20,15 @@ Cleanup opportunities in `wgpu/src/text.rs` — cryoglyph heritage and dual-pipe
   wraps negative, sign bit propagates and corrupts row calculation silently.
   Works today because numbers are small. **wgpu review**
 
-- [ ] **trim() can invalidate already-prepared draw data** — if
+- [x] **trim() can invalidate already-prepared draw data** — if
   prepare→trim(reset)→render happens in sequence, render() draws from
-  the old instance buffer against new (empty) atlas. RemovedFromAtlas error
-  variant exists but is never raised — no generation tracking. **bugs review**
+  the old instance buffer against new (empty) atlas. Added generation
+  tracking: render() returns RemovedFromAtlas if atlas was reset since
+  last prepare(). **bugs review**
 
-- [ ] **Scroll offset not in CPU-side culling** — glyphs clipped against
-  screen bounds without scroll_offset, but shader applies it. Dormant while
-  scroll_offset has no public setter on Viewport, but will cause first/last
-  visible glyphs to flicker once scroll API is exposed. **bugs review**
+- [x] **Scroll offset not in CPU-side culling** — glyphs clipped against
+  screen bounds without scroll_offset, but shader applies it. Added
+  scroll_offset to all CPU culling paths. **bugs review**
 
 ## CPU — Cold path
 
@@ -43,21 +43,12 @@ Mixed-locale baseline: 364 glyphs, ~4.6ms cold prepare (`brokkr hotpath --target
   parallelism). Pass 3: fast instance packing. Enables batching and cleaner
   architecture. Medium effort. *Multiple reviewers independently.*
 
-- [x] **Cache per-curve band metadata** — `CurveMeta` struct cached in
-  Phase 1 of `build_bands`, reused in Phase 2. 2.8× cold-path speedup on
-  mixed-locale benchmark (364 distinct glyphs). **hb review**
-
-- [x] **f32 cu2qu instead of f64** — converted all cu2qu math from f64 to
-  f32. Identical subdivision counts verified against f64 baseline. CFF font
-  test validates real glyph outlines. Recursion→iteration still possible
-  as a follow-up.
-
 - [ ] **Atlas initial capacity** — starts at 8192 elements, `grow_buffer()`
   doubles with full re-upload. Start at 1-4MB for known workloads, or
   predict final size from glyph count and pre-allocate once. Eliminates
   growth-copy stalls on first cold frame. Small effort.
 
-- [ ] **Shrink CPU buffer mirrors on reset** — `buffer_data` keeps capacity
+- [x] **Shrink CPU buffer mirrors on reset** — `buffer_data` keeps capacity
   after `reset_atlas()`. After a large working-set spike, CPU memory stays
   high even though GPU buffer is recreated. Use `shrink_to_fit()` or
   `= Vec::new()` in reset. **perf review**
@@ -76,7 +67,7 @@ dominated by compositor/surface, not text math.
 
 ### Optimization targets
 
-- [ ] **Pack i16 pairs into i32** — halve storage buffer bandwidth. Current
+- [x] **Pack i16 pairs into i32** — halve storage buffer bandwidth. Current
   `array<vec4<i32>>` is 16 bytes/texel. Pack two i16 lanes per u32 with
   shader unpack helpers. 10-20% GPU. Medium effort. *Majority consensus.*
 
@@ -96,11 +87,9 @@ dominated by compositor/surface, not text math.
   harfbuzz at `hb-gpu-fragment.wgsl:205-206`. Preserves exact zeros for
   `== 0.0` branch, saves 2 vec2 subtractions per curve. **hb review**
 
-- [ ] **Eliminate redundant decode_offset per curve read** — every curve
-  does `decode_offset` (integer add of 32768) per fragment per ray
-  direction. Store curve refs as already-decoded offsets, or pre-add
-  `glyph_base` on CPU for absolute addressing. 16 adds/fragment saved.
-  Buffer is append-only so absolute addressing is safe. **perf review**
+- [x] **Eliminate redundant decode_offset per curve read** — removed i16
+  bias encoding; offsets stored as raw u16-in-i16, shader uses bitmask
+  instead of integer add. **perf review**
 
 - [ ] **Zero dilation for large text (48ppem+)** — coverage at exact glyph
   boundary is already 0.0 or 1.0 at large sizes. Set dilation to 0 in
@@ -140,9 +129,9 @@ dominated by compositor/surface, not text math.
   Resolution, scroll_offset in Params is always [0,0]. Shader reads it but
   unreachable from library API. **wgpu, arch review**
 
-- [ ] **ColorMode has no effect** — stored with `#[allow(dead_code)]`, never
-  read. Shader always does same blend. May produce wrong results in
-  linear-RGB framebuffers with sRGB colors. **arch review**
+- [x] **ColorMode has no effect** — wired up via Params flags bit 1.
+  `Viewport::set_color_mode(Web)` tells shader to apply sRGB→linear
+  conversion for linear-RGB framebuffers. **arch review**
 
 - [ ] **TextRenderer/TextAtlas coupling** — renderer reaches into atlas via
   pub(crate). Policy, cache state, and upload orchestration spread across
@@ -153,10 +142,9 @@ dominated by compositor/surface, not text math.
   accepts any &TextAtlas but pipeline was baked from a specific atlas.
   Mispairing is type-correct but wrong rendering. **arch review**
 
-- [ ] **CommandEncoder param unnecessarily restrictive** —
-  prepare_with_depth takes `&mut CommandEncoder` but never uses it. The
-  `&mut` borrow prevents caller from using encoder during prepare.
-  Cryoglyph compatibility constraint. **arch review**
+- [x] **CommandEncoder param unnecessarily restrictive** —
+  Changed from `&mut CommandEncoder` to `&CommandEncoder`. Callers can
+  now use encoder concurrently with prepare. **arch review**
 
 ## Future / Long-term
 

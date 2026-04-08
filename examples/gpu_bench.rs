@@ -139,13 +139,13 @@ fn main() {
             },
             default_color: cosmic_text::Color::rgb(255, 255, 255),
         };
-        let mut encoder =
+        let encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         renderer
             .prepare(
                 &device,
                 &queue,
-                &mut encoder,
+                &encoder,
                 &mut font_system,
                 &mut atlas,
                 &viewport,

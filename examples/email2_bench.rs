@@ -365,7 +365,7 @@ fn main() {
     eprintln!("total_glyph_instances={total_instances}");
     eprintln!("text_areas={}", text_areas.len());
     eprintln!("buffer_elements={buffer_elements}");
-    eprintln!("buffer_bytes={}", buffer_elements as u64 * 16);
+    eprintln!("buffer_bytes={}", buffer_elements as u64 * 8);
     eprintln!("cold_prepare_us={cold_us}");
     eprintln!("warm_prepare_avg_us={warm_avg_us}");
     eprintln!("warm_iterations={warm_iterations}");
@@ -549,14 +549,14 @@ impl RenderHarness {
     }
 
     fn prepare_areas(&mut self, areas: &[TextArea]) -> Result<(), sluggrs::PrepareError> {
-        let mut encoder = self
+        let encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
         self.renderer.prepare(
             &self.device,
             &self.queue,
-            &mut encoder,
+            &encoder,
             &mut self.font_system,
             &mut self.atlas,
             &self.viewport,

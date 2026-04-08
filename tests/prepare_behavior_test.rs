@@ -93,7 +93,7 @@ impl TestHarness {
         buffer: &Buffer,
         bounds: TextBounds,
     ) -> Result<(), sluggrs::PrepareError> {
-        let mut encoder = self
+        let encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
@@ -109,7 +109,7 @@ impl TestHarness {
         self.renderer.prepare(
             &self.device,
             &self.queue,
-            &mut encoder,
+            &encoder,
             &mut self.font_system,
             &mut self.atlas,
             &self.viewport,
@@ -139,7 +139,7 @@ impl TestHarness {
         metadata_to_depth: impl FnMut(usize) -> f32,
     ) -> Result<(), sluggrs::PrepareError> {
         let buffer = self.make_buffer(text);
-        let mut encoder = self
+        let encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
@@ -160,7 +160,7 @@ impl TestHarness {
         self.renderer.prepare_with_depth(
             &self.device,
             &self.queue,
-            &mut encoder,
+            &encoder,
             &mut self.font_system,
             &mut self.atlas,
             &self.viewport,

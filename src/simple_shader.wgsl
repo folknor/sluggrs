@@ -11,7 +11,33 @@ struct Params {
 
 @group(0) @binding(0) var<uniform> params: Params;
 const INV_UNITS: f32 = 0.25; // 1.0 / 4.0 units_per_em
-@group(1) @binding(0) var<storage, read> atlas: array<vec4<i32>>;
+// Packed storage: each i32 holds two i16 values. A logical "texel" of 4 i16
+// values occupies 2 consecutive i32 elements. Texel addressing: element index
+// = texel_offset * 2. Halves bandwidth vs the old array<vec4<i32>> layout.
+@group(1) @binding(0) var<storage, read> atlas: array<i32>;
+
+/// Unpack two signed i16 values from a packed i32: low 16 bits, high 16 bits.
+fn unpack_lo(v: i32) -> i32 { return (v << 16) >> 16; }
+fn unpack_hi(v: i32) -> i32 { return v >> 16; }
+
+/// Read a packed texel (4 i16 values) from 2 consecutive i32 elements.
+fn read_texel(idx: u32) -> vec4<i32> {
+    let base = idx * 2u;
+    let ab = atlas[base];
+    let cd = atlas[base + 1u];
+    return vec4<i32>(unpack_lo(ab), unpack_hi(ab), unpack_lo(cd), unpack_hi(cd));
+}
+
+/// Read a raw i32 directly from the flat buffer (for COLRv1 unpacked data).
+fn read_raw(idx: u32) -> i32 { return atlas[idx]; }
+
+/// Read 4 raw (non-packed) i32 values as a vec4.
+/// COLRv1 commands and data are stored unpacked: each old "texel" of 4 i32
+/// values occupies 4 consecutive slots in the flat buffer (2 packed texels).
+/// `texel_idx` is the COLRv1 texel index; actual buffer offset = texel_idx * 4.
+fn read_raw4(base: u32) -> vec4<i32> {
+    return vec4<i32>(atlas[base], atlas[base + 1u], atlas[base + 2u], atlas[base + 3u]);
+}
 
 // Per-instance data for a glyph
 struct GlyphInstance {
@@ -153,9 +179,9 @@ fn solve_vert_poly(p12: vec4<f32>, p3: vec2<f32>) -> vec2<f32> {
     );
 }
 
-/// Decode a biased i16 offset: stored as (offset - 32768), recover with + 32768.
+/// Decode an i16-stored offset: recover the original u16 value via mask.
 fn decode_offset(v: i32) -> u32 {
-    return u32(v + 32768);
+    return u32(v) & 0xFFFFu;
 }
 
 /// Evaluate Slug coverage at a single sample point.
@@ -176,17 +202,17 @@ fn render_single(
     var xcov = 0.0;
     var xwgt = 0.0;
 
-    let hband_data = atlas[glyph_base + u32(band_index.y)];
+    let hband_data = read_texel(glyph_base + u32(band_index.y));
     let h_split = f32(hband_data.w) * INV_UNITS;
     let h_left_ray = render_coord.x < h_split;
     let h_data_offset = decode_offset(select(hband_data.y, hband_data.z, h_left_ray));
 
     for (var ci = 0u; ci < u32(hband_data.x); ci++) {
-        let curve_ref = atlas[glyph_base + h_data_offset + ci];
+        let curve_ref = read_texel(glyph_base + h_data_offset + ci);
         let curve_offset = decode_offset(curve_ref.x);
-        let raw12 = atlas[glyph_base + curve_offset];
+        let raw12 = read_texel(glyph_base + curve_offset);
         let p12 = vec4<f32>(raw12) * INV_UNITS - vec4<f32>(render_coord, render_coord);
-        let raw3 = atlas[glyph_base + curve_offset + 1u];
+        let raw3 = read_texel(glyph_base + curve_offset + 1u);
         let p3 = vec2<f32>(raw3.xy) * INV_UNITS - render_coord;
 
         if h_left_ray {
@@ -216,17 +242,17 @@ fn render_single(
     var ycov = 0.0;
     var ywgt = 0.0;
 
-    let vband_data = atlas[glyph_base + u32(band_max.y + 1 + band_index.x)];
+    let vband_data = read_texel(glyph_base + u32(band_max.y + 1 + band_index.x));
     let v_split = f32(vband_data.w) * INV_UNITS;
     let v_left_ray = render_coord.y < v_split;
     let v_data_offset = decode_offset(select(vband_data.y, vband_data.z, v_left_ray));
 
     for (var ci = 0u; ci < u32(vband_data.x); ci++) {
-        let curve_ref = atlas[glyph_base + v_data_offset + ci];
+        let curve_ref = read_texel(glyph_base + v_data_offset + ci);
         let curve_offset = decode_offset(curve_ref.x);
-        let raw12 = atlas[glyph_base + curve_offset];
+        let raw12 = read_texel(glyph_base + curve_offset);
         let p12 = vec4<f32>(raw12) * INV_UNITS - vec4<f32>(render_coord, render_coord);
-        let raw3 = atlas[glyph_base + curve_offset + 1u];
+        let raw3 = read_texel(glyph_base + curve_offset + 1u);
         let p3 = vec2<f32>(raw3.xy) * INV_UNITS - render_coord;
 
         if v_left_ray {
@@ -291,9 +317,9 @@ fn unpack_color(rg: i32, ba: i32) -> vec4<f32> {
 }
 
 // Evaluate coverage for a sub-glyph whose header is at blob_base + sub_offset.
-// Sub-glyph header layout (2 texels):
-//   [0]: band_max_x, band_max_y, bitcast(bt[0]), bitcast(bt[1])
-//   [1]: bitcast(bt[2]), bitcast(bt[3]), 0, 0
+// Sub-glyph header layout (3 packed texels = 6 i32 slots):
+//   texel 0: band_max_x, band_max_y (packed i16 pair) + padding
+//   texels 1-2: band_transform (4 raw i32, bitcast f32)
 fn render_sub_glyph(
     render_coord: vec2<f32>,
     pixels_per_em: vec2<f32>,
@@ -301,15 +327,19 @@ fn render_sub_glyph(
     sub_offset: u32,
 ) -> f32 {
     let header_base = blob_base + sub_offset;
-    let h0 = atlas[header_base];
-    let h1 = atlas[header_base + 1u];
+    let h0 = read_texel(header_base);
     let band_max = vec2<i32>(h0.x, h0.y);
+    // band_transform is 4 raw i32 values at i32 indices (header_base + 1) * 2 + 2
+    // They span texels 1-2 as raw (non-packed) i32 data.
+    let raw_base = header_base * 2u + 2u; // skip texel 0 (2 i32s)
     let band_transform = vec4<f32>(
-        bitcast<f32>(h0.z), bitcast<f32>(h0.w),
-        bitcast<f32>(h1.x), bitcast<f32>(h1.y),
+        bitcast<f32>(read_raw(raw_base)),
+        bitcast<f32>(read_raw(raw_base + 1u)),
+        bitcast<f32>(read_raw(raw_base + 2u)),
+        bitcast<f32>(read_raw(raw_base + 3u)),
     );
-    // Sub-glyph band+curve data starts right after the 2-texel header
-    let sub_glyph_base = header_base + 2u;
+    // Sub-glyph band+curve data starts right after the 3-texel header
+    let sub_glyph_base = header_base + 3u;
     return render_single(render_coord, pixels_per_em, band_transform, sub_glyph_base, band_max);
 }
 
@@ -356,16 +386,17 @@ fn composite_colors(src: vec4<f32>, dst: vec4<f32>, mode: i32) -> vec4<f32> {
 }
 
 // Interpolate along a color line (gradient color stops).
-// Stops are encoded as texels: [offset_int, offset_frac, R_G_packed, B_A_packed]
-fn evaluate_color_line(cmd_base: u32, stop_offset: u32, num_stops: i32, t: f32) -> vec4<f32> {
+// Stops are encoded as raw i32 quads: [offset_int, offset_frac, R_G_packed, B_A_packed]
+// raw_base is the raw i32 offset; each stop occupies 4 raw i32 values.
+fn evaluate_color_line(raw_base: u32, num_stops: i32, t: f32) -> vec4<f32> {
     if num_stops <= 0 { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
     if num_stops == 1 {
-        let s = atlas[cmd_base + stop_offset];
+        let s = read_raw4(raw_base);
         return unpack_color(s.z, s.w);
     }
     // Clamp t to [first_stop, last_stop]
-    let first = atlas[cmd_base + stop_offset];
-    let last = atlas[cmd_base + stop_offset + u32(num_stops - 1)];
+    let first = read_raw4(raw_base);
+    let last = read_raw4(raw_base + u32(num_stops - 1) * 4u);
     let t_first = read_fixed(first.x, first.y);
     let t_last = read_fixed(last.x, last.y);
     let tc = clamp(t, t_first, t_last);
@@ -376,7 +407,7 @@ fn evaluate_color_line(cmd_base: u32, stop_offset: u32, num_stops: i32, t: f32) 
     var t0 = t_first;
     var t1 = t_first;
     for (var i = 1; i < num_stops && i < 16; i++) {
-        let s = atlas[cmd_base + stop_offset + u32(i)];
+        let s = read_raw4(raw_base + u32(i) * 4u);
         t1 = read_fixed(s.x, s.y);
         c1 = unpack_color(s.z, s.w);
         if t1 >= tc { break; }
@@ -433,11 +464,12 @@ fn eval_sweep_gradient(center: vec2<f32>, start_angle: f32, end_angle: f32, uv: 
     return (angle - start_angle) / range;
 }
 
-// Read inverse transform matrix from 3 texels (6 fixed-point pairs).
-fn read_inv_transform(base: u32) -> mat3x3<f32> {
-    let t0 = atlas[base];
-    let t1 = atlas[base + 1u];
-    let t2 = atlas[base + 2u];
+// Read inverse transform matrix from 3 raw i32 quads (12 raw i32 values).
+// raw_base is in raw i32 units.
+fn read_inv_transform(raw_base: u32) -> mat3x3<f32> {
+    let t0 = read_raw4(raw_base);
+    let t1 = read_raw4(raw_base + 4u);
+    let t2 = read_raw4(raw_base + 8u);
     return mat3x3<f32>(
         read_fixed(t0.x, t0.y), read_fixed(t0.z, t0.w), 0.0,
         read_fixed(t1.x, t1.y), read_fixed(t1.z, t1.w), 0.0,
@@ -446,6 +478,9 @@ fn read_inv_transform(base: u32) -> mat3x3<f32> {
 }
 
 // Main COLRv1 command interpreter.
+// blob_base and cmd_count are in packed texel units. COLRv1 commands
+// and auxiliary data are stored as raw i32 values (4 per old texel = 2
+// packed texels). Sub-glyph offsets are in packed texel units.
 fn render_color(
     render_coord: vec2<f32>,
     pixels_per_em: vec2<f32>,
@@ -453,16 +488,17 @@ fn render_color(
     cmd_count: u32,
 ) -> vec4<f32> {
     var stack: array<vec4<f32>, 8>;
-    // Start with one implicit group on the stack
     stack[0] = vec4<f32>(0.0);
     var sp: i32 = 0;
 
-    var cursor: u32 = blob_base;
-    let cmd_end = blob_base + cmd_count;
+    // Raw i32 cursor: each packed texel = 2 raw i32s, each old texel = 4 raw i32s
+    let raw_base = blob_base * 2u;
+    var raw_cursor: u32 = raw_base;
+    let raw_end = raw_base + cmd_count * 2u;
 
-    for (var iter = 0u; iter < 64u && cursor < cmd_end; iter++) {
-        let cmd = atlas[cursor];
-        cursor += 1u;
+    for (var iter = 0u; iter < 64u && raw_cursor < raw_end; iter++) {
+        let cmd = read_raw4(raw_cursor);
+        raw_cursor += 4u; // each command = 4 raw i32 values
 
         switch cmd.x {
             case 1: { // CMD_PUSH_GROUP
@@ -470,71 +506,65 @@ fn render_color(
                 stack[sp] = vec4<f32>(0.0);
             }
             case 2: { // CMD_DRAW_SOLID
-                let sub_offset = u32(cmd.y);
+                let sub_offset = u32(cmd.y); // in packed texel units
                 let draw_color = unpack_color(cmd.z, cmd.w);
                 let coverage = render_sub_glyph(render_coord, pixels_per_em, blob_base, sub_offset);
                 let premul = vec4<f32>(draw_color.rgb * draw_color.a * coverage, draw_color.a * coverage);
-                stack[sp] = composite_colors(premul, stack[sp], 3); // SourceOver
+                stack[sp] = composite_colors(premul, stack[sp], 3);
             }
             case 3: { // CMD_DRAW_GRADIENT
-                let sub_offset = u32(cmd.y);
+                let sub_offset = u32(cmd.y); // in packed texel units
                 let gradient_type = cmd.z;
                 let num_stops = cmd.w;
 
-                // Read inverse transform (3 texels)
-                let inv_mat = read_inv_transform(cursor);
-                cursor += 3u;
+                // Read inverse transform (3 raw quads = 12 raw i32)
+                let inv_mat = read_inv_transform(raw_cursor);
+                raw_cursor += 12u;
 
-                // Transform render_coord to gradient space
                 let uv = (inv_mat * vec3<f32>(render_coord, 1.0)).xy;
 
                 var grad_t: f32 = 0.0;
-                var stop_offset: u32 = 0u;
 
                 switch gradient_type {
                     case 0: { // Linear
-                        let g0 = atlas[cursor];
-                        let g1 = atlas[cursor + 1u];
-                        cursor += 2u;
+                        let g0 = read_raw4(raw_cursor);
+                        let g1 = read_raw4(raw_cursor + 4u);
+                        raw_cursor += 8u;
                         let p0 = vec2<f32>(read_fixed(g0.x, g0.y), read_fixed(g0.z, g0.w));
                         let p1 = vec2<f32>(read_fixed(g1.x, g1.y), read_fixed(g1.z, g1.w));
                         grad_t = eval_linear_gradient(p0, p1, uv);
-                        stop_offset = cursor - blob_base;
                     }
                     case 1: { // Radial
-                        let g0 = atlas[cursor];
-                        let g1 = atlas[cursor + 1u];
-                        let g2 = atlas[cursor + 2u];
-                        cursor += 3u;
+                        let g0 = read_raw4(raw_cursor);
+                        let g1 = read_raw4(raw_cursor + 4u);
+                        let g2 = read_raw4(raw_cursor + 8u);
+                        raw_cursor += 12u;
                         let c0 = vec2<f32>(read_fixed(g0.x, g0.y), read_fixed(g0.z, g0.w));
                         let r0 = read_fixed(g1.x, g1.y);
                         let c1x = read_fixed(g1.z, g1.w);
                         let c1y = read_fixed(g2.x, g2.y);
                         let r1 = read_fixed(g2.z, g2.w);
                         grad_t = eval_radial_gradient(c0, r0, vec2<f32>(c1x, c1y), r1, uv);
-                        stop_offset = cursor - blob_base;
                     }
                     case 2: { // Sweep
-                        let g0 = atlas[cursor];
-                        let g1 = atlas[cursor + 1u];
-                        cursor += 2u;
+                        let g0 = read_raw4(raw_cursor);
+                        let g1 = read_raw4(raw_cursor + 4u);
+                        raw_cursor += 8u;
                         let center = vec2<f32>(read_fixed(g0.x, g0.y), read_fixed(g0.z, g0.w));
                         let start_a = read_fixed(g1.x, g1.y);
                         let end_a = read_fixed(g1.z, g1.w);
                         grad_t = eval_sweep_gradient(center, start_a, end_a, uv);
-                        stop_offset = cursor - blob_base;
                     }
-                    default: {
-                        stop_offset = cursor - blob_base;
-                    }
+                    default: {}
                 }
 
-                let grad_color = evaluate_color_line(blob_base, stop_offset, num_stops, grad_t);
-                cursor += u32(num_stops); // skip past color stops
+                // Color stops immediately follow gradient params
+                let grad_color = evaluate_color_line(raw_cursor, num_stops, grad_t);
+                raw_cursor += u32(num_stops) * 4u; // skip past color stops
 
                 let coverage = render_sub_glyph(render_coord, pixels_per_em, blob_base, sub_offset);
                 let premul = vec4<f32>(grad_color.rgb * grad_color.a * coverage, grad_color.a * coverage);
-                stack[sp] = composite_colors(premul, stack[sp], 3); // SourceOver
+                stack[sp] = composite_colors(premul, stack[sp], 3);
             }
             case 4: { // CMD_POP_GROUP
                 let mode = cmd.y;
@@ -546,7 +576,6 @@ fn render_color(
         }
     }
 
-    // If we exit the loop with something on the stack, return it
     if sp >= 0 { return stack[sp]; }
     return vec4<f32>(0.0);
 }
@@ -598,7 +627,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
+    // In Web color mode (linear-RGB framebuffer), convert sRGB vertex
+    // colors to linear before blending. Accurate mode (sRGB framebuffer)
+    // passes through as-is — the hardware does the conversion.
+    var rgb = input.color.rgb;
+    if (params.flags & 2u) != 0u {
+        rgb = pow(rgb, vec3<f32>(2.2));
+    }
+
     // Premultiplied alpha output
     let alpha = input.color.a * coverage;
-    return vec4<f32>(input.color.rgb * alpha, alpha);
+    return vec4<f32>(rgb * alpha, alpha);
 }

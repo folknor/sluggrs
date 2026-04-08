@@ -57,6 +57,8 @@ pub struct TextRenderer {
     text_area_cache: FxHashMap<*const cosmic_text::Buffer, CachedTextArea>,
     /// Resolution from last frame, for cache invalidation.
     cached_resolution: crate::types::Resolution,
+    /// Atlas generation at last prepare() — detects trim(reset) between prepare and render.
+    prepared_atlas_generation: u32,
     // Raster fallback: per-frame instances drawn using TextAtlas's shared raster resources
     raster_instances: Vec<RasterVertex>,
     raster_vertex_buffer: Buffer,
@@ -103,6 +105,7 @@ impl TextRenderer {
                 width: 0,
                 height: 0,
             },
+            prepared_atlas_generation: 0,
             raster_instances: Vec::new(),
             raster_vertex_buffer,
             raster_vertex_buffer_size,
@@ -121,7 +124,7 @@ impl TextRenderer {
         &mut self,
         device: &Device,
         queue: &Queue,
-        _encoder: &mut CommandEncoder,
+        _encoder: &CommandEncoder,
         font_system: &mut cosmic_text::FontSystem,
         atlas: &mut TextAtlas,
         viewport: &Viewport,
@@ -133,6 +136,7 @@ impl TextRenderer {
         let mut non_vector_collector: Vec<NonVectorGlyph> = Vec::new();
 
         let resolution = viewport.resolution();
+        let scroll = viewport.scroll_offset();
         let atlas_gen = atlas.generation();
 
         // Invalidate all cached entries if resolution changed
@@ -188,10 +192,14 @@ impl TextRenderer {
                                 let sw = inst.screen_rect[2];
                                 let sh = inst.screen_rect[3];
 
-                                if sx + sw + 1.0 < bounds_min_x
-                                    || sx - 1.0 > bounds_max_x
-                                    || sy + sh + 1.0 < bounds_min_y
-                                    || sy - 1.0 > bounds_max_y
+                                // Shader adds scroll_offset, so visible position
+                                // is (sx + scroll[0], sy + scroll[1]).
+                                let vx = sx + scroll[0];
+                                let vy = sy + scroll[1];
+                                if vx + sw + 1.0 < bounds_min_x
+                                    || vx - 1.0 > bounds_max_x
+                                    || vy + sh + 1.0 < bounds_min_y
+                                    || vy - 1.0 > bounds_max_y
                                 {
                                     continue;
                                 }
@@ -290,10 +298,12 @@ impl TextRenderer {
                             let screen_w = (max_x - min_x) * scale;
                             let screen_h = (max_y - min_y) * scale;
 
-                            if screen_x + screen_w + 1.0 >= bounds_min_x as f32
-                                && screen_x - 1.0 <= bounds_max_x as f32
-                                && screen_y + screen_h + 1.0 >= bounds_min_y as f32
-                                && screen_y - 1.0 <= bounds_max_y as f32
+                            let vis_x = screen_x + scroll[0];
+                            let vis_y = screen_y + scroll[1];
+                            if vis_x + screen_w + 1.0 >= bounds_min_x as f32
+                                && vis_x - 1.0 <= bounds_max_x as f32
+                                && vis_y + screen_h + 1.0 >= bounds_min_y as f32
+                                && vis_y - 1.0 <= bounds_max_y as f32
                             {
                                 self.instances.push(GlyphInstance {
                                     screen_rect: [screen_x, screen_y, screen_w, screen_h],
@@ -341,10 +351,12 @@ impl TextRenderer {
                                 let screen_w = (max_x - min_x) * scale;
                                 let screen_h = (max_y - min_y) * scale;
 
-                                if screen_x + screen_w + 1.0 < bounds_min_x as f32
-                                    || screen_x - 1.0 > bounds_max_x as f32
-                                    || screen_y + screen_h + 1.0 < bounds_min_y as f32
-                                    || screen_y - 1.0 > bounds_max_y as f32
+                                let vis_x = screen_x + scroll[0];
+                                let vis_y = screen_y + scroll[1];
+                                if vis_x + screen_w + 1.0 < bounds_min_x as f32
+                                    || vis_x - 1.0 > bounds_max_x as f32
+                                    || vis_y + screen_h + 1.0 < bounds_min_y as f32
+                                    || vis_y - 1.0 > bounds_max_y as f32
                                 {
                                     continue;
                                 }
@@ -386,10 +398,12 @@ impl TextRenderer {
                     let screen_w = (max_x - min_x) * scale;
                     let screen_h = (max_y - min_y) * scale;
 
-                    if screen_x + screen_w + 1.0 < bounds_min_x as f32
-                        || screen_x - 1.0 > bounds_max_x as f32
-                        || screen_y + screen_h + 1.0 < bounds_min_y as f32
-                        || screen_y - 1.0 > bounds_max_y as f32
+                    let vis_x = screen_x + scroll[0];
+                    let vis_y = screen_y + scroll[1];
+                    if vis_x + screen_w + 1.0 < bounds_min_x as f32
+                        || vis_x - 1.0 > bounds_max_x as f32
+                        || vis_y + screen_h + 1.0 < bounds_min_y as f32
+                        || vis_y - 1.0 > bounds_max_y as f32
                     {
                         continue;
                     }
@@ -453,11 +467,13 @@ impl TextRenderer {
         {
             // Still need to upload raster vertex buffer (raster atlas may have changed)
             self.upload_raster_vertices(device, queue);
+            self.prepared_atlas_generation = atlas_gen;
             return Ok(());
         }
 
         self.upload_vertices(device, queue);
         self.upload_raster_vertices(device, queue);
+        self.prepared_atlas_generation = atlas_gen;
         Ok(())
     }
 
@@ -684,7 +700,7 @@ impl TextRenderer {
         &mut self,
         device: &Device,
         queue: &Queue,
-        encoder: &mut CommandEncoder,
+        encoder: &CommandEncoder,
         font_system: &mut cosmic_text::FontSystem,
         atlas: &mut TextAtlas,
         viewport: &Viewport,
@@ -711,6 +727,12 @@ impl TextRenderer {
         viewport: &'a Viewport,
         pass: &mut RenderPass<'a>,
     ) -> Result<(), RenderError> {
+        // Detect trim(reset) between prepare() and render(): the atlas was
+        // recreated so our instance buffer references stale glyph offsets.
+        if atlas.generation() != self.prepared_atlas_generation {
+            return Err(RenderError::RemovedFromAtlas);
+        }
+
         if self.glyphs_to_render > 0 {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &viewport.bind_group, &[]);

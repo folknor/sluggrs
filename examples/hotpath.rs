@@ -92,8 +92,8 @@ fn main() {
     eprintln!("warm_iterations={warm_iterations}");
     eprintln!("mixed_iterations={mixed_iterations}");
 
-    // Buffer memory: 16 bytes per vec4<i32> element
-    let buffer_bytes = buffer_elements as u64 * 16;
+    // Buffer memory: 8 bytes per packed texel (2 i32, holding 4 i16 values)
+    let buffer_bytes = buffer_elements as u64 * 8;
     eprintln!("buffer_bytes={buffer_bytes}");
 
     if let Some(median) = gpu_times.get(gpu_times.len() / 2) {
@@ -273,7 +273,7 @@ impl RenderHarness {
         );
         buffer.shape_until_scroll(&mut self.font_system, false);
 
-        let mut encoder = self
+        let encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
@@ -294,7 +294,7 @@ impl RenderHarness {
         self.renderer.prepare(
             &self.device,
             &self.queue,
-            &mut encoder,
+            &encoder,
             &mut self.font_system,
             &mut self.atlas,
             &self.viewport,

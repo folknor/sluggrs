@@ -1,5 +1,5 @@
 use crate::gpu_cache::{Cache, Params};
-use crate::types::Resolution;
+use crate::types::{ColorMode, Resolution};
 
 use wgpu::{BindGroup, Buffer, BufferDescriptor, BufferUsages, Device, Queue};
 
@@ -45,6 +45,20 @@ impl Viewport {
         }
     }
 
+    /// Set the color mode flag in the params uniform.
+    /// `Web` mode tells the shader to convert sRGB vertex colors to linear
+    /// before blending, for use with linear-RGB framebuffers.
+    pub fn set_color_mode(&mut self, queue: &Queue, mode: ColorMode) {
+        let new_flags = match mode {
+            ColorMode::Accurate => self.params.flags & !2,
+            ColorMode::Web => self.params.flags | 2,
+        };
+        if self.params.flags != new_flags {
+            self.params.flags = new_flags;
+            queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&self.params));
+        }
+    }
+
     /// The bind group for the viewport/params uniform buffer.
     /// Shared with the raster fallback pipeline.
     pub fn bind_group(&self) -> &BindGroup {
@@ -56,5 +70,10 @@ impl Viewport {
             width: self.params.screen_size[0] as u32,
             height: self.params.screen_size[1] as u32,
         }
+    }
+
+    /// The scroll offset applied by the shader (pixels).
+    pub fn scroll_offset(&self) -> [f32; 2] {
+        self.params.scroll_offset
     }
 }

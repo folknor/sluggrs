@@ -22,13 +22,14 @@ pub struct TextAtlas {
     pub(crate) glyph_buffer: wgpu::Buffer,
     pub(crate) bind_group: BindGroup,
     pub(crate) format: TextureFormat,
-    #[allow(dead_code)] // API contract — read by iced integration
     pub(crate) color_mode: ColorMode,
 
-    // Buffer state
-    buffer_capacity: u32,       // in vec4<i32> elements
-    buffer_cursor: u32,         // append cursor in elements
-    buffer_data: Vec<[i32; 4]>, // CPU-side copy for re-upload on growth
+    // Buffer state — packed layout: each logical texel (4 i16 values) is stored
+    // as 2 i32 elements (each i32 packs a pair of i16 values). All capacity/
+    // cursor/offsets are in texel units; physical buffer is 2x in i32 units.
+    buffer_capacity: u32,       // in texels
+    buffer_cursor: u32,         // append cursor in texels
+    buffer_data: Vec<i32>,      // CPU-side copy (2 i32 per texel)
 
     // Scratch buffers reused across upload_glyph() calls
     scratch_curve_texels: Vec<[i32; 4]>,
@@ -214,7 +215,7 @@ impl TextAtlas {
         self.color_glyphs.clear();
         self.color_v1_glyphs.clear();
         self.buffer_cursor = 0;
-        self.buffer_data.clear();
+        self.buffer_data = Vec::new(); // reclaim CPU memory (clear() keeps capacity)
         self.gpu_flush_cursor = 0;
         self.generation = self.generation.wrapping_add(1);
 
@@ -231,8 +232,11 @@ impl TextAtlas {
         let start = self.gpu_flush_cursor as usize;
         let end = self.buffer_cursor as usize;
         if start < end {
-            let byte_offset = start as u64 * 16;
-            let blob_bytes: &[u8] = bytemuck::cast_slice(&self.buffer_data[start..end]);
+            let byte_offset = start as u64 * BYTES_PER_TEXEL;
+            // buffer_data has 2 i32s per texel
+            let i32_start = start * 2;
+            let i32_end = end * 2;
+            let blob_bytes: &[u8] = bytemuck::cast_slice::<i32, u8>(&self.buffer_data[i32_start..i32_end]);
             queue.write_buffer(&self.glyph_buffer, byte_offset, blob_bytes);
             self.gpu_flush_cursor = self.buffer_cursor;
         }
@@ -339,7 +343,7 @@ impl TextAtlas {
         let glyph_offset = self.buffer_cursor;
         let new_end = glyph_offset + blob_size;
         if new_end > self.buffer_capacity {
-            let required_bytes = new_end as u64 * 16;
+            let required_bytes = new_end as u64 * BYTES_PER_TEXEL;
             let max_bytes = device.limits().max_storage_buffer_binding_size as u64;
             if required_bytes > max_bytes {
                 self.scratch_band_entries = band_entries;
@@ -348,14 +352,17 @@ impl TextAtlas {
             self.grow_buffer(device, new_end);
         }
 
-        // Widen band entries from i16 to i32 and append to CPU copy
+        // Pack band entries: each i16 quad → 2 packed i32 values
         self.buffer_data.extend(
             band_entries
                 .chunks_exact(4)
-                .map(|c| [c[0] as i32, c[1] as i32, c[2] as i32, c[3] as i32]),
+                .flat_map(|c| [pack_i16_pair(c[0], c[1]), pack_i16_pair(c[2], c[3])]),
         );
-        self.buffer_data
-            .extend_from_slice(&self.scratch_curve_texels);
+        // Pack curve texels: each i32 quad (i16-safe) → 2 packed i32 values
+        self.buffer_data.extend(
+            self.scratch_curve_texels.iter()
+                .flat_map(|v| [pack_i16_pair(v[0] as i16, v[1] as i16), pack_i16_pair(v[2] as i16, v[3] as i16)]),
+        );
 
         // Reclaim scratch
         self.scratch_band_entries = band_entries;
@@ -375,8 +382,13 @@ impl TextAtlas {
     /// Upload a COLRv1 color glyph command blob.
     ///
     /// Layout: [commands...] [sub_glyph_0: header + bands + curves] [sub_glyph_1: ...] ...
-    /// Sub-glyph header (2 texels): band_max + band_transform as bitcast f32→i32.
-    /// Command DRAW opcodes reference sub-glyphs by blob-relative offset.
+    /// Sub-glyph header (3 texels): band_max (packed) + band_transform (4 raw i32).
+    /// Command DRAW opcodes reference sub-glyphs by blob-relative texel offset.
+    ///
+    /// COLRv1 commands and headers store raw i32 values (not i16-packed) since
+    /// they contain bitcast f32 and packed color data that uses full i32 range.
+    /// Each raw `[i32; 4]` occupies 2 packed texels (4 i32 slots).
+    /// Band and curve data within sub-glyphs are i16-packed as usual.
     pub(crate) fn upload_color_v1(
         &mut self,
         device: &wgpu::Device,
@@ -385,12 +397,16 @@ impl TextAtlas {
     ) -> Result<ColorV1GlyphEntry, crate::types::PrepareError> {
         // Phase 1: build each sub-glyph's blob (header + bands + curves).
         struct SubGlyphBlob {
-            header: [[i32; 4]; 2],
-            band_entries_i32: Vec<[i32; 4]>,
-            curve_texels: Vec<[i32; 4]>,
+            /// Header: 3 packed texels (6 i32 slots).
+            /// [0-1]: band_max_x, band_max_y (packed i16 pair + padding)
+            /// [2-5]: band_transform (4 raw i32, bitcast f32)
+            header: [i32; 6],
+            band_entries_packed: Vec<i32>,  // 2 i32 per texel (packed i16 pairs)
+            curve_texels: Vec<[i32; 4]>,   // intermediate; packed at append time
         }
 
-        let cmd_texel_count = v1.commands.len() as u32;
+        // Commands occupy 2 packed texels each (4 raw i32 values per command)
+        let cmd_texel_count = v1.commands.len() as u32 * 2;
         let mut sub_blobs: Vec<SubGlyphBlob> = Vec::with_capacity(v1.sub_glyphs.len());
         let mut union_bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
 
@@ -438,37 +454,38 @@ impl TextAtlas {
             );
             self.scratch_band_entries = band_data.entries;
 
-            let band_entries_i32: Vec<[i32; 4]> = self.scratch_band_entries
+            let band_entries_packed: Vec<i32> = self.scratch_band_entries
                 .chunks_exact(4)
-                .map(|c| [c[0] as i32, c[1] as i32, c[2] as i32, c[3] as i32])
+                .flat_map(|c| [pack_i16_pair(c[0], c[1]), pack_i16_pair(c[2], c[3])])
                 .collect();
 
             let bt = band_data.band_transform;
-            let header: [[i32; 4]; 2] = [
-                [
-                    band_count_x.saturating_sub(1) as i32,
-                    band_count_y.saturating_sub(1) as i32,
-                    f32::to_bits(bt[0]) as i32,
-                    f32::to_bits(bt[1]) as i32,
-                ],
-                [
-                    f32::to_bits(bt[2]) as i32,
-                    f32::to_bits(bt[3]) as i32,
-                    0,
-                    0,
-                ],
+            // Sub-glyph header: 3 packed texels (6 i32 slots).
+            let header: [i32; 6] = [
+                // Texel 0: band_max (packed i16 pair) + padding
+                pack_i16_pair(
+                    band_count_x.saturating_sub(1) as i16,
+                    band_count_y.saturating_sub(1) as i16,
+                ),
+                0, // padding
+                // Texels 1-2: band_transform as raw i32 (bitcast f32)
+                f32::to_bits(bt[0]) as i32,
+                f32::to_bits(bt[1]) as i32,
+                f32::to_bits(bt[2]) as i32,
+                f32::to_bits(bt[3]) as i32,
             ];
 
-            sub_blobs.push(SubGlyphBlob { header, band_entries_i32, curve_texels });
+            sub_blobs.push(SubGlyphBlob { header, band_entries_packed, curve_texels });
         }
 
         // Phase 2: compute sub-glyph offsets within the blob.
-        // Blob layout: [commands] [sub0: header(2) + bands + curves] [sub1: ...]
+        // Blob layout: [commands (2 texels each)] [sub0: header(3) + bands + curves] [sub1: ...]
         let mut offset = cmd_texel_count;
         for (i, blob) in sub_blobs.iter().enumerate() {
             v1.sub_glyphs[i].blob_offset = offset;
-            // header(2) + bands + curves
-            offset += 2 + blob.band_entries_i32.len() as u32 + blob.curve_texels.len() as u32;
+            // header(3 texels) + bands (already in texel units) + curves
+            let band_texels = blob.band_entries_packed.len() as u32 / 2;
+            offset += 3 + band_texels + blob.curve_texels.len() as u32;
         }
         let total_blob_size = offset;
 
@@ -478,8 +495,6 @@ impl TextAtlas {
             if opcode == crate::outline::CMD_DRAW_SOLID || opcode == crate::outline::CMD_DRAW_GRADIENT {
                 let sub_idx = cmd[1] as usize;
                 if sub_idx < v1.sub_glyphs.len() {
-                    // Point to the sub-glyph's header within the blob.
-                    // The shader adds blob_base to get the absolute offset.
                     cmd[1] = v1.sub_glyphs[sub_idx].blob_offset as i32;
                 }
             }
@@ -492,21 +507,26 @@ impl TextAtlas {
             self.grow_buffer(device, new_end);
         }
 
-        // Append commands
-        self.buffer_data.extend_from_slice(&v1.commands);
+        // Append commands: each [i32; 4] command → 4 raw i32 values (2 packed texels)
+        for cmd in &v1.commands {
+            self.buffer_data.extend_from_slice(cmd);
+        }
         // Append sub-glyph blobs
         for blob in &sub_blobs {
-            self.buffer_data.push(blob.header[0]);
-            self.buffer_data.push(blob.header[1]);
-            self.buffer_data.extend_from_slice(&blob.band_entries_i32);
-            self.buffer_data.extend_from_slice(&blob.curve_texels);
+            self.buffer_data.extend_from_slice(&blob.header);
+            self.buffer_data.extend_from_slice(&blob.band_entries_packed);
+            // Pack curve texels
+            for v in &blob.curve_texels {
+                self.buffer_data.push(pack_i16_pair(v[0] as i16, v[1] as i16));
+                self.buffer_data.push(pack_i16_pair(v[2] as i16, v[3] as i16));
+            }
         }
 
         self.buffer_cursor = new_end;
 
         Ok(ColorV1GlyphEntry {
             blob_offset: glyph_offset,
-            cmd_count: v1.cmd_count,
+            cmd_count: cmd_texel_count,
             bounds: union_bounds,
             units_per_em,
         })
@@ -549,11 +569,21 @@ impl TextAtlas {
     }
 }
 
-fn create_glyph_buffer(device: &Device, capacity: u32) -> wgpu::Buffer {
+/// Bytes per texel in the packed layout: 2 i32 values = 8 bytes.
+const BYTES_PER_TEXEL: u64 = 8;
+
+fn create_glyph_buffer(device: &Device, capacity_texels: u32) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("sluggrs glyph buffer"),
-        size: capacity as u64 * 16, // 16 bytes per vec4<i32>
+        size: capacity_texels as u64 * BYTES_PER_TEXEL,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
+}
+
+/// Pack two i16 values into a single i32.
+/// Layout: low 16 bits = first value, high 16 bits = second value.
+/// Matches the shader's `unpack_lo/unpack_hi` extraction.
+fn pack_i16_pair(a: i16, b: i16) -> i32 {
+    (a as u16 as u32 | ((b as u16 as u32) << 16)) as i32
 }

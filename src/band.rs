@@ -56,10 +56,11 @@ pub struct CurveLocation {
     pub offset: u32,
 }
 
-/// Encode a glyph-relative offset with +32768 bias for i16 storage.
-/// Allows unsigned range 0-65535 in a signed i16.
+/// Encode a glyph-relative offset as i16.
+/// Values up to 65535 are stored by reinterpreting the low 16 bits as i16.
+/// The shader recovers the original value with a mask: `u32(v) & 0xFFFF`.
 fn encode_offset(offset: u32) -> i16 {
-    (offset as i32 - 32768) as i16
+    offset as u16 as i16
 }
 
 /// Find the optimal split coordinate for a band's dual sorted lists.

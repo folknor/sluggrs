@@ -48,8 +48,8 @@ struct Params {
 enum PreparedGlyph {
     /// Standard monochrome or COLRv0 layer glyph.
     Normal { outline: GlyphOutline, band_data: band::BandData },
-    /// Pre-built COLRv1 blob (commands + sub-glyph data).
-    RawBlob { data: Vec<[i32; 4]> },
+    /// Pre-built COLRv1 blob (pre-packed i32 values, 2 per texel).
+    RawBlob { data: Vec<i32> },
 }
 
 /// Quantize f32 em-space coordinate to i32 at 4 units/em.
@@ -57,9 +57,15 @@ fn q(v: f32) -> i32 {
     (v * 4.0).round() as i32
 }
 
+/// Pack two i16 values into a single i32 (low + high 16 bits).
+fn pack_i16_pair(a: i16, b: i16) -> i32 {
+    (a as u16 as u32 | ((b as u16 as u32) << 16)) as i32
+}
+
 /// Build unified glyph buffer from prepared glyphs.
-fn build_glyph_buffer(glyphs: &[PreparedGlyph]) -> Vec<[i32; 4]> {
-    let mut buffer: Vec<[i32; 4]> = Vec::new();
+/// Each texel (4 i16-safe values) is packed into 2 i32 values.
+fn build_glyph_buffer(glyphs: &[PreparedGlyph]) -> Vec<i32> {
+    let mut buffer: Vec<i32> = Vec::new();
 
     for glyph in glyphs {
         match glyph {
@@ -69,19 +75,27 @@ fn build_glyph_buffer(glyphs: &[PreparedGlyph]) -> Vec<[i32; 4]> {
                     curve_texels.push([q(curve.p1[0]), q(curve.p1[1]), q(curve.p2[0]), q(curve.p2[1])]);
                     curve_texels.push([q(curve.p3[0]), q(curve.p3[1]), 0, 0]);
                 }
+                // Pack band entries: 4 i16 values → 2 packed i32 values
                 for chunk in band_data.entries.chunks(4) {
-                    buffer.push([chunk[0] as i32, chunk[1] as i32, chunk[2] as i32, chunk[3] as i32]);
+                    buffer.push(pack_i16_pair(chunk[0], chunk[1]));
+                    buffer.push(pack_i16_pair(chunk[2], chunk[3]));
                 }
-                buffer.extend_from_slice(&curve_texels);
+                // Pack curve texels
+                for v in &curve_texels {
+                    buffer.push(pack_i16_pair(v[0] as i16, v[1] as i16));
+                    buffer.push(pack_i16_pair(v[2] as i16, v[3] as i16));
+                }
             }
             PreparedGlyph::RawBlob { data } => {
+                // COLRv1 blobs: already pre-packed i32 values
                 buffer.extend_from_slice(data);
             }
         }
     }
 
     if buffer.is_empty() {
-        buffer.push([0; 4]);
+        buffer.push(0);
+        buffer.push(0);
     }
 
     buffer
@@ -207,9 +221,9 @@ fn prepare_text(
 
             // Build sub-glyph blobs (header + bands + curves)
             struct SubBlob {
-                header: [[i32; 4]; 2],
-                band_entries: Vec<[i32; 4]>,
-                curve_texels: Vec<[i32; 4]>,
+                header: [i32; 6],           // 3 packed texels
+                band_entries: Vec<i32>,      // packed i16 pairs
+                curve_texels: Vec<[i32; 4]>, // intermediate; packed at blob time
             }
             let mut sub_blobs: Vec<SubBlob> = Vec::new();
             let mut union_bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
@@ -239,25 +253,30 @@ fn prepare_text(
 
                 let bc = (num_curves as u32).clamp(1, 16);
                 let bd = build_bands(o, &curve_locs, bc, bc, Vec::new(), &mut band::BandScratch::default());
-                let band_entries: Vec<[i32; 4]> = bd.entries.chunks(4)
-                    .map(|c| [c[0] as i32, c[1] as i32, c[2] as i32, c[3] as i32])
+                let band_entries: Vec<i32> = bd.entries.chunks(4)
+                    .flat_map(|c| [pack_i16_pair(c[0], c[1]), pack_i16_pair(c[2], c[3])])
                     .collect();
 
                 let bt = bd.band_transform;
-                let header: [[i32; 4]; 2] = [
-                    [bc.saturating_sub(1) as i32, bc.saturating_sub(1) as i32,
-                     f32::to_bits(bt[0]) as i32, f32::to_bits(bt[1]) as i32],
-                    [f32::to_bits(bt[2]) as i32, f32::to_bits(bt[3]) as i32, 0, 0],
+                // 3-texel header: band_max packed + band_transform raw
+                let header: [i32; 6] = [
+                    pack_i16_pair(bc.saturating_sub(1) as i16, bc.saturating_sub(1) as i16),
+                    0,
+                    f32::to_bits(bt[0]) as i32, f32::to_bits(bt[1]) as i32,
+                    f32::to_bits(bt[2]) as i32, f32::to_bits(bt[3]) as i32,
                 ];
                 sub_blobs.push(SubBlob { header, band_entries, curve_texels });
             }
 
-            // Compute sub-glyph offsets
-            let cmd_texels = v1_data.commands.len() as u32;
+            // Compute sub-glyph offsets (in packed texel units)
+            // Commands: 2 packed texels each
+            let cmd_texels = v1_data.commands.len() as u32 * 2;
             let mut offset = cmd_texels;
             for (i, blob) in sub_blobs.iter().enumerate() {
                 v1_data.sub_glyphs[i].blob_offset = offset;
-                offset += 2 + blob.band_entries.len() as u32 + blob.curve_texels.len() as u32;
+                // header(3) + band texels + curve texels
+                let band_texels = blob.band_entries.len() as u32 / 2;
+                offset += 3 + band_texels + blob.curve_texels.len() as u32;
             }
             let total_size = offset;
 
@@ -271,14 +290,22 @@ fn prepare_text(
                 }
             }
 
-            // Build the blob
-            let mut blob_data: Vec<[i32; 4]> = Vec::with_capacity(total_size as usize);
-            blob_data.extend_from_slice(&v1_data.commands);
+            // Build the pre-packed blob (flat i32 array, 2 i32 per packed texel)
+            let mut blob_data: Vec<i32> = Vec::new();
+            // Commands: raw i32 values (4 per command = 2 packed texels)
+            for cmd in &v1_data.commands {
+                blob_data.extend_from_slice(cmd);
+            }
             for sb in &sub_blobs {
-                blob_data.push(sb.header[0]);
-                blob_data.push(sb.header[1]);
+                // Header: 6 i32 values = 3 packed texels
+                blob_data.extend_from_slice(&sb.header);
+                // Band entries: already packed (2 i32 per texel)
                 blob_data.extend_from_slice(&sb.band_entries);
-                blob_data.extend_from_slice(&sb.curve_texels);
+                // Curve texels: pack i32 quads → 2 i32 per texel
+                for v in &sb.curve_texels {
+                    blob_data.push(pack_i16_pair(v[0] as i16, v[1] as i16));
+                    blob_data.push(pack_i16_pair(v[2] as i16, v[3] as i16));
+                }
             }
 
             let [min_x, min_y, max_x, max_y] = union_bounds;
@@ -291,7 +318,7 @@ fn prepare_text(
                 screen_rect: [screen_x, screen_y, screen_w, screen_h],
                 em_rect: union_bounds,
                 band_transform: [0.0; 4],
-                glyph_data: [buffer_offset, 0, 0, cmd_count],
+                glyph_data: [buffer_offset, 0, 0, cmd_texels],
                 color,
                 depth: 0.0,
                 ppem: font_size,
@@ -611,7 +638,8 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
                     buffer_offset += band_elements + curve_elements;
                 }
                 PreparedGlyph::RawBlob { data } => {
-                    buffer_offset += data.len() as u32;
+                    // data.len() is in i32 units, buffer_offset is in texels (2 i32 each)
+                    buffer_offset += data.len() as u32 / 2;
                 }
             }
         }
@@ -971,7 +999,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
 
     // Build unified glyph buffer
     let glyph_buffer_data = build_glyph_buffer(&all_prepared);
-    log::info!("Glyph buffer: {} elements ({} bytes)", glyph_buffer_data.len(), glyph_buffer_data.len() * 16);
+    log::info!("Glyph buffer: {} i32 elements ({} bytes)", glyph_buffer_data.len(), glyph_buffer_data.len() * 4);
 
     let glyph_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("glyph buffer"),

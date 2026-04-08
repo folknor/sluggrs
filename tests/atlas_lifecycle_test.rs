@@ -87,7 +87,7 @@ impl TestHarness {
         );
         buffer.shape_until_scroll(&mut self.font_system, false);
 
-        let mut encoder = self
+        let encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
@@ -108,7 +108,7 @@ impl TestHarness {
         self.renderer.prepare(
             &self.device,
             &self.queue,
-            &mut encoder,
+            &encoder,
             &mut self.font_system,
             &mut self.atlas,
             &self.viewport,
