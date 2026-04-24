@@ -29,6 +29,10 @@ name = "demo"
 path = "examples/demo.rs"
 
 [[example]]
+name = "demo2"
+path = "examples/demo2.rs"
+
+[[example]]
 name = "hotpath"
 path = "examples/hotpath.rs"
 
@@ -73,7 +77,7 @@ unwrap_used = "deny"
 await_holding_lock = "deny"
 await_holding_refcell_ref = "deny"
 
-# Type safety (excluding cast_* and float_cmp — speed at all costs)
+# Type safety (excluding cast_* and float_cmp - speed at all costs)
 large_enum_variant = "deny"
 clone_on_ref_ptr = "deny"
 

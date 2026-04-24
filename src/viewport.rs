@@ -76,4 +76,25 @@ impl Viewport {
     pub fn scroll_offset(&self) -> [f32; 2] {
         self.params.scroll_offset
     }
+
+    /// Set the scroll offset applied by the vertex shader (pixels).
+    pub fn set_scroll_offset(&mut self, queue: &Queue, offset: [f32; 2]) {
+        if self.params.scroll_offset != offset {
+            self.params.scroll_offset = offset;
+            queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&self.params));
+        }
+    }
+
+    /// Toggle MSAA + stem darkening (flag bit 0).
+    pub fn set_msaa_hint(&mut self, queue: &Queue, enabled: bool) {
+        let new_flags = if enabled {
+            self.params.flags | 1
+        } else {
+            self.params.flags & !1
+        };
+        if self.params.flags != new_flags {
+            self.params.flags = new_flags;
+            queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&self.params));
+        }
+    }
 }
