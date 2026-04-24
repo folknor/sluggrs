@@ -2,7 +2,7 @@
 //! Mixed-locale inbox benchmark for brokkr integration.
 //!
 //! Simulates a multilingual inbox matching dev-seed's "mixed" locale mode at
-//! high thread counts. ~70% Latin, ~30% CJK/Arabic/Hindi/Korean — each message
+//! high thread counts. ~70% Latin, ~30% CJK/Arabic/Hindi/Korean - each message
 //! draws from large character pools to maximize distinct glyph count.
 //!
 //! Target: 500-2000+ distinct glyphs, 50k+ glyph instances across 200+ buffers.
@@ -24,7 +24,7 @@ const WIDTH: u32 = 1920;
 const HEIGHT: u32 = 1080;
 
 // ---------------------------------------------------------------------------
-// Character pools — large enough to produce hundreds of distinct glyphs per
+// Character pools - large enough to produce hundreds of distinct glyphs per
 // script when sampled into messages. These approximate the character frequency
 // you'd see in a real multilingual email inbox.
 // ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@ const JA_POOL: &str = "\
 作成編集保存読込送信受信返信転送添付資料画像動画音声文書表図\
 会議予定日程場所参加者議題決定事項連絡注意重要緊急至急";
 
-/// Korean syllables — common ones used in business/tech email.
+/// Korean syllables - common ones used in business/tech email.
 const KO_POOL: &str = "\
 가나다라마바사아자차카타파하거너더러머버서어저처커터퍼허\
 고노도로모보소오조초코토포호구누두루무부수우주추쿠투푸후\
@@ -92,7 +92,7 @@ const HI_POOL: &str = "\
 बैठकप्रगतिस्थितिसमयसारणीकार्यसूचीप्राथमिकता";
 
 // ---------------------------------------------------------------------------
-// Simple RNG — deterministic, no external dependency. Xorshift64.
+// Simple RNG - deterministic, no external dependency. Xorshift64.
 // ---------------------------------------------------------------------------
 
 struct Rng(u64);
@@ -136,7 +136,7 @@ enum Script {
     Hindi,
 }
 
-/// Latin subjects — enough variety to cover the ASCII+accented range.
+/// Latin subjects - enough variety to cover the ASCII+accented range.
 const LATIN_SUBJECTS: &[&str] = &[
     "Re: Performance review of the Slug GPU text renderer",
     "Shipping estimate for Q3 iced integration milestone",
@@ -155,7 +155,7 @@ const LATIN_SUBJECTS: &[&str] = &[
     "Code review: prepare_outline refactor for zero-copy",
     "Re: Noto CJK font loading latency in FontSystem::new()",
     "Meeting notes: shader optimization review (April 3)",
-    "Ärger mit Übersetzungen — i18n text rendering Prüfung",
+    "Ärger mit Übersetzungen - i18n text rendering Prüfung",
     "Résultats des tests: comparaison cryoglyph vs sluggrs",
     "Þórdís: Nordic glyph coverage and diacritic rendering",
 ];
@@ -167,10 +167,10 @@ const LATIN_BODIES: &[&str] = &[
      from 92 calls to 1 saves ~20-90µs. GPU time is already good at 11µs headless.",
     "Quick update on the integration timeline. The sluggrs branch passes basic rendering \
      tests. Remaining: emoji fallback, trim() invalidation, ColorMode, stride alignment. \
-     The Noto font family has 2,000+ glyphs per weight — mixed content easily hits 500+ \
+     The Noto font family has 2,000+ glyphs per weight - mixed content easily hits 500+ \
      distinct glyphs on first render.",
     "The nightly CI broke overnight. Root cause: wgpu 28.1 changed TextureDescriptor \
-     validation. Fix is trivial but exposed a deeper issue — no integration test exercises \
+     validation. Fix is trivial but exposed a deeper issue - no integration test exercises \
      the full prepare→render pipeline. Proposed: headless GPU test via llvmpipe.",
     "I investigated the RSS spike. FontSystem::new() loads all system fonts (~200 fonts, \
      ~40MB). cosmic_text doesn't lazy-load. Options: new_with_fonts() for specific fonts, \
@@ -268,8 +268,8 @@ impl Pools {
 
 fn main() {
     let _guard = hotpath::HotpathGuardBuilder::new("sluggrs::email2_bench")
-        .percentiles(&[50, 95, 99])
-        .with_functions_limit(0)
+        .percentiles(&[50.0, 95.0, 99.0])
+        .functions_limit(0)
         .build();
 
     let (device, queue) = create_device();

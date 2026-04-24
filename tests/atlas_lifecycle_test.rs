@@ -281,7 +281,7 @@ fn growth_then_trim_then_more_glyphs() {
 fn trim_does_not_reset_without_texture_growth() {
     let mut h = TestHarness::new();
 
-    // Upload a small number of glyphs — not enough to trigger texture growth
+    // Upload a small number of glyphs - not enough to trigger texture growth
     h.prepare_text("Hi").expect("Prepare should succeed");
 
     let glyph_count_before = h.atlas.glyph_count();
@@ -328,7 +328,7 @@ fn trim_resets_when_textures_grew_and_working_set_shifted() {
     let cached_after_growth = h.atlas.glyph_count();
     assert!(cached_after_growth > 50, "Should have cached many glyphs");
 
-    // Now prepare only a small subset — the working set has shifted.
+    // Now prepare only a small subset - the working set has shifted.
     // This marks only a few glyphs as in-use.
     h.prepare_text("AB").expect("Small prepare should succeed");
 
@@ -349,7 +349,7 @@ fn trim_resets_when_textures_grew_and_working_set_shifted() {
         "buffer cursor should be reset"
     );
 
-    // The atlas should still be usable — next prepare re-extracts
+    // The atlas should still be usable - next prepare re-extracts
     h.prepare_text("AB")
         .expect("Prepare after reset should succeed");
     assert!(
@@ -385,7 +385,7 @@ fn trim_does_not_reset_when_working_set_stable() {
 
     let cached_after_growth = h.atlas.glyph_count();
 
-    // Prepare the SAME text again — all glyphs are in-use
+    // Prepare the SAME text again - all glyphs are in-use
     h.prepare_text(many_chars)
         .expect("Repeat prepare should succeed");
 

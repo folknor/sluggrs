@@ -88,7 +88,7 @@ fn glyph_key_inequality_different_flags() {
 }
 
 // ---------------------------------------------------------------------------
-// 2. GlyphKey hashing — no collisions for a small, distinct set
+// 2. GlyphKey hashing - no collisions for a small, distinct set
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -436,7 +436,7 @@ fn band_data_sanity() {
 
 #[test]
 fn band_data_single_band() {
-    // Edge case: build with 1x1 bands — all curves go into the single band.
+    // Edge case: build with 1x1 bands - all curves go into the single band.
     let mut font_system = FontSystem::new();
 
     let metrics = Metrics::new(24.0, 30.0);

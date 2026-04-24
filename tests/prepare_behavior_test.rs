@@ -246,7 +246,7 @@ fn prepare_with_depth_does_not_panic() {
 /// cropping on the CPU. Glyphs that fall partially or fully outside the
 /// TextBounds are skipped during instance generation (the bounding-box
 /// check in prepare_with_depth), but this should never cause a panic or
-/// error — it simply means fewer instances are emitted.
+/// error - it simply means fewer instances are emitted.
 ///
 /// This test verifies that prepare() returns Ok even when the TextBounds
 /// are tight enough to exclude some or all glyphs.

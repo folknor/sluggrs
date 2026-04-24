@@ -24,7 +24,7 @@ pub struct TextAtlas {
     pub(crate) format: TextureFormat,
     pub(crate) color_mode: ColorMode,
 
-    // Buffer state — packed layout: each logical texel (4 i16 values) is stored
+    // Buffer state - packed layout: each logical texel (4 i16 values) is stored
     // as 2 i32 elements (each i32 packs a pair of i16 values). All capacity/
     // cursor/offsets are in texel units; physical buffer is 2x in i32 units.
     buffer_capacity: u32,       // in texels
@@ -268,7 +268,7 @@ impl TextAtlas {
         }
 
         // Build curve texels with implicit p1 sharing within contours.
-        // No row-boundary padding needed — storage buffer is 1D.
+        // No row-boundary padding needed - storage buffer is 1D.
         self.scratch_curve_texels.clear();
         self.scratch_curve_texels.reserve(num_curves as usize * 2);
         self.scratch_curve_locations.clear();
@@ -326,7 +326,7 @@ impl TextAtlas {
         let bd_transform = band_data.band_transform;
         let band_element_count = (band_data.entries.len() / 4) as u32;
 
-        // Curve ref offsets are already final — build_bands pre-adds
+        // Curve ref offsets are already final - build_bands pre-adds
         // band_element_count so refs point into the curve region.
         let band_entries = band_data.entries;
 

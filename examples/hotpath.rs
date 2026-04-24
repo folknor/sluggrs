@@ -18,8 +18,8 @@ use sluggrs::{
 
 fn main() {
     let _guard = hotpath::HotpathGuardBuilder::new("sluggrs::hotpath")
-        .percentiles(&[50, 95, 99])
-        .with_functions_limit(0)
+        .percentiles(&[50.0, 95.0, 99.0])
+        .functions_limit(0)
         .build();
 
     let (device, queue) = create_device();

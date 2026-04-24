@@ -57,7 +57,7 @@ pub struct TextRenderer {
     text_area_cache: FxHashMap<*const cosmic_text::Buffer, CachedTextArea>,
     /// Resolution from last frame, for cache invalidation.
     cached_resolution: crate::types::Resolution,
-    /// Atlas generation at last prepare() — detects trim(reset) between prepare and render.
+    /// Atlas generation at last prepare() - detects trim(reset) between prepare and render.
     prepared_atlas_generation: u32,
     // Raster fallback: per-frame instances drawn using TextAtlas's shared raster resources
     raster_instances: Vec<RasterVertex>,
@@ -115,7 +115,7 @@ impl TextRenderer {
 
     /// Prepare text areas for rendering, with per-glyph depth mapping.
     ///
-    /// `encoder` and `cache` are unused — they exist for cryoglyph API
+    /// `encoder` and `cache` are unused - they exist for cryoglyph API
     /// compatibility. sluggrs uses `queue.write_texture` (no encoder needed)
     /// and extracts outlines via skrifa (no swash rasterization).
     #[allow(clippy::too_many_arguments)]
@@ -173,11 +173,11 @@ impl TextRenderer {
                         let dy = text_area.top - cached.top;
 
                         if dx == 0.0 && dy == 0.0 {
-                            // Exact position match — extend from cache directly
+                            // Exact position match - extend from cache directly
                             self.instances.extend_from_slice(&cached.instances);
                             non_vector_collector.extend_from_slice(&cached.non_vector_glyphs);
                         } else {
-                            // Position shifted — adjust screen_rect and re-cull
+                            // Position shifted - adjust screen_rect and re-cull
                             any_position_changed = true;
                             let bounds_min_x = text_area.bounds.left.max(0) as f32;
                             let bounds_min_y = text_area.bounds.top.max(0) as f32;
@@ -231,7 +231,7 @@ impl TextRenderer {
                 }
             }
 
-            // Cache miss — full glyph loop for this TextArea
+            // Cache miss - full glyph loop for this TextArea
             all_hit = false;
             let instance_start = self.instances.len();
             let mut area_keys: Vec<GlyphKey> = Vec::new();
@@ -488,7 +488,7 @@ impl TextRenderer {
         glyph: &cosmic_text::LayoutGlyph,
         key: GlyphKey,
     ) -> Result<crate::glyph_cache::GlyphEntry, PrepareError> {
-        // Cache miss — look up font from cache or populate
+        // Cache miss - look up font from cache or populate
         let cache_key = (glyph.font_id, glyph.font_weight);
         if !self.font_cache.contains_key(&cache_key) {
             let face_index = font_system
@@ -535,7 +535,7 @@ impl TextRenderer {
         let wght_tag = skrifa::Tag::new(b"wght");
         let location = [VariationSetting::new(wght_tag, glyph.font_weight.0 as f32)];
 
-        // Check for COLR color glyph first — COLRv0 fonts often have fallback
+        // Check for COLR color glyph first - COLRv0 fonts often have fallback
         // monochrome outlines, so extract_outline would succeed but miss the color.
         // Skip the COLR check entirely for fonts without a COLR table.
         let color_info = if has_colr {
@@ -566,7 +566,7 @@ impl TextRenderer {
                 }
             }
             None => {
-                // No color data — try regular outline, else raster fallback.
+                // No color data - try regular outline, else raster fallback.
                 match extract_outline(font_data, face_index, glyph.glyph_id, &location) {
                     Some(mut outline) => {
                         if glyph

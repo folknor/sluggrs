@@ -38,14 +38,14 @@ const EMAILS: &[EmailMessage] = &[
         body: "Hi everyone,\n\n\
                I've finished the initial performance review of the Slug GPU text rendering \
                pipeline. The cold prepare path is dominated by per-glyph allocation in \
-               build_bands() — 14 fresh Vec allocations per cache miss. At 92 distinct glyphs, \
+               build_bands() - 14 fresh Vec allocations per cache miss. At 92 distinct glyphs, \
                that's 1,288 malloc/free cycles on the critical path.\n\n\
                The warm path looks reasonable at ~50-100µs, but our benchmark includes \
                cosmic_text shaping overhead which inflates the number. We need a shaping-free \
                benchmark before we can properly attribute warm-path cost.\n\n\
                Key findings:\n\
                • BandScratch reuse would save ~100µs cold (10-15%)\n\
-               • prepare_outline() clone is pure waste — 5-10% of cold prepare\n\
+               • prepare_outline() clone is pure waste - 5-10% of cold prepare\n\
                • Batching queue.write_buffer from 92 calls to 1 saves ~20-90µs\n\
                • GPU time is already good: 11µs headless, 71µs windowed\n\n\
                Let me know if you want to discuss priorities. I think items 1-3 are the \
@@ -76,13 +76,13 @@ const EMAILS: &[EmailMessage] = &[
                Quick update on the iced integration timeline. The sluggrs branch on folknor/iced \
                has text.rs swapped from cryoglyph and passes basic rendering tests. Remaining \
                work before we can submit upstream:\n\n\
-               1. Emoji/non-vector glyph fallback — currently silently dropped, needs explicit \
+               1. Emoji/non-vector glyph fallback - currently silently dropped, needs explicit \
                   classification API for two-pass routing (sluggrs → cryoglyph)\n\
-               2. trim() invalidation bug — prepare→trim→render sequence can draw stale data\n\
-               3. ColorMode actually needs to work — sRGB vs linear framebuffer handling\n\
-               4. GlyphInstance stride alignment — 96 bytes with 8 bytes padding, verify on \
+               2. trim() invalidation bug - prepare→trim→render sequence can draw stale data\n\
+               3. ColorMode actually needs to work - sRGB vs linear framebuffer handling\n\
+               4. GlyphInstance stride alignment - 96 bytes with 8 bytes padding, verify on \
                   all backends (Metal, Vulkan, DX12, WebGPU)\n\n\
-               The font system integration is clean — cosmic_text 0.18 gives us everything we \
+               The font system integration is clean - cosmic_text 0.18 gives us everything we \
                need. FontRef caching per (font_id, face_index) would help cold starts with \
                large font collections.\n\n\
                For reference, the Noto font family alone has 2,000+ glyphs per weight × \
@@ -90,9 +90,9 @@ const EMAILS: &[EmailMessage] = &[
                could easily hit 500+ distinct glyphs on first render.\n\n\
                Estimated completion: 3-4 weeks for items 1-3, then a week of integration \
                testing before PR.\n\n\
-               — Søren",
+               - Søren",
         quote: "> María wrote:\n\
-                > The prepare_outline() clone removal is trivial — GpuOutline is already a\n\
+                > The prepare_outline() clone removal is trivial - GpuOutline is already a\n\
                 > type alias. Just pass &GlyphOutline through to upload_glyph and only\n\
                 > clone for the ~1% of glyphs that need italic shear.",
         code: "// GlyphKey: 12-byte cache key, currently using SipHash\n\
@@ -111,8 +111,8 @@ const EMAILS: &[EmailMessage] = &[
                Attendees: Aïsha, Kōji, François, María\n\n\
                ✅ Agreed: pack i16 pairs into i32 to halve storage buffer bandwidth\n\
                ✅ Agreed: precompute a,b from unshifted coords (matches harfbuzz pattern)\n\
-               ❌ Rejected: compute shader rewrite — incompatible with render-pass integration\n\
-               ⚠️ Deferred: analytical AA to replace 5× MSAA — needs more research\n\n\
+               ❌ Rejected: compute shader rewrite - incompatible with render-pass integration\n\
+               ⚠️ Deferred: analytical AA to replace 5× MSAA - needs more research\n\n\
                Kōji presented RenderDoc captures showing the fragment shader spends 60% of \
                time in curve evaluation loops. The storage buffer fetch pattern is efficient \
                on RTX 3080 (L2 hit rate >90%) but may be bandwidth-bound on integrated GPUs.\n\n\
@@ -122,12 +122,12 @@ const EMAILS: &[EmailMessage] = &[
                📊 María: run email-scale benchmark on Intel UHD 630\n\
                🏗️ Søren: design blob header format for em_rect/band_transform\n\n\
                Next meeting: Thursday 15:00 UTC\n\n\
-               — Aïsha",
+               - Aïsha",
         quote: "> Kōji wrote:\n\
                 > The CalcRootCode in our shader uses select() where the Slug reference\n\
                 > uses asuint(y) >> 31. On NVIDIA this reduces to a single LOP3 instruction.\n\
-                > We should verify naga's SPIR-V output — it might already optimize this.",
-        code: "// Current solver — both paths computed unconditionally\n\
+                > We should verify naga's SPIR-V output - it might already optimize this.",
+        code: "// Current solver - both paths computed unconditionally\n\
                let ra = 1.0 / a.y;\n\
                let rb = 0.5 / b.y;\n\
                let d = sqrt(max(b.y * b.y - a.y * p12.y, 0.0));\n\
@@ -155,7 +155,7 @@ const EMAILS: &[EmailMessage] = &[
                • Weight 700 at 14px: 38 curves/glyph average, 8 bands\n\
                • Weight 100 at 10px: thin stems need careful γ tuning\n\n\
                Roboto Regular:\n\
-               • CFF outlines — exercises cu2qu cubic→quadratic conversion\n\
+               • CFF outlines - exercises cu2qu cubic→quadratic conversion\n\
                • Higher curve count after conversion (~15% more than TTF)\n\
                • f64 precision in cu2qu is overkill at 0.5 font-unit tolerance\n\n\
                All three render correctly with our half-pixel dilation model. The Jacobian-\
@@ -182,7 +182,7 @@ const EMAILS: &[EmailMessage] = &[
         body: "こんにちは team,\n\n\
                I reproduced the texture growth stall with a mixed Japanese-Latin email. When \
                loading 200+ new CJK glyphs across growth boundaries, grow_buffer() copies \
-               the entire atlas contents multiple times — O(n) full re-uploads.\n\n\
+               the entire atlas contents multiple times - O(n) full re-uploads.\n\n\
                Test case: email with Japanese subject + body + quoted English reply:\n\
                • 日本語のテキストレンダリングテスト (Japanese rendering test)\n\
                • フォントシステムの統合 (Font system integration)\n\
@@ -218,8 +218,8 @@ const EMAILS: &[EmailMessage] = &[
 
 fn main() {
     let _guard = hotpath::HotpathGuardBuilder::new("sluggrs::email_bench")
-        .percentiles(&[50, 95, 99])
-        .with_functions_limit(0)
+        .percentiles(&[50.0, 95.0, 99.0])
+        .functions_limit(0)
         .build();
 
     let (device, queue) = create_device();
@@ -407,7 +407,7 @@ fn build_scroll_replacement_buffer(font_system: &mut FontSystem) -> Buffer {
             "This is a replacement message that appears during scroll simulation. \
              It introduces a few new glyphs to exercise partial cache misses. \
              Characters like ø, å, æ, þ, ð help test Nordic coverage. \
-             Numbers: 2026-04-03T14:32:00Z — ISO 8601 timestamps are common in email.\n\n\
+             Numbers: 2026-04-03T14:32:00Z - ISO 8601 timestamps are common in email.\n\n\
              Ärger mit Übersetzungen ist häufig in mehrsprachigen E-Mail-Clients. \
              Die Lösung liegt in der korrekten Zeichenkodierung und Font-Auswahl.",
             body_attrs(),

@@ -3,7 +3,7 @@
 ## Problem
 
 sluggrs cannot render bitmap-only glyphs (color emoji, bitmap fonts).
-These glyphs have no vector outline — `extract_outline()` returns `None`.
+These glyphs have no vector outline - `extract_outline()` returns `None`.
 Currently they are silently skipped, producing invisible text. This is
 a user-visible bug that must be fixed before the iced integration ships.
 
@@ -20,8 +20,8 @@ Source::Outline           → glyf/CFF tables (regular vector outlines)
 ```
 
 The result is a `SwashImage` with:
-- `Content::Color` → RGBA pixels (4 bytes/pixel) — emoji, color glyphs
-- `Content::Mask` → alpha pixels (1 byte/pixel) — regular text
+- `Content::Color` → RGBA pixels (4 bytes/pixel) - emoji, color glyphs
+- `Content::Mask` → alpha pixels (1 byte/pixel) - regular text
 - placement coordinates (top, left, width, height)
 
 ### cryoglyph
@@ -47,7 +47,7 @@ simple packer (etagere or manual). When `extract_outline()` returns
 None, fall back to `SwashCache::get_image_uncached()` and pack the
 bitmap into the atlas.
 
-**Shader changes**: The fragment shader needs a branch — curve evaluation
+**Shader changes**: The fragment shader needs a branch - curve evaluation
 for vector glyphs, texture sampling for bitmap glyphs. This could be
 signaled via a flag in `glyph_data` (e.g. `band_offset == u32::MAX`
 means "sample the bitmap atlas instead").
@@ -61,7 +61,7 @@ is set, or use a union-style layout.
 bind group.
 
 **Pros**:
-- Self-contained — sluggrs handles all text rendering
+- Self-contained - sluggrs handles all text rendering
 - Single crate dependency for iced
 - Can optimize the bitmap path independently
 - Full control over atlas management, growth, eviction
@@ -104,11 +104,11 @@ and atlas textures entirely.
 - Two render pipelines active simultaneously
 - Two sets of GPU resources (cryoglyph's atlas textures + sluggrs's
   curve/band textures)
-- Version coupling — cryoglyph and sluggrs must agree on wgpu version
+- Version coupling - cryoglyph and sluggrs must agree on wgpu version
 - The cryoglyph Cache, TextAtlas, and Viewport must be initialized
   and maintained alongside sluggrs's equivalents
 - cryoglyph's TextArea/TextBounds types are identical to ours but
-  technically separate types — need conversion or shared definition
+  technically separate types - need conversion or shared definition
 
 **Maintenance burden**: Low code, but dependency coupling is a long-term
 risk.
@@ -186,7 +186,7 @@ In the `prepare()` function, classify each TextArea's glyphs and
 split into two batches:
 
 ```rust
-// Rough sketch — actual implementation needs more thought
+// Rough sketch - actual implementation needs more thought
 let mut sluggrs_areas = vec![];  // TextAreas with only vector glyphs
 let mut cryoglyph_areas = vec![]; // TextAreas with only bitmap glyphs
 
@@ -196,7 +196,7 @@ let mut cryoglyph_areas = vec![]; // TextAreas with only bitmap glyphs
 
 **Problem**: This sketch is oversimplified. A single TextArea can
 contain both vector and bitmap glyphs (e.g. "Hello 👋 world"). We
-can't split at the TextArea level — we'd need glyph-level routing.
+can't split at the TextArea level - we'd need glyph-level routing.
 
 **Better approach**: Render every TextArea through both renderers.
 sluggrs skips non-vector glyphs (it already does). cryoglyph renders
@@ -217,10 +217,10 @@ rendering. Emoji from cryoglyph shows through because sluggrs
 doesn't draw anything there.
 
 This works if:
-- Both renderers use the same positions (they do — same TextArea)
+- Both renderers use the same positions (they do - same TextArea)
 - sluggrs draws on top of cryoglyph (draw order in render pass)
 - Alpha blending doesn't cause artifacts for double-drawn vector
-  glyphs (it shouldn't — sluggrs's output is opaque in the glyph
+  glyphs (it shouldn't - sluggrs's output is opaque in the glyph
   interior, and both renderers produce the same shape)
 
 **This might be the pragmatic answer**: zero routing logic, both
@@ -233,7 +233,7 @@ wastes some GPU work but produces correct output.
 1. **Draw order and blending**: If cryoglyph draws first and sluggrs
    draws on top, does alpha blending produce correct results for
    overlapping vector glyphs? Both produce similar but not identical
-   coverage — could cause visible fringing.
+   coverage - could cause visible fringing.
 
 2. **Performance**: Rendering all text through both pipelines doubles
    the GPU work. For text-heavy applications (email client) this may

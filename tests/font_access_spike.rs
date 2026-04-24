@@ -71,9 +71,9 @@ fn extract_outline_from_cosmic_text_layout() {
                     );
                 }
                 None => {
-                    // Space or non-drawing glyph — acceptable
+                    // Space or non-drawing glyph - acceptable
                     println!(
-                        "  glyph_id={} — no outline (space or non-drawing)",
+                        "  glyph_id={} - no outline (space or non-drawing)",
                         glyph.glyph_id
                     );
                 }

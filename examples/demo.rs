@@ -653,7 +653,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     // --- Sizes (Inter Variable, TTF) ---
     add_line(
         INTER_VARIABLE,
-        "8px Inter: the quick brown fox jumps over the lazy dog — MSAA target",
+        "8px Inter: the quick brown fox jumps over the lazy dog - MSAA target",
         8.0,
         left,
         y,
@@ -862,7 +862,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     y += 40.0;
 
     // --- COLRv0 color emoji test ---
-    y += 16.0; // extra space — emoji bounds exceed 1em in this font
+    y += 16.0; // extra space - emoji bounds exceed 1em in this font
     add_line(
         TWEMOJI_COLR,
         "\u{1F600}\u{1F60D}\u{1F525}\u{2764}\u{1F680}\u{1F308}\u{1F3B5}\u{2B50}",
@@ -1258,7 +1258,7 @@ fn render(state: &mut RenderState) {
             occlusion_query_set: None,
         });
 
-        // GPU profiling — measures actual fragment shader execution time
+        // GPU profiling - measures actual fragment shader execution time
         let query = state
             .gpu_profiler
             .as_ref()

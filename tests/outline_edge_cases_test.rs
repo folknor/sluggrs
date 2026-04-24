@@ -130,7 +130,7 @@ fn ttc_face_index_correctness() {
     let font_data = match find_ttc_font() {
         Some(d) => d,
         None => {
-            eprintln!("No TTC font found on system — skipping test");
+            eprintln!("No TTC font found on system - skipping test");
             return;
         }
     };
@@ -152,7 +152,7 @@ fn ttc_face_index_correctness() {
         match found {
             Some(id) => id,
             None => {
-                eprintln!("No common glyph with outline found in both TTC faces — skipping");
+                eprintln!("No common glyph with outline found in both TTC faces - skipping");
                 return;
             }
         }
@@ -229,7 +229,7 @@ fn comma_line_only_glyph_regression() {
     );
     eprintln!("Confirmed: all {} comma curves are linear (p2 = p1)", outline.curves.len());
 
-    // Step 2: Build bands with a single band (1x1) — the simplest case.
+    // Step 2: Build bands with a single band (1x1) - the simplest case.
     let curve_locations: Vec<CurveLocation> = (0..outline.curves.len())
         .map(|i| CurveLocation {
             offset: (i * 3) as u32,
@@ -308,7 +308,7 @@ fn ttc_units_per_em_face_index() {
     let font_data = match find_ttc_font() {
         Some(d) => d,
         None => {
-            eprintln!("No TTC font found on system — skipping test");
+            eprintln!("No TTC font found on system - skipping test");
             return;
         }
     };
@@ -354,12 +354,12 @@ fn ttc_units_per_em_face_index() {
 
     if upem_0 != upem_1 {
         eprintln!(
-            "TTC faces have DIFFERENT units_per_em ({upem_0} vs {upem_1}) — \
+            "TTC faces have DIFFERENT units_per_em ({upem_0} vs {upem_1}) - \
              using FontRef::new() for face 1 would have produced wrong scaling"
         );
     } else {
         eprintln!(
-            "TTC faces have same units_per_em ({upem_0}) — bug would be \
+            "TTC faces have same units_per_em ({upem_0}) - bug would be \
              latent but from_index() is still correct"
         );
     }

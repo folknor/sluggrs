@@ -17,7 +17,7 @@ pub struct QuadCurve {
 
 /// Extracted glyph outline.
 ///
-/// Note: `bounds` is approximate for CFF fonts — cubic-to-quadratic subdivision
+/// Note: `bounds` is approximate for CFF fonts - cubic-to-quadratic subdivision
 /// can produce control points outside the original cubic hull. Use
 /// `build_bands()` for exact bounds over the actual quadratic geometry.
 #[derive(Debug, Clone)]
@@ -106,7 +106,7 @@ impl OutlinePen for CollectPen {
             if cross1 * cross1 * inv <= CU2QU_TOLERANCE * CU2QU_TOLERANCE
                 && cross2 * cross2 * inv <= CU2QU_TOLERANCE * CU2QU_TOLERANCE
             {
-                // Flat enough — emit as line (p2=p1 encoding)
+                // Flat enough - emit as line (p2=p1 encoding)
                 let p3f = [x, y];
                 self.curves.push(QuadCurve {
                     p1: self.current,
@@ -149,7 +149,7 @@ impl OutlinePen for CollectPen {
 /// Port of harfbuzz's cu2qu algorithm (hb-gpu-cu2qu.hh).
 ///
 /// Tolerance for quadratic approximation, in font units.
-/// f32 has ~7 decimal digits — sufficient precision for font units (0-2048)
+/// f32 has ~7 decimal digits - sufficient precision for font units (0-2048)
 /// at 0.5 font-unit tolerance.
 const CU2QU_TOLERANCE: f32 = 0.5;
 
@@ -212,7 +212,7 @@ fn approx_quadratic(c0: P, c1: P, c2: P, c3: P, tolerance: f32) -> Option<P> {
     // Intersection parameter along end tangent
     let denom = px * dx + py * dy;
     if denom.abs() < 1e-6 {
-        return None; // Parallel tangents — needs subdivision
+        return None; // Parallel tangents - needs subdivision
     }
 
     let h = (px * (c0[0] - c2[0]) + py * (c0[1] - c2[1])) / denom;
@@ -656,7 +656,7 @@ impl<'a> CommandEncoder<'a> {
 
     fn resolve_color(&self, palette_index: u16, alpha: f32) -> [f32; 4] {
         if palette_index == 0xFFFF {
-            // Foreground color — shader will use instance color
+            // Foreground color - shader will use instance color
             [1.0, 1.0, 1.0, alpha]
         } else if let Some(colors) = self.palette_colors {
             if let Some(c) = colors.get(palette_index as usize) {
@@ -807,7 +807,7 @@ impl ColorPainter for CommandEncoder<'_> {
     }
 
     fn push_clip_box(&mut self, _clip_box: skrifa::metrics::BoundingBox) {
-        // COLRv1 clip boxes are just optimization hints — we don't need them
+        // COLRv1 clip boxes are just optimization hints - we don't need them
         // for correctness since the glyph coverage handles clipping.
     }
 

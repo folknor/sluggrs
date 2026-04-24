@@ -1,11 +1,11 @@
-// Public API modules — stable interface matching cryoglyph
+// Public API modules - stable interface matching cryoglyph
 pub mod gpu_cache;
 pub mod text_atlas;
 pub mod text_renderer;
 pub mod types;
 pub mod viewport;
 
-// Low-level modules — public for custom renderers (like the demo) but
+// Low-level modules - public for custom renderers (like the demo) but
 // not part of the stable iced integration API. Internal representations
 // may change.
 pub mod band;
@@ -14,7 +14,7 @@ pub mod glyph_cache;
 pub mod outline;
 pub mod prepare;
 
-// Public API — matches cryoglyph's interface for iced integration
+// Public API - matches cryoglyph's interface for iced integration
 pub use glyph_cache::GlyphKey;
 pub use gpu_cache::Cache;
 pub use text_atlas::TextAtlas;

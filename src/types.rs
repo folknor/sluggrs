@@ -63,7 +63,7 @@ impl std::error::Error for PrepareError {}
 
 /// An error that occurred while rendering text.
 ///
-/// Currently `render()` always returns `Ok(())` — these variants exist for
+/// Currently `render()` always returns `Ok(())` - these variants exist for
 /// cryoglyph API compatibility but are never produced. If trim/atlas-reset
 /// detection is added in the future, `RemovedFromAtlas` would be returned.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

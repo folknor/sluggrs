@@ -13,28 +13,28 @@ iced currently renders text by rasterizing glyphs to bitmaps on the CPU (via swa
 - Slightly off rendering at fractional scale factors
 - Atlas memory pressure with many unique glyphs (CJK, emoji)
 - Re-rasterization on atlas eviction or scale change
-- No resolution independence — cached glyphs are pixel-locked
+- No resolution independence - cached glyphs are pixel-locked
 
 Slug evaluates quadratic bezier curves **per-pixel in the fragment shader**. Glyph outlines go to the GPU as control point data, not bitmaps. This gives resolution independence, zero atlas overhead for vector glyphs, and clean rendering at any scale/DPI.
 
 ## Architecture Overview
 
 ```
-cosmic-text                      (keep — shaping, bidi, line-breaking)
+cosmic-text                      (keep - shaping, bidi, line-breaking)
     │
     │  produces: glyph IDs + positions + font refs
     ▼
-sluggrs                       (new crate — replaces cryoglyph)
+sluggrs                       (new crate - replaces cryoglyph)
     │
-    ├── outline extraction       (skrifa — read bezier curves from font)
-    ├── band builder             (CPU — spatial acceleration structure)
-    ├── curve/band textures      (GPU — two wgpu textures)
-    ├── vertex packing           (CPU — 5×vec4 per glyph vertex)
-    ├── WGSL shaders             (GPU — translated from Slug HLSL reference)
-    └── render pipeline          (wgpu — draw calls into render pass)
+    ├── outline extraction       (skrifa - read bezier curves from font)
+    ├── band builder             (CPU - spatial acceleration structure)
+    ├── curve/band textures      (GPU - two wgpu textures)
+    ├── vertex packing           (CPU - 5×vec4 per glyph vertex)
+    ├── WGSL shaders             (GPU - translated from Slug HLSL reference)
+    └── render pipeline          (wgpu - draw calls into render pass)
     │
     ▼
-iced_wgpu/src/text.rs            (modified — calls sluggrs instead of cryoglyph)
+iced_wgpu/src/text.rs            (modified - calls sluggrs instead of cryoglyph)
 ```
 
 ## Integration into iced
@@ -100,7 +100,7 @@ impl TextRenderer {
         atlas: &mut TextAtlas,
         viewport: &Viewport,
         text_areas: impl IntoIterator<Item = TextArea<'a>>,
-        cache: &mut GlyphCache,  // was SwashCache — now our outline cache
+        cache: &mut GlyphCache,  // was SwashCache - now our outline cache
         metadata_to_depth: impl FnMut(usize) -> f32,
     ) -> Result<(), PrepareError>;
 
@@ -112,7 +112,7 @@ impl TextRenderer {
     ) -> Result<(), RenderError>;
 }
 
-// Input type — same shape as cryoglyph::TextArea
+// Input type - same shape as cryoglyph::TextArea
 pub struct TextArea<'a> {
     pub buffer: &'a cosmic_text::Buffer,
     pub left: f32,
@@ -183,17 +183,17 @@ pub struct GlyphOutline {
 }
 ```
 
-**Cubic → quadratic conversion**: When we encounter cubic beziers (CFF/OpenType), subdivide into quadratics. This is a well-known operation — split the cubic at midpoints until the quadratic approximation is within tolerance. The `lyon_geom` crate or a manual implementation can handle this. Most text fonts are TrueType (natively quadratic), so this path is less common.
+**Cubic → quadratic conversion**: When we encounter cubic beziers (CFF/OpenType), subdivide into quadratics. This is a well-known operation - split the cubic at midpoints until the quadratic approximation is within tolerance. The `lyon_geom` crate or a manual implementation can handle this. Most text fonts are TrueType (natively quadratic), so this path is less common.
 
 ### Band builder (band.rs)
 
-The band structure is Slug's spatial acceleration — it divides the glyph bounding box into horizontal and vertical strips, each storing which curves intersect it. This avoids testing every curve for every pixel.
+The band structure is Slug's spatial acceleration - it divides the glyph bounding box into horizontal and vertical strips, each storing which curves intersect it. This avoids testing every curve for every pixel.
 
 ```rust
 /// Build the band acceleration structure for a glyph's curves.
 pub fn build_bands(
     outline: &GlyphOutline,
-    band_count_x: u32,  // typically 4–16 depending on glyph complexity
+    band_count_x: u32,  // typically 4-16 depending on glyph complexity
     band_count_y: u32,
 ) -> BandData { .. }
 
@@ -239,7 +239,7 @@ struct GlyphLocation {
 }
 ```
 
-**Memory characteristics**: Curve data is *tiny* compared to bitmap atlases. A typical Latin glyph has 10–30 curves = 20–60 texels. A full Latin character set (~200 glyphs) fits in ~12K texels. CJK glyphs are larger (~50–100 curves) but still far smaller than their bitmap equivalents at high DPI.
+**Memory characteristics**: Curve data is *tiny* compared to bitmap atlases. A typical Latin glyph has 10-30 curves = 20-60 texels. A full Latin character set (~200 glyphs) fits in ~12K texels. CJK glyphs are larger (~50-100 curves) but still far smaller than their bitmap equivalents at high DPI.
 
 ### Vertex packing (vertex.rs)
 
@@ -319,17 +319,17 @@ impl TextRenderer {
 
 ### Color emoji
 
-Color emoji (Apple Color Emoji, Noto Color Emoji) are bitmap-based — they don't have vector outlines. Slug can't render these. Options:
+Color emoji (Apple Color Emoji, Noto Color Emoji) are bitmap-based - they don't have vector outlines. Slug can't render these. Options:
 
 1. **Hybrid approach**: Detect bitmap glyphs, fall back to a small atlas (like cryoglyph) for just those glyphs. This is the pragmatic answer.
 2. **SVG emoji**: Some emoji fonts (Noto Color Emoji SVG) have vector outlines. These could potentially use the Slug pipeline, though they involve fills, not just outlines.
 3. **Skip for now**: Email clients don't render emoji-heavy content as often as chat apps. Start with vector-only, add bitmap fallback later.
 
-Recommendation: option 1 — keep a minimal bitmap atlas path for color emoji only.
+Recommendation: option 1 - keep a minimal bitmap atlas path for color emoji only.
 
 ### Cubic bezier conversion quality
 
-CFF/OpenType fonts use cubic beziers. Converting to quadratics introduces approximation error. At typical text sizes this is invisible, but at extreme zoom levels it could matter. The tolerance for subdivision needs tuning — start with 0.1 em-units (well below pixel threshold at any reasonable size).
+CFF/OpenType fonts use cubic beziers. Converting to quadratics introduces approximation error. At typical text sizes this is invisible, but at extreme zoom levels it could matter. The tolerance for subdivision needs tuning - start with 0.1 em-units (well below pixel threshold at any reasonable size).
 
 ### Performance characteristics
 
@@ -341,7 +341,7 @@ Slug trades CPU work (atlas rasterization) for GPU work (per-pixel curve evaluat
 
 ### skrifa API for outline access
 
-Need to verify that `skrifa` exposes per-glyph outlines as individual curve segments we can iterate. The `OutlinePen` trait should work — it provides `move_to`, `line_to`, `quad_to`, `curve_to` callbacks. We'd collect these into our `GlyphOutline` struct.
+Need to verify that `skrifa` exposes per-glyph outlines as individual curve segments we can iterate. The `OutlinePen` trait should work - it provides `move_to`, `line_to`, `quad_to`, `curve_to` callbacks. We'd collect these into our `GlyphOutline` struct.
 
 ### Subpixel rendering (LCD)
 

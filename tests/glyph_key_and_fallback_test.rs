@@ -77,7 +77,7 @@ fn glyph_key_distinguishes_font_ids_from_layout() {
 fn glyph_key_same_font_produces_equal_keys() {
     let mut font_system = FontSystem::new();
 
-    // Shape the same character with the same family twice — keys should be identical.
+    // Shape the same character with the same family twice - keys should be identical.
     let key_a = shape_and_key(&mut font_system, 'A', Family::SansSerif);
     let key_b = shape_and_key(&mut font_system, 'A', Family::SansSerif);
 

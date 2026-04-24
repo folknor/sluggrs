@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 /// Cache key for a glyph's outline geometry.
 ///
 /// Captures everything that affects outline shape. Deliberately excludes
-/// size, position, and subpixel offset — outlines are resolution-independent.
+/// size, position, and subpixel offset - outlines are resolution-independent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct GlyphKey {
     pub font_id: cosmic_text::fontdb::ID,
@@ -37,7 +37,7 @@ impl GlyphKey {
 #[derive(Clone, Copy, Debug)]
 pub struct GlyphEntry {
     /// Texel offset of this glyph's band headers in the band texture.
-    /// Linear texel space — the shader's calc_band_loc() wraps at
+    /// Linear texel space - the shader's calc_band_loc() wraps at
     /// BAND_TEXTURE_WIDTH.
     pub band_offset: u32,
     /// Number of vertical bands minus 1 (band_max.x in shader).
@@ -48,7 +48,7 @@ pub struct GlyphEntry {
     pub band_transform: [f32; 4],
     /// Glyph bounding box in em-space.
     pub bounds: [f32; 4],
-    /// Font units per em — avoids per-glyph font re-parse on warm path.
+    /// Font units per em - avoids per-glyph font re-parse on warm path.
     pub units_per_em: f32,
     /// Frame epoch when this glyph was last used (for trim heuristic).
     pub(crate) last_used_epoch: u32,
@@ -65,7 +65,7 @@ pub const NON_VECTOR_GLYPH: GlyphEntry = GlyphEntry {
     last_used_epoch: 0,
 };
 
-/// Sentinel for COLRv0 color glyphs — look up `color_glyphs` map for layers.
+/// Sentinel for COLRv0 color glyphs - look up `color_glyphs` map for layers.
 pub const COLOR_VECTOR_GLYPH: GlyphEntry = GlyphEntry {
     band_offset: u32::MAX - 1,
     band_max_x: 0,
@@ -101,7 +101,7 @@ pub struct ColorV1GlyphEntry {
     pub units_per_em: f32,
 }
 
-/// Sentinel for COLRv1 color glyphs — look up `color_v1_glyphs` map.
+/// Sentinel for COLRv1 color glyphs - look up `color_v1_glyphs` map.
 pub const COLOR_V1_VECTOR_GLYPH: GlyphEntry = GlyphEntry {
     band_offset: u32::MAX - 2,
     band_max_x: 0,

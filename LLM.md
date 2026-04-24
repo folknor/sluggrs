@@ -3,9 +3,9 @@
 This project is built using LLM-based coding tools, primarily Claude Code
 and Codex.
 
-Clean-room development — where one team studies a reference implementation
+Clean-room development - where one team studies a reference implementation
 and produces a specification, and a separate team builds from that
-specification — has a long history in open source: Compaq's IBM BIOS clone,
+specification - has a long history in open source: Compaq's IBM BIOS clone,
 WINE, Samba, and Mono were all built this way. This project draws on the
 same principle, with LLMs as the separation boundary.
 
@@ -16,7 +16,7 @@ tooling to enforce it.
 
 ## Process
 
-LLM agents are used throughout development — writing code, debugging, testing,
+LLM agents are used throughout development - writing code, debugging, testing,
 and reviewing. The human developer directs the work, reviews and approves code
 changes, and makes architectural decisions.
 
@@ -25,11 +25,11 @@ changes, and makes architectural decisions.
 Where this project operates in a space with existing implementations under
 different licenses, a structural separation is maintained:
 
-- The **development agent** — the LLM session that writes and modifies source
-  code — never sees third-party source code.
+- The **development agent** - the LLM session that writes and modifies source
+  code - never sees third-party source code.
 - Separate, persistent **review sessions** are maintained for each relevant
   third-party project. These sessions have context about third-party
-  implementations and are consulted for analysis, comparison, and critique —
+  implementations and are consulted for analysis, comparison, and critique -
   but they produce analysis and critique, never code, pseudocode, or
   structural blueprints.
 - This separation is enforced by tooling

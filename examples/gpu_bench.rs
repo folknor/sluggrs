@@ -35,7 +35,7 @@ fn main() {
     let has_timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
 
     if !has_timestamps {
-        eprintln!("ERROR: adapter does not support TIMESTAMP_QUERY — cannot measure GPU time");
+        eprintln!("ERROR: adapter does not support TIMESTAMP_QUERY - cannot measure GPU time");
         std::process::exit(1);
     }
 

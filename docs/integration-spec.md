@@ -10,7 +10,7 @@ evaluation) in iced's wgpu backend. The integration point is a single file:
 
 ### Blocker 1: Font byte access
 
-**Status**: Largely resolved — needs a confirming spike.
+**Status**: Largely resolved - needs a confirming spike.
 
 `prepare()` needs raw font bytes for skrifa outline extraction.
 cosmic_text provides viable paths:
@@ -48,12 +48,12 @@ The key must capture all of these:
 ```rust
 #[derive(Hash, Eq, PartialEq, Clone, Copy)]
 pub struct GlyphKey {
-    /// cosmic_text font identifier — uniquely identifies the face
+    /// cosmic_text font identifier - uniquely identifies the face
     /// within the font database, including collection index
     font_id: cosmic_text::fontdb::ID,
     /// Glyph index within the font
     glyph_id: u16,
-    /// Font weight used during shaping — affects outline selection
+    /// Font weight used during shaping - affects outline selection
     /// in variable fonts
     font_weight: u16,
     /// Flags that affect outline generation (e.g. FAKE_ITALIC)
@@ -74,7 +74,7 @@ key. The spike should enumerate what's available on `LayoutGlyph` and
 `Font`.
 
 **Important**: The cache key deliberately excludes size, position, and
-subpixel offset. Outlines are resolution-independent — vertex attributes
+subpixel offset. Outlines are resolution-independent - vertex attributes
 handle the per-instance transform. This is the core architectural advantage
 over cryoglyph's `CacheKey` which includes physical position.
 
@@ -85,7 +85,7 @@ Silently skipping these produces user-visible missing text and is not
 acceptable at any phase.
 
 **Hybrid rendering is required before swapping the dependency in iced.**
-This is not a polish item — iced's `State::prepare` and `render` assume
+This is not a polish item - iced's `State::prepare` and `render` assume
 the renderer handles all text (`text.rs:304`, `text.rs:374`). A renderer
 that drops glyphs will break real applications.
 
@@ -131,7 +131,7 @@ These types are simple and can match cryoglyph exactly:
 | `TextArea<'a>` | `{ buffer, left, top, scale, bounds, default_color }` | Identical, references `cosmic_text::Buffer` |
 | `PrepareError` | `enum { AtlasFull }` | Keep variant, even though our "atlas" is different |
 | `RenderError` | `enum { RemovedFromAtlas, ScreenResolutionChanged }` | Keep variants for API compat |
-| `ColorMode` | `enum { Accurate, Web }` | Stub — Slug doesn't distinguish gamma modes yet |
+| `ColorMode` | `enum { Accurate, Web }` | Stub - Slug doesn't distinguish gamma modes yet |
 
 ### Types (different internals, same interface)
 
@@ -140,7 +140,7 @@ These types are simple and can match cryoglyph exactly:
 Cryoglyph: Holds shader module, sampler, bind group layouts, pipeline
 layout, cached render pipelines. Shared across all atlases.
 
-sluggrs: Same role — holds our Slug shader module, bind group layouts for
+sluggrs: Same role - holds our Slug shader module, bind group layouts for
 curve/band textures and params uniform, pipeline layout, cached pipelines.
 No sampler needed (we use `textureLoad`, not `textureSample`).
 
@@ -194,7 +194,7 @@ texture is always `BAND_TEXTURE_WIDTH` (4096) wide and grows in height.
 ##### GlyphEntry
 
 The bridge between glyph cache, texture data, and vertex packing.
-Every field here is consumed downstream — this is the central data
+Every field here is consumed downstream - this is the central data
 contract.
 
 ```rust
@@ -256,7 +256,7 @@ pub struct TextAtlas {
 ```
 
 **Key difference from cryoglyph**: Glyph data is resolution-independent.
-A glyph cached once serves all sizes — only the vertex attributes change.
+A glyph cached once serves all sizes - only the vertex attributes change.
 This eliminates re-rasterization on scale changes.
 
 ##### Texture growth and invalidation
@@ -292,7 +292,7 @@ sluggrs must NOT clear the glyph cache on trim. Instead:
   least-recently-used glyphs not in the current frame's usage set
 
 This matches cryoglyph's behavior and avoids re-extracting every glyph
-every frame. Since vector glyph data is small (10–60 texels per glyph
+every frame. Since vector glyph data is small (10-60 texels per glyph
 vs thousands of pixels per bitmap), texture pressure is much lower and
 eviction may rarely trigger in practice.
 
@@ -396,7 +396,7 @@ for run in buffer.layout_runs() {
 }
 ```
 
-Same as cryoglyph — cosmic_text does the shaping/layout.
+Same as cryoglyph - cosmic_text does the shaping/layout.
 
 ### 2. Classify and cache glyph
 
@@ -472,9 +472,9 @@ the semantic differences require targeted changes in `text.rs`.
 | **Namespace** | `cryoglyph::*` | `sluggrs::*` | Mechanical rename |
 | **SwashCache** | Rasterizes glyphs | Accepted, unused | No change needed; wasted alloc is negligible |
 | **ColorMode** | Controls sRGB texture format | Accepted, ignored | No change; may need revisiting for color correctness |
-| **trim()** | Clears usage sets, retains atlas | Clears usage sets, retains cache | Compatible — same external behavior |
-| **Atlas invalidation** | group.version increments on trim when atlas is shared | Same mechanism applies | Preserved — uploads check group_version |
-| **PrepareError::AtlasFull** | Bitmap atlas hit max texture size | Curve/band textures hit device limits | Swallowed at `text.rs:358` — same behavior |
+| **trim()** | Clears usage sets, retains atlas | Clears usage sets, retains cache | Compatible - same external behavior |
+| **Atlas invalidation** | group.version increments on trim when atlas is shared | Same mechanism applies | Preserved - uploads check group_version |
+| **PrepareError::AtlasFull** | Bitmap atlas hit max texture size | Curve/band textures hit device limits | Swallowed at `text.rs:358` - same behavior |
 | **Per-glyph clipping** | Crops glyph quads against TextBounds | Relies on scissor rect | See Clip Bounds section |
 | **prepare_with_depth** | Supports depth metadata per glyph | Same signature, depth passed through | Compatible |
 
@@ -524,7 +524,7 @@ bounds checking in prepare() to skip fully off-screen glyphs.
 
 **No UV adjustment needed**: Unlike cryoglyph, we don't need to crop
 texture coordinates because our fragment shader evaluates curves
-analytically — there are no UVs to adjust.
+analytically - there are no UVs to adjust.
 
 ## Phasing
 
@@ -558,7 +558,7 @@ visual output.
 
 ### Phase D: Non-vector fallback
 
-Implement Blocker 3 — bitmap fallback for emoji and non-vector glyphs.
+Implement Blocker 3 - bitmap fallback for emoji and non-vector glyphs.
 This must be complete before the iced dependency swap ships.
 
 ### Phase E: Polish

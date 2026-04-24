@@ -9,7 +9,7 @@ const INTER_VARIABLE: &[u8] = include_bytes!("../examples/fonts/InterVariable.tt
 
 #[test]
 fn variable_font_outline_differs_by_weight() {
-    // Map 'S' to a glyph ID — a character with curves that visibly change with weight.
+    // Map 'S' to a glyph ID - a character with curves that visibly change with weight.
     let glyph_id = char_to_glyph_id(INTER_VARIABLE, 0, 'S')
         .expect("Inter Variable should contain glyph for 'S'");
 
@@ -32,12 +32,12 @@ fn variable_font_outline_differs_by_weight() {
         outline_bold.bounds
     );
 
-    // The outlines must differ — either in bounds or control points.
+    // The outlines must differ - either in bounds or control points.
     // A bold 'S' has wider strokes, so the bounds and/or control points change.
     let bounds_differ = outline_regular.bounds != outline_bold.bounds;
 
     let points_differ = if outline_regular.curves.len() == outline_bold.curves.len() {
-        // Same number of curves — check that at least one control point differs.
+        // Same number of curves - check that at least one control point differs.
         outline_regular
             .curves
             .iter()
@@ -65,7 +65,7 @@ fn variable_font_outline_differs_by_weight() {
 
 #[test]
 fn variable_font_outline_differs_for_lowercase_a() {
-    // Test with 'a' as well — another character with clear weight variation.
+    // Test with 'a' as well - another character with clear weight variation.
     let glyph_id = char_to_glyph_id(INTER_VARIABLE, 0, 'a')
         .expect("Inter Variable should contain glyph for 'a'");
 
