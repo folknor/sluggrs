@@ -57,7 +57,7 @@ brokkr report <run_id>                        # show detailed results for a past
 brokkr visual-status                          # dashboard: all snapshots vs approved baselines
 brokkr results                                # last 20 results
 brokkr results <uuid>                         # look up by UUID prefix
-brokkr results --compare-last --command hotpath  # compare two most recent hotpath runs
+brokkr results --compare-last --mode hotpath    # compare two most recent hotpath runs
 brokkr results --commit abc1                  # filter by commit prefix
 brokkr env                                    # show environment info
 brokkr clean                                  # clean build artifacts and scratch data
