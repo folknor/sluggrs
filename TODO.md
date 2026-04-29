@@ -28,11 +28,10 @@ Mixed-locale baseline: 364 glyphs, ~4.6ms cold prepare (`brokkr hotpath --target
 
 ### Additional cold-path items
 
-- [ ] **Split prepare_with_depth into two passes** - currently miss
-  processing happens inline during glyph iteration. Pass 1: collect visible
-  glyphs and distinct misses. Pass 2: build missing blobs (enables future
-  parallelism). Pass 3: fast instance packing. Enables batching and cleaner
-  architecture. Medium effort. *Multiple reviewers independently.*
+- [x] ~~**Split prepare_with_depth into two passes**~~ done in `f28ac87`
+  (three-pass split: classify areas → resolve misses → emit instances).
+  Mono prep/commit seam (`prep::prepare_mono`, `text_atlas::commit_mono`)
+  added in `e98d6d1`. Misses are now deduped before resolution.
 
 - [ ] **Atlas initial capacity** - starts at 8192 elements, `grow_buffer()`
   doubles with full re-upload. Start at 1-4MB for known workloads, or
@@ -119,10 +118,14 @@ dominated by compositor/surface, not text math.
 
 ## Future / Long-term
 
-- [ ] **Parallel cold glyph processing (rayon)** - miss processing is
-  embarrassingly parallel per distinct glyph. Collect missing keys, process
-  in parallel into blobs, commit serially. 2-4x cold speedup. Depends on
-  two-pass split. Medium effort.
+- [x] ~~**Parallel cold glyph processing (rayon)**~~ - tried, doesn't pay
+  off. Per-glyph prep is ~13µs (extract_outline + build_bands + pack); rayon
+  thread-pool init + coordination overhead exceeds the win even for the
+  email2 workload (367 distinct misses): cold went 4.6ms → 11.5ms with
+  `par_iter().map_init`. Mono prep+commit seam (`prep::prepare_mono`,
+  `text_atlas::commit_mono`) was kept since it's parallel-ready, but the
+  parallel iteration was reverted. Worth revisiting if individual glyphs
+  get more expensive (analytical AA prep, larger bands).
 
 - [ ] **Second-level blob cache** - cache encoded glyph blobs independent of
   atlas residency. Atlas reset drops GPU residency only, re-upload is
