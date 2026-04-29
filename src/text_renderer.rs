@@ -43,6 +43,42 @@ struct CachedTextArea {
     non_vector_glyphs: Vec<NonVectorGlyph>,
 }
 
+/// One glyph queued for instance packing in pass 3 (cache-miss areas only).
+struct WorkItem<'a> {
+    glyph: &'a cosmic_text::LayoutGlyph,
+    line_y: f32,
+    key: GlyphKey,
+}
+
+/// Per-area context for a cache-miss area. Built in pass 1, consumed in pass 3.
+struct MissArea<'a> {
+    text_area: TextArea<'a>,
+    work_start: usize,
+    work_end: usize,
+    bounds_min_x: i32,
+    bounds_min_y: i32,
+    bounds_max_x: i32,
+    bounds_max_y: i32,
+    default_color: [f32; 4],
+}
+
+/// Plan record per text area produced by pass 1 and consumed by pass 3 in input order.
+enum AreaPlan<'a> {
+    HitDirect {
+        buffer_ptr: *const cosmic_text::Buffer,
+    },
+    HitShifted {
+        buffer_ptr: *const cosmic_text::Buffer,
+        dx: f32,
+        dy: f32,
+        bounds_min_x: f32,
+        bounds_min_y: f32,
+        bounds_max_x: f32,
+        bounds_max_y: f32,
+    },
+    Miss(MissArea<'a>),
+}
+
 /// A text renderer that uses the Slug algorithm to render text into an
 /// existing render pass.
 pub struct TextRenderer {
@@ -118,6 +154,12 @@ impl TextRenderer {
     /// `encoder` and `cache` are unused - they exist for cryoglyph API
     /// compatibility. sluggrs uses `queue.write_texture` (no encoder needed)
     /// and extracts outlines via skrifa (no swash rasterization).
+    ///
+    /// Three-pass structure:
+    /// 1. Classify each text area as cache-hit (direct/shifted) or miss;
+    ///    for misses, walk visible runs and collect work items + distinct keys.
+    /// 2. Resolve distinct missing glyph keys (extract+upload). Future-parallel.
+    /// 3. Walk plans in input order; emit instances per area; populate cache.
     #[allow(clippy::too_many_arguments)]
     #[hotpath::measure]
     pub fn prepare_with_depth<'a>(
@@ -139,7 +181,6 @@ impl TextRenderer {
         let scroll = viewport.scroll_offset();
         let atlas_gen = atlas.generation();
 
-        // Invalidate all cached entries if resolution changed
         if resolution != self.cached_resolution {
             self.text_area_cache.clear();
             self.cached_resolution = resolution;
@@ -147,96 +188,57 @@ impl TextRenderer {
 
         let mut all_hit = true;
         let mut any_position_changed = false;
-        // Track which cache entries were used this frame for cleanup
         let mut used_ptrs: Vec<*const cosmic_text::Buffer> = Vec::new();
 
+        let mut plans: Vec<AreaPlan<'a>> = Vec::new();
+        let mut work: Vec<WorkItem<'a>> = Vec::new();
+        let mut distinct_misses: Vec<GlyphKey> = Vec::new();
+
+        // ===== Pass 1: classify areas, collect work items =====
         for text_area in text_areas {
             let buffer_ptr: *const cosmic_text::Buffer = text_area.buffer;
             used_ptrs.push(buffer_ptr);
 
-            // Try cache hit
-            if let Some(cached) = self.text_area_cache.get(&buffer_ptr) {
-                if !text_area.buffer.redraw()
-                    && cached.scale == text_area.scale
-                    && cached.bounds == text_area.bounds
-                    && cached.default_color == text_area.default_color
-                    && cached.atlas_generation == atlas_gen
-                {
-                    // Validate all distinct glyphs still in atlas
-                    let glyphs_valid = cached
-                        .distinct_keys
-                        .iter()
-                        .all(|k| atlas.glyphs.get_and_mark_used(k).is_some());
+            if let Some(cached) = self.text_area_cache.get(&buffer_ptr)
+                && !text_area.buffer.redraw()
+                && cached.scale == text_area.scale
+                && cached.bounds == text_area.bounds
+                && cached.default_color == text_area.default_color
+                && cached.atlas_generation == atlas_gen
+            {
+                let glyphs_valid = cached
+                    .distinct_keys
+                    .iter()
+                    .all(|k| atlas.glyphs.get_and_mark_used(k).is_some());
 
-                    if glyphs_valid {
-                        let dx = text_area.left - cached.left;
-                        let dy = text_area.top - cached.top;
-
-                        if dx == 0.0 && dy == 0.0 {
-                            // Exact position match - extend from cache directly
-                            self.instances.extend_from_slice(&cached.instances);
-                            non_vector_collector.extend_from_slice(&cached.non_vector_glyphs);
-                        } else {
-                            // Position shifted - adjust screen_rect and re-cull
-                            any_position_changed = true;
-                            let bounds_min_x = text_area.bounds.left.max(0) as f32;
-                            let bounds_min_y = text_area.bounds.top.max(0) as f32;
-                            let bounds_max_x =
-                                text_area.bounds.right.min(resolution.width as i32) as f32;
-                            let bounds_max_y =
-                                text_area.bounds.bottom.min(resolution.height as i32) as f32;
-
-                            for inst in &cached.instances {
-                                let sx = inst.screen_rect[0] + dx;
-                                let sy = inst.screen_rect[1] + dy;
-                                let sw = inst.screen_rect[2];
-                                let sh = inst.screen_rect[3];
-
-                                // Shader adds scroll_offset, so visible position
-                                // is (sx + scroll[0], sy + scroll[1]).
-                                let vx = sx + scroll[0];
-                                let vy = sy + scroll[1];
-                                if vx + sw + 1.0 < bounds_min_x
-                                    || vx - 1.0 > bounds_max_x
-                                    || vy + sh + 1.0 < bounds_min_y
-                                    || vy - 1.0 > bounds_max_y
-                                {
-                                    continue;
-                                }
-
-                                let mut adjusted = *inst;
-                                adjusted.screen_rect[0] = sx;
-                                adjusted.screen_rect[1] = sy;
-                                self.instances.push(adjusted);
-                            }
-
-                            // Replay non-vector glyphs with adjusted positions
-                            let dx_i = dx.round() as i32;
-                            let dy_i = dy.round() as i32;
-                            for nv in &cached.non_vector_glyphs {
-                                let mut adjusted = nv.clone();
-                                adjusted.physical.x += dx_i;
-                                adjusted.physical.y += dy_i;
-                                adjusted.clip_bounds = [
-                                    bounds_min_x as i32,
-                                    bounds_min_y as i32,
-                                    bounds_max_x as i32,
-                                    bounds_max_y as i32,
-                                ];
-                                non_vector_collector.push(adjusted);
-                            }
-                        }
-                        continue;
+                if glyphs_valid {
+                    let dx = text_area.left - cached.left;
+                    let dy = text_area.top - cached.top;
+                    if dx == 0.0 && dy == 0.0 {
+                        plans.push(AreaPlan::HitDirect { buffer_ptr });
+                    } else {
+                        any_position_changed = true;
+                        let bounds_min_x = text_area.bounds.left.max(0) as f32;
+                        let bounds_min_y = text_area.bounds.top.max(0) as f32;
+                        let bounds_max_x =
+                            text_area.bounds.right.min(resolution.width as i32) as f32;
+                        let bounds_max_y =
+                            text_area.bounds.bottom.min(resolution.height as i32) as f32;
+                        plans.push(AreaPlan::HitShifted {
+                            buffer_ptr,
+                            dx,
+                            dy,
+                            bounds_min_x,
+                            bounds_min_y,
+                            bounds_max_x,
+                            bounds_max_y,
+                        });
                     }
+                    continue;
                 }
             }
 
-            // Cache miss - full glyph loop for this TextArea
             all_hit = false;
-            let instance_start = self.instances.len();
-            let mut area_keys: Vec<GlyphKey> = Vec::new();
-            let mut area_non_vector: Vec<NonVectorGlyph> = Vec::new();
-
             let bounds_min_x = text_area.bounds.left.max(0);
             let bounds_min_y = text_area.bounds.top.max(0);
             let bounds_max_x = text_area.bounds.right.min(resolution.width as i32);
@@ -255,97 +257,146 @@ impl TextRenderer {
                 .take_while(is_run_visible);
 
             let default_color = color_to_f32(text_area.default_color);
+            let work_start = work.len();
 
             for run in layout_runs {
+                let line_y = run.line_y;
                 for glyph in run.glyphs {
                     let key = GlyphKey::from_layout_glyph(glyph);
-                    let entry = match atlas.glyphs.get_and_mark_used(&key) {
-                        Some(e) => e,
-                        None => self.resolve_glyph_miss(device, font_system, atlas, glyph, key)?,
-                    };
-
-                    area_keys.push(key);
-
-                    if entry.is_non_vector() {
-                        let physical =
-                            glyph.physical((text_area.left, text_area.top), text_area.scale);
-                        let color = match glyph.color_opt {
-                            Some(c) => color_to_f32(c),
-                            None => default_color,
-                        };
-                        area_non_vector.push(NonVectorGlyph {
-                            physical,
-                            color,
-                            depth: metadata_to_depth(glyph.metadata),
-                            line_y_scaled_rounded: (run.line_y * text_area.scale).round(),
-                            clip_bounds: [bounds_min_x, bounds_min_y, bounds_max_x, bounds_max_y],
-                        });
-                        continue;
+                    if atlas.glyphs.get_and_mark_used(&key).is_none() {
+                        distinct_misses.push(key);
                     }
+                    work.push(WorkItem { glyph, line_y, key });
+                }
+            }
+            let work_end = work.len();
 
-                    if entry.is_color_v1_vector() {
-                        // COLRv1: single instance, shader interprets command sequence.
-                        if let Some(v1_entry) = atlas.color_v1_glyphs.get(&key) {
-                            let scale =
-                                glyph.font_size * text_area.scale / v1_entry.units_per_em;
-                            let glyph_x =
-                                text_area.left + (glyph.x + glyph.x_offset) * text_area.scale;
-                            let glyph_y =
-                                text_area.top + (run.line_y + glyph.y_offset) * text_area.scale;
-                            let [min_x, min_y, max_x, max_y] = v1_entry.bounds;
-                            let screen_x = glyph_x + min_x * scale;
-                            let screen_y = glyph_y - max_y * scale;
-                            let screen_w = (max_x - min_x) * scale;
-                            let screen_h = (max_y - min_y) * scale;
+            plans.push(AreaPlan::Miss(MissArea {
+                text_area,
+                work_start,
+                work_end,
+                bounds_min_x,
+                bounds_min_y,
+                bounds_max_x,
+                bounds_max_y,
+                default_color,
+            }));
+        }
 
-                            let vis_x = screen_x + scroll[0];
-                            let vis_y = screen_y + scroll[1];
-                            if vis_x + screen_w + 1.0 >= bounds_min_x as f32
-                                && vis_x - 1.0 <= bounds_max_x as f32
-                                && vis_y + screen_h + 1.0 >= bounds_min_y as f32
-                                && vis_y - 1.0 <= bounds_max_y as f32
-                            {
-                                self.instances.push(GlyphInstance {
-                                    screen_rect: [screen_x, screen_y, screen_w, screen_h],
-                                    em_rect: [min_x, min_y, max_x, max_y],
-                                    band_transform: [0.0; 4], // unused for V1
-                                    glyph_data: [
-                                        v1_entry.blob_offset,
-                                        0,
-                                        0,
-                                        v1_entry.cmd_count,
-                                    ],
-                                    color: match glyph.color_opt {
-                                        Some(c) => color_to_f32(c),
-                                        None => default_color,
-                                    },
-                                    depth: metadata_to_depth(glyph.metadata),
-                                    ppem: glyph.font_size * text_area.scale,
-                                    _pad: [0.0; 2],
-                                });
-                            }
+        // ===== Pass 2: resolve distinct misses =====
+        // Sort+dedup so each glyph is extracted+uploaded once even if it
+        // appears across many text areas. Future: parallelize the extract
+        // step with serial atlas commit.
+        distinct_misses.sort_unstable();
+        distinct_misses.dedup();
+        for key in &distinct_misses {
+            self.resolve_glyph_miss(device, font_system, atlas, *key)?;
+        }
+
+        // ===== Pass 3: emit instances per area in input order =====
+        for plan in &plans {
+            match plan {
+                AreaPlan::HitDirect { buffer_ptr } => {
+                    let cached = &self.text_area_cache[buffer_ptr];
+                    self.instances.extend_from_slice(&cached.instances);
+                    non_vector_collector.extend_from_slice(&cached.non_vector_glyphs);
+                }
+                AreaPlan::HitShifted {
+                    buffer_ptr,
+                    dx,
+                    dy,
+                    bounds_min_x,
+                    bounds_min_y,
+                    bounds_max_x,
+                    bounds_max_y,
+                } => {
+                    let cached = &self.text_area_cache[buffer_ptr];
+                    for inst in &cached.instances {
+                        let sx = inst.screen_rect[0] + dx;
+                        let sy = inst.screen_rect[1] + dy;
+                        let sw = inst.screen_rect[2];
+                        let sh = inst.screen_rect[3];
+                        let vx = sx + scroll[0];
+                        let vy = sy + scroll[1];
+                        if vx + sw + 1.0 < *bounds_min_x
+                            || vx - 1.0 > *bounds_max_x
+                            || vy + sh + 1.0 < *bounds_min_y
+                            || vy - 1.0 > *bounds_max_y
+                        {
+                            continue;
                         }
-                        continue;
+                        let mut adjusted = *inst;
+                        adjusted.screen_rect[0] = sx;
+                        adjusted.screen_rect[1] = sy;
+                        self.instances.push(adjusted);
                     }
+                    let dx_i = dx.round() as i32;
+                    let dy_i = dy.round() as i32;
+                    for nv in &cached.non_vector_glyphs {
+                        let mut adjusted = nv.clone();
+                        adjusted.physical.x += dx_i;
+                        adjusted.physical.y += dy_i;
+                        adjusted.clip_bounds = [
+                            *bounds_min_x as i32,
+                            *bounds_min_y as i32,
+                            *bounds_max_x as i32,
+                            *bounds_max_y as i32,
+                        ];
+                        non_vector_collector.push(adjusted);
+                    }
+                }
+                AreaPlan::Miss(area) => {
+                    let mut area_instances: Vec<GlyphInstance> = Vec::new();
+                    let mut area_non_vector: Vec<NonVectorGlyph> = Vec::new();
+                    let mut area_keys: Vec<GlyphKey> = Vec::new();
 
-                    if entry.is_color_vector() {
-                        // COLRv0: emit one instance per layer, back-to-front.
-                        if let Some(color_entry) = atlas.color_glyphs.get(&key) {
-                            let foreground_color = match glyph.color_opt {
+                    let text_area = &area.text_area;
+                    let bounds_min_x_f = area.bounds_min_x as f32;
+                    let bounds_min_y_f = area.bounds_min_y as f32;
+                    let bounds_max_x_f = area.bounds_max_x as f32;
+                    let bounds_max_y_f = area.bounds_max_y as f32;
+
+                    for wi in &work[area.work_start..area.work_end] {
+                        let glyph = wi.glyph;
+                        let entry = atlas
+                            .glyphs
+                            .get(&wi.key)
+                            .expect("miss resolved in pass 2");
+                        area_keys.push(wi.key);
+
+                        if entry.is_non_vector() {
+                            let physical = glyph.physical(
+                                (text_area.left, text_area.top),
+                                text_area.scale,
+                            );
+                            let color = match glyph.color_opt {
                                 Some(c) => color_to_f32(c),
-                                None => default_color,
+                                None => area.default_color,
                             };
-                            let scale =
-                                glyph.font_size * text_area.scale / color_entry.units_per_em;
-                            let glyph_x =
-                                text_area.left + (glyph.x + glyph.x_offset) * text_area.scale;
-                            let glyph_y =
-                                text_area.top + (run.line_y + glyph.y_offset) * text_area.scale;
-                            let depth = metadata_to_depth(glyph.metadata);
-                            let ppem = glyph.font_size * text_area.scale;
+                            area_non_vector.push(NonVectorGlyph {
+                                physical,
+                                color,
+                                depth: metadata_to_depth(glyph.metadata),
+                                line_y_scaled_rounded: (wi.line_y * text_area.scale).round(),
+                                clip_bounds: [
+                                    area.bounds_min_x,
+                                    area.bounds_min_y,
+                                    area.bounds_max_x,
+                                    area.bounds_max_y,
+                                ],
+                            });
+                            continue;
+                        }
 
-                            for layer in &color_entry.layers {
-                                let [min_x, min_y, max_x, max_y] = layer.entry.bounds;
+                        if entry.is_color_v1_vector() {
+                            if let Some(v1_entry) = atlas.color_v1_glyphs.get(&wi.key) {
+                                let scale =
+                                    glyph.font_size * text_area.scale / v1_entry.units_per_em;
+                                let glyph_x = text_area.left
+                                    + (glyph.x + glyph.x_offset) * text_area.scale;
+                                let glyph_y = text_area.top
+                                    + (wi.line_y + glyph.y_offset) * text_area.scale;
+                                let [min_x, min_y, max_x, max_y] = v1_entry.bounds;
                                 let screen_x = glyph_x + min_x * scale;
                                 let screen_y = glyph_y - max_y * scale;
                                 let screen_w = (max_x - min_x) * scale;
@@ -353,108 +404,167 @@ impl TextRenderer {
 
                                 let vis_x = screen_x + scroll[0];
                                 let vis_y = screen_y + scroll[1];
-                                if vis_x + screen_w + 1.0 < bounds_min_x as f32
-                                    || vis_x - 1.0 > bounds_max_x as f32
-                                    || vis_y + screen_h + 1.0 < bounds_min_y as f32
-                                    || vis_y - 1.0 > bounds_max_y as f32
+                                if vis_x + screen_w + 1.0 >= bounds_min_x_f
+                                    && vis_x - 1.0 <= bounds_max_x_f
+                                    && vis_y + screen_h + 1.0 >= bounds_min_y_f
+                                    && vis_y - 1.0 <= bounds_max_y_f
                                 {
-                                    continue;
+                                    area_instances.push(GlyphInstance {
+                                        screen_rect: [screen_x, screen_y, screen_w, screen_h],
+                                        em_rect: [min_x, min_y, max_x, max_y],
+                                        band_transform: [0.0; 4],
+                                        glyph_data: [
+                                            v1_entry.blob_offset,
+                                            0,
+                                            0,
+                                            v1_entry.cmd_count,
+                                        ],
+                                        color: match glyph.color_opt {
+                                            Some(c) => color_to_f32(c),
+                                            None => area.default_color,
+                                        },
+                                        depth: metadata_to_depth(glyph.metadata),
+                                        ppem: glyph.font_size * text_area.scale,
+                                        _pad: [0.0; 2],
+                                    });
                                 }
-
-                                let color = if layer.use_foreground {
-                                    foreground_color
-                                } else {
-                                    layer.color
-                                };
-
-                                self.instances.push(GlyphInstance {
-                                    screen_rect: [screen_x, screen_y, screen_w, screen_h],
-                                    em_rect: [min_x, min_y, max_x, max_y],
-                                    band_transform: layer.entry.band_transform,
-                                    glyph_data: [
-                                        layer.entry.band_offset,
-                                        layer.entry.band_max_x,
-                                        layer.entry.band_max_y,
-                                        0,
-                                    ],
-                                    color,
-                                    depth,
-                                    ppem,
-                                    _pad: [0.0; 2],
-                                });
                             }
+                            continue;
                         }
-                        continue;
+
+                        if entry.is_color_vector() {
+                            if let Some(color_entry) = atlas.color_glyphs.get(&wi.key) {
+                                let foreground_color = match glyph.color_opt {
+                                    Some(c) => color_to_f32(c),
+                                    None => area.default_color,
+                                };
+                                let scale = glyph.font_size * text_area.scale
+                                    / color_entry.units_per_em;
+                                let glyph_x = text_area.left
+                                    + (glyph.x + glyph.x_offset) * text_area.scale;
+                                let glyph_y = text_area.top
+                                    + (wi.line_y + glyph.y_offset) * text_area.scale;
+                                let depth = metadata_to_depth(glyph.metadata);
+                                let ppem = glyph.font_size * text_area.scale;
+
+                                for layer in &color_entry.layers {
+                                    let [min_x, min_y, max_x, max_y] = layer.entry.bounds;
+                                    let screen_x = glyph_x + min_x * scale;
+                                    let screen_y = glyph_y - max_y * scale;
+                                    let screen_w = (max_x - min_x) * scale;
+                                    let screen_h = (max_y - min_y) * scale;
+
+                                    let vis_x = screen_x + scroll[0];
+                                    let vis_y = screen_y + scroll[1];
+                                    if vis_x + screen_w + 1.0 < bounds_min_x_f
+                                        || vis_x - 1.0 > bounds_max_x_f
+                                        || vis_y + screen_h + 1.0 < bounds_min_y_f
+                                        || vis_y - 1.0 > bounds_max_y_f
+                                    {
+                                        continue;
+                                    }
+
+                                    let color = if layer.use_foreground {
+                                        foreground_color
+                                    } else {
+                                        layer.color
+                                    };
+
+                                    area_instances.push(GlyphInstance {
+                                        screen_rect: [screen_x, screen_y, screen_w, screen_h],
+                                        em_rect: [min_x, min_y, max_x, max_y],
+                                        band_transform: layer.entry.band_transform,
+                                        glyph_data: [
+                                            layer.entry.band_offset,
+                                            layer.entry.band_max_x,
+                                            layer.entry.band_max_y,
+                                            0,
+                                        ],
+                                        color,
+                                        depth,
+                                        ppem,
+                                        _pad: [0.0; 2],
+                                    });
+                                }
+                            }
+                            continue;
+                        }
+
+                        let scale = glyph.font_size * text_area.scale / entry.units_per_em;
+                        let [min_x, min_y, max_x, max_y] = entry.bounds;
+
+                        let glyph_x =
+                            text_area.left + (glyph.x + glyph.x_offset) * text_area.scale;
+                        let glyph_y =
+                            text_area.top + (wi.line_y + glyph.y_offset) * text_area.scale;
+
+                        let screen_x = glyph_x + min_x * scale;
+                        let screen_y = glyph_y - max_y * scale;
+                        let screen_w = (max_x - min_x) * scale;
+                        let screen_h = (max_y - min_y) * scale;
+
+                        let vis_x = screen_x + scroll[0];
+                        let vis_y = screen_y + scroll[1];
+                        if vis_x + screen_w + 1.0 < bounds_min_x_f
+                            || vis_x - 1.0 > bounds_max_x_f
+                            || vis_y + screen_h + 1.0 < bounds_min_y_f
+                            || vis_y - 1.0 > bounds_max_y_f
+                        {
+                            continue;
+                        }
+
+                        let color = match glyph.color_opt {
+                            Some(c) => color_to_f32(c),
+                            None => area.default_color,
+                        };
+
+                        area_instances.push(GlyphInstance {
+                            screen_rect: [screen_x, screen_y, screen_w, screen_h],
+                            em_rect: [min_x, min_y, max_x, max_y],
+                            band_transform: entry.band_transform,
+                            glyph_data: [
+                                entry.band_offset,
+                                entry.band_max_x,
+                                entry.band_max_y,
+                                0,
+                            ],
+                            color,
+                            depth: metadata_to_depth(glyph.metadata),
+                            ppem: glyph.font_size * text_area.scale,
+                            _pad: [0.0; 2],
+                        });
                     }
 
-                    let scale = glyph.font_size * text_area.scale / entry.units_per_em;
-                    let [min_x, min_y, max_x, max_y] = entry.bounds;
+                    area_keys.sort_unstable();
+                    area_keys.dedup();
 
-                    let glyph_x = text_area.left + (glyph.x + glyph.x_offset) * text_area.scale;
-                    let glyph_y = text_area.top + (run.line_y + glyph.y_offset) * text_area.scale;
+                    self.instances.extend_from_slice(&area_instances);
+                    non_vector_collector.extend_from_slice(&area_non_vector);
 
-                    let screen_x = glyph_x + min_x * scale;
-                    let screen_y = glyph_y - max_y * scale;
-                    let screen_w = (max_x - min_x) * scale;
-                    let screen_h = (max_y - min_y) * scale;
-
-                    let vis_x = screen_x + scroll[0];
-                    let vis_y = screen_y + scroll[1];
-                    if vis_x + screen_w + 1.0 < bounds_min_x as f32
-                        || vis_x - 1.0 > bounds_max_x as f32
-                        || vis_y + screen_h + 1.0 < bounds_min_y as f32
-                        || vis_y - 1.0 > bounds_max_y as f32
-                    {
-                        continue;
-                    }
-
-                    let color = match glyph.color_opt {
-                        Some(c) => color_to_f32(c),
-                        None => default_color,
-                    };
-
-                    self.instances.push(GlyphInstance {
-                        screen_rect: [screen_x, screen_y, screen_w, screen_h],
-                        em_rect: [min_x, min_y, max_x, max_y],
-                        band_transform: entry.band_transform,
-                        glyph_data: [entry.band_offset, entry.band_max_x, entry.band_max_y, 0],
-                        color,
-                        depth: metadata_to_depth(glyph.metadata),
-                        ppem: glyph.font_size * text_area.scale,
-                        _pad: [0.0; 2],
-                    });
+                    let buffer_ptr: *const cosmic_text::Buffer = text_area.buffer;
+                    self.text_area_cache.insert(
+                        buffer_ptr,
+                        CachedTextArea {
+                            left: text_area.left,
+                            top: text_area.top,
+                            scale: text_area.scale,
+                            bounds: text_area.bounds,
+                            default_color: text_area.default_color,
+                            atlas_generation: atlas_gen,
+                            instances: area_instances,
+                            distinct_keys: area_keys,
+                            non_vector_glyphs: area_non_vector,
+                        },
+                    );
                 }
             }
-
-            // Deduplicate keys for efficient mark-used on future hits
-            area_keys.sort_unstable();
-            area_keys.dedup();
-
-            let area_instances = self.instances[instance_start..].to_vec();
-            non_vector_collector.extend_from_slice(&area_non_vector);
-            self.text_area_cache.insert(
-                buffer_ptr,
-                CachedTextArea {
-                    left: text_area.left,
-                    top: text_area.top,
-                    scale: text_area.scale,
-                    bounds: text_area.bounds,
-                    default_color: text_area.default_color,
-                    atlas_generation: atlas_gen,
-                    instances: area_instances,
-                    distinct_keys: area_keys,
-                    non_vector_glyphs: area_non_vector,
-                },
-            );
         }
 
-        // Remove stale cache entries (buffers no longer in the text_areas set)
         self.text_area_cache
             .retain(|ptr, _| used_ptrs.contains(ptr));
 
         atlas.flush_uploads(queue);
 
-        // Rasterize non-vector glyphs via the shared atlas
         self.raster_instances = atlas.rasterize_glyphs(queue, font_system, &non_vector_collector);
         self.raster_glyphs_to_render = self.raster_instances.len() as u32;
 
@@ -465,7 +575,6 @@ impl TextRenderer {
             && !any_position_changed
             && self.instances.len() == self.glyphs_to_render as usize
         {
-            // Still need to upload raster vertex buffer (raster atlas may have changed)
             self.upload_raster_vertices(device, queue);
             self.prepared_atlas_generation = atlas_gen;
             return Ok(());
@@ -485,18 +594,17 @@ impl TextRenderer {
         device: &Device,
         font_system: &mut cosmic_text::FontSystem,
         atlas: &mut TextAtlas,
-        glyph: &cosmic_text::LayoutGlyph,
         key: GlyphKey,
     ) -> Result<crate::glyph_cache::GlyphEntry, PrepareError> {
-        // Cache miss - look up font from cache or populate
-        let cache_key = (glyph.font_id, glyph.font_weight);
+        let font_weight = cosmic_text::Weight(key.font_weight);
+        let cache_key = (key.font_id, font_weight);
         if !self.font_cache.contains_key(&cache_key) {
             let face_index = font_system
                 .db()
-                .face(glyph.font_id)
+                .face(key.font_id)
                 .map(|info| info.index)
                 .unwrap_or(0);
-            let font = match font_system.get_font(glyph.font_id, glyph.font_weight) {
+            let font = match font_system.get_font(key.font_id, font_weight) {
                 Some(f) => f,
                 None => {
                     log::warn!("Font not found for glyph {key:?}");
@@ -533,19 +641,19 @@ impl TextRenderer {
             (cached.font.data(), cached.face_index, cached.units_per_em, cached.has_colr);
 
         let wght_tag = skrifa::Tag::new(b"wght");
-        let location = [VariationSetting::new(wght_tag, glyph.font_weight.0 as f32)];
+        let location = [VariationSetting::new(wght_tag, key.font_weight as f32)];
 
         // Check for COLR color glyph first - COLRv0 fonts often have fallback
         // monochrome outlines, so extract_outline would succeed but miss the color.
         // Skip the COLR check entirely for fonts without a COLR table.
         let color_info = if has_colr {
-            extract_color_info(font_data, face_index, glyph.glyph_id, &location)
+            extract_color_info(font_data, face_index, key.glyph_id, &location)
         } else {
             None
         };
         let entry = match color_info {
             Some(ColorGlyphInfo::V0Layers(layers)) => {
-                let fake_italic = glyph
+                let fake_italic = key
                     .cache_key_flags
                     .contains(cosmic_text::CacheKeyFlags::FAKE_ITALIC);
                 match self.upload_colr_v0_layers(
@@ -567,9 +675,9 @@ impl TextRenderer {
             }
             None => {
                 // No color data - try regular outline, else raster fallback.
-                match extract_outline(font_data, face_index, glyph.glyph_id, &location) {
+                match extract_outline(font_data, face_index, key.glyph_id, &location) {
                     Some(mut outline) => {
-                        if glyph
+                        if key
                             .cache_key_flags
                             .contains(cosmic_text::CacheKeyFlags::FAKE_ITALIC)
                         {
