@@ -12,6 +12,7 @@ pub mod band;
 pub(crate) mod raster_text;
 pub mod glyph_cache;
 pub mod outline;
+pub mod prep;
 pub mod prepare;
 
 // Public API - matches cryoglyph's interface for iced integration

@@ -1,7 +1,6 @@
 use crate::band::{BandScratch, CurveLocation};
 use crate::glyph_cache::{ColorGlyphEntry, ColorV1GlyphEntry, GlyphEntry, GlyphKey, GlyphMap};
 use crate::gpu_cache::Cache;
-use crate::outline::GlyphOutline;
 use crate::raster_text::{NonVectorGlyph, RasterState, RasterVertex};
 use crate::types::ColorMode;
 use crate::viewport::Viewport;
@@ -31,9 +30,7 @@ pub struct TextAtlas {
     buffer_cursor: u32,         // append cursor in texels
     buffer_data: Vec<i32>,      // CPU-side copy (2 i32 per texel)
 
-    // Scratch buffers reused across upload_glyph() calls
-    scratch_curve_texels: Vec<[i32; 4]>,
-    scratch_curve_locations: Vec<CurveLocation>,
+    // Scratch buffers retained for upload_color_v1's serial sub-glyph builder.
     scratch_band_entries: Vec<i16>,
     band_scratch: BandScratch,
     /// How much of buffer_data is already on the GPU. A grow resets this to 0.
@@ -79,8 +76,6 @@ impl TextAtlas {
             buffer_capacity: INITIAL_BUFFER_CAPACITY,
             buffer_cursor: 0,
             buffer_data: Vec::new(),
-            scratch_curve_texels: Vec::new(),
-            scratch_curve_locations: Vec::new(),
             scratch_band_entries: Vec::new(),
             band_scratch: BandScratch::default(),
             gpu_flush_cursor: 0,
@@ -242,139 +237,40 @@ impl TextAtlas {
         }
     }
 
-    /// Upload a glyph's GPU-prepared outline and band data into the textures.
-    /// Returns the GlyphEntry for vertex packing.
+    /// Commit a CPU-prepared mono glyph blob to the atlas storage buffer.
+    /// Pure write side: appends `prepared.blob_data`, advances the cursor,
+    /// grows the underlying GPU buffer if needed.
     #[hotpath::measure]
-    pub(crate) fn upload_glyph(
+    pub(crate) fn commit_mono(
         &mut self,
         device: &Device,
-        gpu_outline: &GlyphOutline,
-        band_count_x: u32,
-        band_count_y: u32,
-        units_per_em: f32,
+        prepared: &crate::prep::PreparedMono,
     ) -> Result<GlyphEntry, crate::types::PrepareError> {
-        let num_curves = gpu_outline.curves.len() as u32;
-
-        // Reject glyphs with coordinates that would overflow i16 quantization.
-        // i16 range ±32767 at 4 units/em → ±8191.75 font units.
-        let [bmin_x, bmin_y, bmax_x, bmax_y] = gpu_outline.bounds;
-        let max_coord = bmin_x
-            .abs()
-            .max(bmin_y.abs())
-            .max(bmax_x.abs())
-            .max(bmax_y.abs());
-        if max_coord * 4.0 > 32767.0 {
-            return Ok(crate::glyph_cache::NON_VECTOR_GLYPH);
-        }
-
-        // Build curve texels with implicit p1 sharing within contours.
-        // No row-boundary padding needed - storage buffer is 1D.
-        self.scratch_curve_texels.clear();
-        self.scratch_curve_texels.reserve(num_curves as usize * 2);
-        self.scratch_curve_locations.clear();
-        self.scratch_curve_locations.reserve(num_curves as usize);
-
-        // Quantize f32 em-space coordinate to i32 at 4 units/em.
-        let q = |v: f32| -> i32 { (v * 4.0).round() as i32 };
-
-        for (i, curve) in gpu_outline.curves.iter().enumerate() {
-            let is_continuation = i > 0 && curve.p1 == gpu_outline.curves[i - 1].p3;
-
-            if is_continuation {
-                // Overwrite previous p3 texel's .zw with our p2
-                let last = self
-                    .scratch_curve_texels
-                    .last_mut()
-                    .expect("continuation curve must have preceding texel");
-                last[2] = q(curve.p2[0]);
-                last[3] = q(curve.p2[1]);
-            } else {
-                // New contour: emit fresh p12 texel
-                self.scratch_curve_texels.push([
-                    q(curve.p1[0]),
-                    q(curve.p1[1]),
-                    q(curve.p2[0]),
-                    q(curve.p2[1]),
-                ]);
-            }
-
-            // Record curve location (0-based within curve data region)
-            let curve_linear = self.scratch_curve_texels.len() as u32 - 1;
-            self.scratch_curve_locations.push(CurveLocation {
-                offset: curve_linear,
-            });
-
-            // Emit p3 texel
-            self.scratch_curve_texels
-                .push([q(curve.p3[0]), q(curve.p3[1]), 0, 0]);
-        }
-        let curve_element_count = self.scratch_curve_texels.len() as u32;
-
-        // Build band data. Curve locations are 0-based within the curve region;
-        // build_bands produces glyph-relative offsets for band headers.
-        // We'll fixup curve ref offsets after we know the band data size.
-        let band_data = crate::band::build_bands(
-            gpu_outline,
-            &self.scratch_curve_locations,
-            band_count_x,
-            band_count_y,
-            std::mem::take(&mut self.scratch_band_entries),
-            &mut self.band_scratch,
-        );
-        let bd_count_x = band_data.band_count_x;
-        let bd_count_y = band_data.band_count_y;
-        let bd_transform = band_data.band_transform;
-        let band_element_count = (band_data.entries.len() / 4) as u32;
-
-        // Curve ref offsets are already final - build_bands pre-adds
-        // band_element_count so refs point into the curve region.
-        let band_entries = band_data.entries;
-
-        // Assemble glyph blob: [band_data] [curve_data]
-        let blob_size = band_element_count + curve_element_count;
-
-        // Overflow check
-        if blob_size > 65535 {
-            self.scratch_band_entries = band_entries;
+        if prepared.blob_size > 65535 {
             return Err(crate::types::PrepareError::AtlasFull);
         }
 
-        // Check buffer capacity and grow if needed
         let glyph_offset = self.buffer_cursor;
-        let new_end = glyph_offset + blob_size;
+        let new_end = glyph_offset + prepared.blob_size;
         if new_end > self.buffer_capacity {
             let required_bytes = new_end as u64 * BYTES_PER_TEXEL;
             let max_bytes = device.limits().max_storage_buffer_binding_size as u64;
             if required_bytes > max_bytes {
-                self.scratch_band_entries = band_entries;
                 return Err(crate::types::PrepareError::AtlasFull);
             }
             self.grow_buffer(device, new_end);
         }
 
-        // Pack band entries: each i16 quad → 2 packed i32 values
-        self.buffer_data.extend(
-            band_entries
-                .chunks_exact(4)
-                .flat_map(|c| [pack_i16_pair(c[0], c[1]), pack_i16_pair(c[2], c[3])]),
-        );
-        // Pack curve texels: each i32 quad (i16-safe) → 2 packed i32 values
-        self.buffer_data.extend(
-            self.scratch_curve_texels.iter()
-                .flat_map(|v| [pack_i16_pair(v[0] as i16, v[1] as i16), pack_i16_pair(v[2] as i16, v[3] as i16)]),
-        );
-
-        // Reclaim scratch
-        self.scratch_band_entries = band_entries;
+        self.buffer_data.extend_from_slice(&prepared.blob_data);
         self.buffer_cursor = new_end;
 
         Ok(GlyphEntry {
             band_offset: glyph_offset,
-            band_max_x: bd_count_x.saturating_sub(1),
-            band_max_y: bd_count_y.saturating_sub(1),
-            band_transform: bd_transform,
-            bounds: gpu_outline.bounds,
-            units_per_em,
+            band_max_x: prepared.band_count_x.saturating_sub(1),
+            band_max_y: prepared.band_count_y.saturating_sub(1),
+            band_transform: prepared.band_transform,
+            bounds: prepared.bounds,
+            units_per_em: prepared.units_per_em,
             last_used_epoch: 0,
         })
     }

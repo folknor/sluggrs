@@ -4,6 +4,7 @@ use crate::glyph_cache::{
     COLOR_V1_VECTOR_GLYPH, COLOR_VECTOR_GLYPH, NON_VECTOR_GLYPH,
 };
 use crate::outline::{ColorGlyphInfo, extract_color_info, extract_outline};
+use crate::prep::{PrepScratch, prepare_mono};
 use crate::prepare::apply_italic_shear;
 use crate::raster_text::{NonVectorGlyph, RasterVertex};
 use crate::text_atlas::TextAtlas;
@@ -100,6 +101,9 @@ pub struct TextRenderer {
     raster_vertex_buffer: Buffer,
     raster_vertex_buffer_size: u64,
     raster_glyphs_to_render: u32,
+    /// Reusable scratch for `prep::prepare_mono` calls. One buffer set total
+    /// while pass 2 is serial; future rayon work will hold one per worker.
+    prep_scratch: PrepScratch,
 }
 
 impl TextRenderer {
@@ -146,6 +150,7 @@ impl TextRenderer {
             raster_vertex_buffer,
             raster_vertex_buffer_size,
             raster_glyphs_to_render: 0,
+            prep_scratch: PrepScratch::default(),
         }
     }
 
@@ -636,9 +641,19 @@ impl TextRenderer {
                 },
             );
         }
-        let cached = &self.font_cache[&cache_key];
-        let (font_data, face_index, units_per_em, has_colr) =
-            (cached.font.data(), cached.face_index, cached.units_per_em, cached.has_colr);
+        // Clone the Arc out of font_cache so we can call &mut self methods
+        // (upload_colr_v0_layers needs prep_scratch) without holding a borrow
+        // on self.font_cache.
+        let (font_arc, face_index, units_per_em, has_colr) = {
+            let cached = &self.font_cache[&cache_key];
+            (
+                Arc::clone(&cached.font),
+                cached.face_index,
+                cached.units_per_em,
+                cached.has_colr,
+            )
+        };
+        let font_data = font_arc.data();
 
         let wght_tag = skrifa::Tag::new(b"wght");
         let location = [VariationSetting::new(wght_tag, key.font_weight as f32)];
@@ -684,9 +699,16 @@ impl TextRenderer {
                             apply_italic_shear(&mut outline);
                         }
                         let band_count = band_count_for_curves(outline.curves.len());
-                        atlas.upload_glyph(
-                            device, &outline, band_count, band_count, units_per_em,
-                        )?
+                        match prepare_mono(
+                            &outline,
+                            band_count,
+                            band_count,
+                            units_per_em,
+                            &mut self.prep_scratch,
+                        ) {
+                            Some(prepared) => atlas.commit_mono(device, &prepared)?,
+                            None => NON_VECTOR_GLYPH,
+                        }
                     }
                     None => NON_VECTOR_GLYPH,
                 }
@@ -700,7 +722,7 @@ impl TextRenderer {
     /// ColorGlyphEntry. Returns COLOR_VECTOR_GLYPH sentinel for the main cache.
     #[allow(clippy::too_many_arguments)]
     fn upload_colr_v0_layers(
-        &self,
+        &mut self,
         device: &Device,
         atlas: &mut TextAtlas,
         font_data: &[u8],
@@ -725,8 +747,16 @@ impl TextRenderer {
             }
 
             let band_count = band_count_for_curves(outline.curves.len());
-            let entry =
-                atlas.upload_glyph(device, &outline, band_count, band_count, units_per_em)?;
+            let entry = match prepare_mono(
+                &outline,
+                band_count,
+                band_count,
+                units_per_em,
+                &mut self.prep_scratch,
+            ) {
+                Some(prepared) => atlas.commit_mono(device, &prepared)?,
+                None => NON_VECTOR_GLYPH,
+            };
             entries.push(ColorGlyphLayer {
                 entry,
                 color: layer.color,
