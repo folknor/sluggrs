@@ -46,7 +46,6 @@ struct RenderState {
     text_renderer: TextRenderer,
     viewport: Viewport,
     lines: Vec<TextLine>,
-    sf: f32,
     zoom: f32,
     scroll: [f32; 2],
     dragging: bool,
@@ -77,6 +76,7 @@ fn try_load_font(path: &str) -> Option<Vec<u8>> {
 }
 
 /// Create a text line with a specific font family, weight, size, position, and color.
+#[allow(clippy::too_many_arguments)]
 fn make_line(
     font_system: &mut FontSystem,
     text: &str,
@@ -348,7 +348,6 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
         text_renderer,
         viewport,
         lines,
-        sf,
         zoom: 1.0,
         scroll: [0.0, 0.0],
         dragging: false,

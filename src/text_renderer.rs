@@ -1,6 +1,6 @@
 use crate::GlyphInstance;
 use crate::glyph_cache::{
-    ColorGlyphEntry, ColorGlyphLayer, ColorV1GlyphEntry, GlyphKey,
+    ColorGlyphEntry, ColorGlyphLayer, GlyphKey,
     COLOR_V1_VECTOR_GLYPH, COLOR_VECTOR_GLYPH, NON_VECTOR_GLYPH,
 };
 use crate::outline::{ColorGlyphInfo, extract_color_info, extract_outline};
@@ -603,7 +603,9 @@ impl TextRenderer {
     ) -> Result<crate::glyph_cache::GlyphEntry, PrepareError> {
         let font_weight = cosmic_text::Weight(key.font_weight);
         let cache_key = (key.font_id, font_weight);
-        if !self.font_cache.contains_key(&cache_key) {
+        if let std::collections::hash_map::Entry::Vacant(slot) =
+            self.font_cache.entry(cache_key)
+        {
             let face_index = font_system
                 .db()
                 .face(key.font_id)
@@ -631,15 +633,12 @@ impl TextRenderer {
                     f.colr().is_ok()
                 })
                 .unwrap_or(false);
-            self.font_cache.insert(
-                cache_key,
-                CachedFont {
-                    font,
-                    face_index,
-                    units_per_em,
-                    has_colr,
-                },
-            );
+            slot.insert(CachedFont {
+                font,
+                face_index,
+                units_per_em,
+                has_colr,
+            });
         }
         // Clone the Arc out of font_cache so we can call &mut self methods
         // (upload_colr_v0_layers needs prep_scratch) without holding a borrow

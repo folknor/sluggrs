@@ -240,8 +240,8 @@ impl RasterState {
                         None => continue,
                     };
 
-                    let w = image.placement.width as u32;
-                    let h = image.placement.height as u32;
+                    let w = image.placement.width;
+                    let h = image.placement.height;
                     if w == 0 || h == 0 {
                         continue;
                     }

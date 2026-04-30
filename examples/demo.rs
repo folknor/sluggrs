@@ -217,7 +217,6 @@ fn prepare_text(
             }
         } else if let Some(mut v1_data) = encode_colr_v1(font_data, 0, glyph_id, &location) {
             // COLRv1: build the full blob and emit a single instance.
-            let cmd_count = v1_data.cmd_count;
 
             // Build sub-glyph blobs (header + bands + curves)
             struct SubBlob {

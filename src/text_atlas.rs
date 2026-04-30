@@ -21,7 +21,6 @@ pub struct TextAtlas {
     pub(crate) glyph_buffer: wgpu::Buffer,
     pub(crate) bind_group: BindGroup,
     pub(crate) format: TextureFormat,
-    pub(crate) color_mode: ColorMode,
 
     // Buffer state - packed layout: each logical texel (4 i16 values) is stored
     // as 2 i32 elements (each i32 packs a pair of i16 values). All capacity/
@@ -61,7 +60,7 @@ impl TextAtlas {
         _queue: &Queue,
         cache: &Cache,
         format: TextureFormat,
-        color_mode: ColorMode,
+        _color_mode: ColorMode,
     ) -> Self {
         let glyph_buffer = create_glyph_buffer(device, INITIAL_BUFFER_CAPACITY);
         let bind_group = cache.create_atlas_bind_group(device, &glyph_buffer);
@@ -72,7 +71,6 @@ impl TextAtlas {
             glyph_buffer,
             bind_group,
             format,
-            color_mode,
             buffer_capacity: INITIAL_BUFFER_CAPACITY,
             buffer_cursor: 0,
             buffer_data: Vec::new(),
