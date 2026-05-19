@@ -384,7 +384,7 @@ fn build_buffers(font_system: &mut FontSystem, messages: &[String]) -> Vec<Buffe
         .iter()
         .map(|text| {
             let mut buffer = Buffer::new(font_system, Metrics::new(14.0, 20.0));
-            buffer.set_size(font_system, Some(WIDTH as f32 - 40.0), None);
+            buffer.set_size(Some(WIDTH as f32 - 40.0), None);
 
             // Split on first double-newline for subject vs body styling
             let (subject, body) = text.split_once("\n\n").unwrap_or((text, ""));
@@ -400,7 +400,6 @@ fn build_buffers(font_system: &mut FontSystem, messages: &[String]) -> Vec<Buffe
             ];
 
             buffer.set_rich_text(
-                font_system,
                 spans,
                 &Attrs::new().family(Family::SansSerif),
                 Shaping::Advanced,
@@ -445,7 +444,7 @@ fn layout_text_areas(buffers: &[Buffer]) -> Vec<TextArea<'_>> {
 // ---------------------------------------------------------------------------
 
 fn create_device() -> (wgpu::Device, wgpu::Queue) {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,

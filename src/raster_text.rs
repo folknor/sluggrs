@@ -152,7 +152,7 @@ impl RasterState {
         let pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("raster text pipeline layout"),
-                bind_group_layouts: &[uniforms_layout, &bind_group_layout],
+                bind_group_layouts: &[Some(uniforms_layout), Some(&bind_group_layout)],
                 immediate_size: 0,
             });
 

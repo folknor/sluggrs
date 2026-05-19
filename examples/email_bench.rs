@@ -371,7 +371,7 @@ fn build_email_buffers(font_system: &mut FontSystem) -> Vec<Buffer> {
         .iter()
         .map(|email| {
             let mut buffer = Buffer::new(font_system, Metrics::new(14.0, 20.0));
-            buffer.set_size(font_system, Some(WIDTH as f32 - 40.0), None);
+            buffer.set_size(Some(WIDTH as f32 - 40.0), None);
 
             let spans: Vec<(&str, Attrs)> = vec![
                 (email.header, header_attrs()),
@@ -385,13 +385,7 @@ fn build_email_buffers(font_system: &mut FontSystem) -> Vec<Buffer> {
                 (email.code, code_attrs()),
             ];
 
-            buffer.set_rich_text(
-                font_system,
-                spans,
-                &body_attrs(),
-                Shaping::Advanced,
-                None,
-            );
+            buffer.set_rich_text(spans, &body_attrs(), Shaping::Advanced, None);
             buffer.shape_until_scroll(font_system, false);
             buffer
         })
@@ -400,9 +394,8 @@ fn build_email_buffers(font_system: &mut FontSystem) -> Vec<Buffer> {
 
 fn build_scroll_replacement_buffer(font_system: &mut FontSystem) -> Buffer {
     let mut buffer = Buffer::new(font_system, Metrics::new(14.0, 20.0));
-    buffer.set_size(font_system, Some(WIDTH as f32 - 40.0), None);
+    buffer.set_size(Some(WIDTH as f32 - 40.0), None);
     buffer.set_rich_text(
-        font_system,
         [(
             "This is a replacement message that appears during scroll simulation. \
              It introduces a few new glyphs to exercise partial cache misses. \
@@ -453,7 +446,7 @@ fn layout_text_areas(buffers: &[Buffer]) -> Vec<TextArea<'_>> {
 // -- GPU infrastructure (mirrors hotpath.rs) ---------------------------------
 
 fn create_device() -> (wgpu::Device, wgpu::Queue) {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,

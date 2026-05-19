@@ -91,7 +91,7 @@ fn make_line(
     let metrics = Metrics::new(font_size * sf, font_size * sf * 1.2);
     let mut buffer = Buffer::new(font_system, metrics);
     let attrs = Attrs::new().family(family).weight(weight);
-    buffer.set_text(font_system, text, &attrs, Shaping::Advanced, None);
+    buffer.set_text(text, &attrs, Shaping::Advanced, None);
     buffer.shape_until_scroll(font_system, false);
     TextLine {
         buffer,
@@ -232,7 +232,7 @@ fn build_lines(font_system: &mut FontSystem, sf: f32) -> Vec<TextLine> {
 }
 
 async fn init_render_state(window: Arc<Window>) -> RenderState {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let surface = instance.create_surface(Arc::clone(&window)).expect("render failed");
 
     let adapter = instance
@@ -359,9 +359,10 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
 
 fn render(state: &mut RenderState) {
     let frame = match state.surface.get_current_texture() {
-        Ok(f) => f,
-        Err(e) => {
-            log::error!("Failed to get surface texture: {e:?}");
+        wgpu::CurrentSurfaceTexture::Success(f)
+        | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+        other => {
+            log::error!("Failed to get surface texture: {other:?}");
             return;
         }
     };

@@ -528,9 +528,9 @@ fn try_load_font(path: &str) -> Option<Vec<u8>> {
 }
 
 async fn init_render_state(window: Arc<Window>) -> RenderState {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
 
     let surface = instance
@@ -1097,7 +1097,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     // --- Pipeline ---
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("slug pipeline layout"),
-        bind_group_layouts: &[&params_bgl, &texture_bgl],
+        bind_group_layouts: &[Some(&params_bgl), Some(&texture_bgl)],
         immediate_size: 0,
     });
 
@@ -1217,9 +1217,10 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
 
 fn render(state: &mut RenderState) {
     let frame = match state.surface.get_current_texture() {
-        Ok(f) => f,
-        Err(e) => {
-            log::error!("Failed to get surface texture: {e:?}");
+        wgpu::CurrentSurfaceTexture::Success(f)
+        | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+        other => {
+            log::error!("Failed to get surface texture: {other:?}");
             return;
         }
     };

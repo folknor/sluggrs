@@ -23,13 +23,7 @@ fn shape_and_key(font_system: &mut FontSystem, ch: char, family: Family<'_>) -> 
     let metrics = Metrics::new(24.0, 30.0);
     let mut buffer = Buffer::new(font_system, metrics);
     let text = String::from(ch);
-    buffer.set_text(
-        font_system,
-        &text,
-        &Attrs::new().family(family),
-        Shaping::Advanced,
-        None,
-    );
+    buffer.set_text(&text, &Attrs::new().family(family), Shaping::Advanced, None);
     buffer.shape_until_scroll(font_system, false);
 
     let run = buffer

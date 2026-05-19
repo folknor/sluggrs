@@ -21,7 +21,7 @@ const BENCH_FRAMES: u32 = 50;
 fn main() {
     env_logger::init();
 
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
@@ -115,13 +115,7 @@ fn main() {
 
     let metrics = Metrics::new(16.0, 20.0);
     let mut buffer = Buffer::new(&mut font_system, metrics);
-    buffer.set_text(
-        &mut font_system,
-        text,
-        &Attrs::new(),
-        Shaping::Advanced,
-        None,
-    );
+    buffer.set_text(text, &Attrs::new(), Shaping::Advanced, None);
     buffer.shape_until_scroll(&mut font_system, false);
 
     // Prepare (populates atlas + instances)

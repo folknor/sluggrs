@@ -300,13 +300,7 @@ fn outline_extraction_round_trip() {
 
     let metrics = Metrics::new(24.0, 30.0);
     let mut buffer = Buffer::new(&mut font_system, metrics);
-    buffer.set_text(
-        &mut font_system,
-        "A",
-        &Attrs::new(),
-        Shaping::Advanced,
-        None,
-    );
+    buffer.set_text("A", &Attrs::new(), Shaping::Advanced, None);
     buffer.shape_until_scroll(&mut font_system, false);
 
     let run = buffer
@@ -357,13 +351,7 @@ fn band_data_sanity() {
 
     let metrics = Metrics::new(24.0, 30.0);
     let mut buffer = Buffer::new(&mut font_system, metrics);
-    buffer.set_text(
-        &mut font_system,
-        "B",
-        &Attrs::new(),
-        Shaping::Advanced,
-        None,
-    );
+    buffer.set_text("B", &Attrs::new(), Shaping::Advanced, None);
     buffer.shape_until_scroll(&mut font_system, false);
 
     let run = buffer
@@ -441,13 +429,7 @@ fn band_data_single_band() {
 
     let metrics = Metrics::new(24.0, 30.0);
     let mut buffer = Buffer::new(&mut font_system, metrics);
-    buffer.set_text(
-        &mut font_system,
-        "O",
-        &Attrs::new(),
-        Shaping::Advanced,
-        None,
-    );
+    buffer.set_text("O", &Attrs::new(), Shaping::Advanced, None);
     buffer.shape_until_scroll(&mut font_system, false);
 
     let run = buffer

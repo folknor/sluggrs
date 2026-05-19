@@ -12,13 +12,7 @@ fn extract_outline_from_cosmic_text_layout() {
     // Shape some text to get LayoutGlyphs
     let metrics = Metrics::new(24.0, 30.0);
     let mut buffer = Buffer::new(&mut font_system, metrics);
-    buffer.set_text(
-        &mut font_system,
-        "Hello, Slug!",
-        &Attrs::new(),
-        Shaping::Advanced,
-        None,
-    );
+    buffer.set_text("Hello, Slug!", &Attrs::new(), Shaping::Advanced, None);
     buffer.shape_until_scroll(&mut font_system, false);
 
     let mut glyphs_extracted = 0;
@@ -96,13 +90,7 @@ fn glyph_key_fields_available() {
     let mut font_system = FontSystem::new();
     let metrics = Metrics::new(24.0, 30.0);
     let mut buffer = Buffer::new(&mut font_system, metrics);
-    buffer.set_text(
-        &mut font_system,
-        "A",
-        &Attrs::new(),
-        Shaping::Advanced,
-        None,
-    );
+    buffer.set_text("A", &Attrs::new(), Shaping::Advanced, None);
     buffer.shape_until_scroll(&mut font_system, false);
 
     let run = buffer

@@ -800,7 +800,10 @@ impl TextRenderer {
                 usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
                 mapped_at_creation: true,
             });
-            self.vertex_buffer.slice(..).get_mapped_range_mut()[..vertices_raw.len()]
+            self.vertex_buffer
+                .slice(..)
+                .get_mapped_range_mut()
+                .slice(..vertices_raw.len())
                 .copy_from_slice(vertices_raw);
             self.vertex_buffer.unmap();
             self.vertex_buffer_size = new_size;

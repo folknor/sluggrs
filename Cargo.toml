@@ -10,8 +10,8 @@ hotpath = ["hotpath/hotpath"]
 hotpath-alloc = ["hotpath/hotpath", "hotpath/hotpath-alloc"]
 
 [dependencies]
-cosmic-text = "0.18"
-wgpu = "28"
+cosmic-text = "0.19"
+wgpu = "29"
 skrifa = "0.40"
 bytemuck = { version = "1", features = ["derive"] }
 log = "0.4"
@@ -22,7 +22,7 @@ rustc-hash = "2"
 winit = "0.30"
 pollster = "0.4"
 env_logger = "0.11.10"
-wgpu-profiler = "0.26"
+wgpu-profiler = "0.27"
 
 [[example]]
 name = "demo"

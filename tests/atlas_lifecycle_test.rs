@@ -17,7 +17,7 @@ use sluggrs::{
 // ---------------------------------------------------------------------------
 
 fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::LowPower,
         compatible_surface: None,
@@ -78,13 +78,7 @@ impl TestHarness {
     fn prepare_text(&mut self, text: &str) -> Result<(), sluggrs::PrepareError> {
         let metrics = Metrics::new(24.0, 30.0);
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
-        buffer.set_text(
-            &mut self.font_system,
-            text,
-            &Attrs::new(),
-            Shaping::Advanced,
-            None,
-        );
+        buffer.set_text(text, &Attrs::new(), Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
         let encoder = self
