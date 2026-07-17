@@ -348,8 +348,9 @@ impl TextAtlas {
             );
             self.scratch_band_entries = band_data.entries;
 
-            let band_entries_packed: Vec<i32> = self.scratch_band_entries
-                .chunks_exact(4)
+            let (band_chunks, _) = self.scratch_band_entries.as_chunks::<4>();
+            let band_entries_packed: Vec<i32> = band_chunks
+                .iter()
                 .flat_map(|c| [pack_i16_pair(c[0], c[1]), pack_i16_pair(c[2], c[3])])
                 .collect();
 

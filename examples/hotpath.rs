@@ -16,6 +16,15 @@ use sluggrs::{
     Viewport,
 };
 
+// As of hotpath 0.17, CountingAllocator is a plain generic type the consumer
+// must declare as #[global_allocator] themselves - the crate no longer wires it
+// up internally under hotpath-alloc. Without this, --alloc builds fall back to
+// the system allocator and track_alloc/track_dealloc never fire, so every
+// measured function silently reports 0 bytes.
+#[cfg(feature = "hotpath-alloc")]
+#[global_allocator]
+static ALLOC: hotpath::CountingAllocator = hotpath::CountingAllocator::new();
+
 fn main() {
     let _guard = hotpath::HotpathGuardBuilder::new("sluggrs::hotpath")
         .percentiles(&[50.0, 95.0, 99.0])

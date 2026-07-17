@@ -102,7 +102,8 @@ pub fn prepare_mono(
     let blob_size = band_element_count + curve_element_count;
 
     let mut blob_data: Vec<i32> = Vec::with_capacity(blob_size as usize * 2);
-    for c in band_entries.chunks_exact(4) {
+    let (band_chunks, _) = band_entries.as_chunks::<4>();
+    for c in band_chunks {
         blob_data.push(pack_i16_pair(c[0], c[1]));
         blob_data.push(pack_i16_pair(c[2], c[3]));
     }

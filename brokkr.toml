@@ -1,7 +1,19 @@
 project = "sluggrs"
 
+# These carry emoji deliberately - they are emoji-rendering fixtures (the whole
+# point is exercising the emoji glyph path), so the gremlin scan must skip them.
+[gremlins]
+exclude = [
+    "docs/emoji-fallback-spec.md",
+    "examples/email_bench.rs",
+    "examples/emoji_test",
+]
+
 [sluggrs]
 width = 1920
 height = 1080
 pixel_diff_threshold = 0.1
 snapshot = []
+
+[test]
+debug = true

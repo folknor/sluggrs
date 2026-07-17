@@ -447,7 +447,8 @@ fn to_premultiplied_rgba(image: &cosmic_text::SwashImage) -> Vec<u8> {
     match image.content {
         cosmic_text::SwashContent::Color => {
             let mut data = image.data.clone();
-            for pixel in data.chunks_exact_mut(4) {
+            let (pixels, _) = data.as_chunks_mut::<4>();
+            for pixel in pixels {
                 let a = pixel[3] as f32 / 255.0;
                 pixel[0] = (pixel[0] as f32 * a) as u8;
                 pixel[1] = (pixel[1] as f32 * a) as u8;

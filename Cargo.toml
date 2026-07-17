@@ -2,7 +2,7 @@
 name = "sluggrs"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.97"
 license = "MIT OR Apache-2.0 OR Zlib"
 
 [features]
@@ -15,12 +15,12 @@ wgpu = "29"
 skrifa = "0.40"
 bytemuck = { version = "1", features = ["derive"] }
 log = "0.4"
-hotpath = "0.16"
+hotpath = "0.21"
 rustc-hash = "2"
 
 [dev-dependencies]
 winit = "0.30"
-pollster = "0.4"
+pollster = "1"
 env_logger = "0.11.10"
 wgpu-profiler = "0.27"
 
