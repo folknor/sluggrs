@@ -368,7 +368,9 @@ pub struct ColorV1Data {
 /// A single sub-glyph within a COLRv1 command sequence.
 pub struct ColorV1SubGlyph {
     pub outline: GlyphOutline,
-    /// Offset from blob start to this sub-glyph's header (set during upload).
+    /// Command-payload-relative texel offset to this sub-glyph's header
+    /// (set during upload). Relative to the first command texel, which sits
+    /// after the universal glyph header - do not add the header width here.
     pub blob_offset: u32,
 }
 

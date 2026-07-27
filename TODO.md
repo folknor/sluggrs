@@ -44,11 +44,6 @@ dominated by compositor/surface, not text math.
   coverage analytically, or reduce to 2 samples. Up to 3-4x GPU at small
   ppem. Large effort.
 
-- [ ] **Move em_rect/band_transform into blob header** - shrink
-  GlyphInstance from 96→64 bytes, reduce vertex bandwidth. Shader decodes
-  from blob header instead of per-instance vertex attributes. Medium effort.
-  *Majority consensus.*
-
 - [ ] Texture fetch audit - verify no redundant loads in curve inner loop
 - [ ] Branch divergence assessment - `abs(a.y) < 0.25` warp divergence
   between linear and quadratic paths. Confirm with Nsight/RGP if available.
@@ -78,11 +73,6 @@ dominated by compositor/surface, not text math.
   size. Harfbuzz dilates unconditionally. **deep review**
 
 ## Architecture
-
-- [ ] **GlyphInstance vertex bandwidth** - struct is 96 bytes with 8 bytes
-  of padding (`_pad: [f32; 2]`). Pack depth into `glyph_data.w` and ppem
-  into color.w (or similar) to shrink to 80 or 64 bytes. See also blob
-  header approach under GPU targets. **perf, arch review**
 
 - [ ] **iced wrapper does not expose scroll offset** - sluggrs exposes
   `Viewport::set_scroll_offset`, but the iced wrapper never calls it, so iced

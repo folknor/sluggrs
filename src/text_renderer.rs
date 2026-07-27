@@ -442,21 +442,14 @@ impl TextRenderer {
                                 if vector_rect_visible(screen_rect, scroll, bounds) {
                                     area_instances.push(GlyphInstance {
                                         screen_rect,
-                                        em_rect: [min_x, min_y, max_x, max_y],
-                                        band_transform: [0.0; 4],
-                                        glyph_data: [
-                                            v1_entry.blob_offset,
-                                            0,
-                                            0,
-                                            v1_entry.cmd_count,
-                                        ],
                                         color: match glyph.color_opt {
                                             Some(c) => color_to_f32(c),
                                             None => area.default_color,
                                         },
+                                        glyph_offset: v1_entry.glyph_offset,
+                                        cmd_texel_count: v1_entry.cmd_texel_count,
                                         depth: metadata_to_depth(glyph.metadata),
                                         ppem: glyph.font_size * text_area.scale,
-                                        _pad: [0.0; 2],
                                     });
                                 } else {
                                     complete = false;
@@ -503,18 +496,11 @@ impl TextRenderer {
 
                                     area_instances.push(GlyphInstance {
                                         screen_rect,
-                                        em_rect: [min_x, min_y, max_x, max_y],
-                                        band_transform: layer.entry.band_transform,
-                                        glyph_data: [
-                                            layer.entry.band_offset,
-                                            layer.entry.band_max_x,
-                                            layer.entry.band_max_y,
-                                            0,
-                                        ],
                                         color,
+                                        glyph_offset: layer.entry.glyph_offset,
+                                        cmd_texel_count: 0,
                                         depth,
                                         ppem,
-                                        _pad: [0.0; 2],
                                     });
                                 }
                             } else {
@@ -548,13 +534,11 @@ impl TextRenderer {
 
                         area_instances.push(GlyphInstance {
                             screen_rect,
-                            em_rect: [min_x, min_y, max_x, max_y],
-                            band_transform: entry.band_transform,
-                            glyph_data: [entry.band_offset, entry.band_max_x, entry.band_max_y, 0],
                             color,
+                            glyph_offset: entry.glyph_offset,
+                            cmd_texel_count: 0,
                             depth: metadata_to_depth(glyph.metadata),
                             ppem: glyph.font_size * text_area.scale,
-                            _pad: [0.0; 2],
                         });
                     }
 
@@ -1125,13 +1109,11 @@ mod tests {
     fn re_cull_keeps_completeness_only_when_every_vector_survives() {
         let instance = GlyphInstance {
             screen_rect: [2.0, 2.0, 2.0, 2.0],
-            em_rect: [0.0; 4],
-            band_transform: [0.0; 4],
-            glyph_data: [0; 4],
             color: [0.0; 4],
+            glyph_offset: 0,
+            cmd_texel_count: 0,
             depth: 0.0,
             ppem: 0.0,
-            _pad: [0.0; 2],
         };
         let (visible, complete) =
             re_cull_vector_instances(&[instance], true, 1.5, -0.5, [0.0, 0.0], [0, 0, 10, 10]);

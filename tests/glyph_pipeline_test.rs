@@ -35,15 +35,8 @@ fn make_key(font_id_val: u32, glyph_id: u16, weight: u16, flags_bits: u32) -> Gl
     }
 }
 
-fn make_dummy_entry(band_offset: u32) -> GlyphEntry {
-    GlyphEntry::new(
-        band_offset,
-        3,
-        4,
-        [1.0, 2.0, 3.0, 4.0],
-        [0.0, 0.0, 100.0, 100.0],
-        1000.0,
-    )
+fn make_dummy_entry(glyph_offset: u32) -> GlyphEntry {
+    GlyphEntry::new(glyph_offset, [0.0, 0.0, 100.0, 100.0], 1000.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -156,7 +149,7 @@ fn normal_glyph_entry_is_not_non_vector() {
     let entry = make_dummy_entry(0);
     assert!(
         !entry.is_non_vector(),
-        "A normal GlyphEntry (band_offset != u32::MAX) should not be non-vector"
+        "A normal GlyphEntry (glyph_offset != u32::MAX) should not be non-vector"
     );
 }
 
@@ -165,7 +158,7 @@ fn edge_case_max_minus_one_not_sentinel() {
     let entry = make_dummy_entry(u32::MAX - 1);
     assert!(
         !entry.is_non_vector(),
-        "band_offset = u32::MAX - 1 should not be treated as non-vector"
+        "glyph_offset = u32::MAX - 1 should not be treated as non-vector"
     );
 }
 
@@ -185,7 +178,7 @@ fn glyph_map_insert_and_get() {
     let got = map
         .get_and_mark_used(&key)
         .expect("Should find inserted key");
-    assert_eq!(got.band_offset, 100);
+    assert_eq!(got.glyph_offset, 100);
 }
 
 #[test]

@@ -200,30 +200,11 @@ contract.
 ```rust
 /// Location and metadata for a cached glyph in the GPU textures.
 struct GlyphEntry {
-    /// Texel offset of this glyph's band headers in the band texture.
-    /// Stored in LINEAR texel space (a flat index into the logical
-    /// texture). The shader's calc_band_loc() converts this to 2D
-    /// coordinates using BAND_TEXTURE_WIDTH-wide wrapping:
-    ///   x = (glyph_loc.x + offset) & (BAND_TEXTURE_WIDTH - 1)
-    ///   y = (glyph_loc.x + offset) >> LOG_BAND_TEXTURE_WIDTH
-    /// CPU code must pack band data contiguously at this offset.
-    /// Offsets within a glyph's band data (header offsets, curve list
-    /// offsets) are also linear and interpreted the same way.
-    band_offset: u32,
-
-    /// Number of horizontal bands (y-direction) minus 1. Passed to
-    /// the shader as band_max.y.
-    band_max_y: u32,
-    /// Number of vertical bands (x-direction) minus 1. Passed to
-    /// the shader as band_max.x.
-    band_max_x: u32,
-
-    /// Scale + offset to map em-space coordinates to band indices.
-    /// Computed by build_bands(). Passed to the shader as-is.
-    band_transform: [f32; 4],  // [scale_x, scale_y, offset_x, offset_y]
+    /// Texel offset of this glyph's five-texel universal atlas header.
+    glyph_offset: u32,
 
     /// Glyph bounding box in em-space (from GpuOutline.bounds).
-    /// Used to compute screen_rect and em_rect vertex attributes.
+    /// Used to compute the CPU screen rectangle; em bounds are in the atlas header.
     bounds: [f32; 4],  // [min_x, min_y, max_x, max_y]
 }
 ```
@@ -231,9 +212,8 @@ struct GlyphEntry {
 Vertex packing reads from GlyphEntry:
 - `screen_rect` = bounds scaled by font_size/units_per_em, positioned
   by cosmic_text layout
-- `em_rect` = bounds directly
-- `band_transform` = band_transform directly
-- `glyph_data` = `[band_offset, 0, band_max_x, band_max_y]`
+- The vertex shader reads bounds, band transform, and band maxima from the
+  universal header, then forwards a payload base of `glyph_offset + 5`.
 
 ```rust
 pub struct TextAtlas {
@@ -319,8 +299,8 @@ impl TextAtlas {
 Cryoglyph: Collects `GlyphToRender` instances (pos, atlas UV, color, depth),
 uploads vertex buffer, draws instanced triangle strips.
 
-sluggrs: Collects `GlyphInstance` instances (screen_rect, em_rect,
-band_transform, glyph_data, color), uploads vertex buffer, draws instanced
+sluggrs: Collects 48-byte `GlyphInstance` instances (screen_rect, color,
+glyph_offset, cmd_texel_count, depth, ppem), uploads vertex buffer, draws instanced
 triangle strips. The vertex format is different but the flow is the same.
 
 ```rust
@@ -432,9 +412,8 @@ For each visible vector glyph, compute from `GlyphEntry`:
 - **screen_rect**: `entry.bounds` scaled by `font_size / units_per_em`,
   positioned by cosmic_text layout (glyph.x, run.line_y) + TextArea
   (left, top, scale)
-- **em_rect**: `entry.bounds` directly
-- **band_transform**: `entry.band_transform` directly
-- **glyph_data**: `[entry.band_offset, 0, entry.band_max_x, entry.band_max_y]`
+- **glyph_offset**: `entry.glyph_offset`; bounds and band constants are decoded
+  from the atlas header in the vertex shader.
 - **color**: `glyph.color_opt.unwrap_or(text_area.default_color)`
 - **depth**: from `metadata_to_depth(glyph.metadata)`
 
@@ -443,6 +422,10 @@ For each visible vector glyph, compute from `GlyphEntry`:
 Upload instance buffer via staging belt (same pattern as cryoglyph).
 Set pipeline, bind groups (atlas textures + viewport uniform), vertex
 buffer. Draw instanced triangle strips: 4 vertices × instance_count.
+
+The atlas storage binding is visible to both vertex and fragment stages. This
+requires `wgpu::DownlevelFlags::VERTEX_STORAGE`; baseline WebGPU provides it,
+while GLES-style adapters without vertex storage are unsupported.
 
 ## Changes to iced
 

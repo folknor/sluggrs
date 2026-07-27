@@ -36,16 +36,9 @@ impl GlyphKey {
 /// Cached location and metadata for a glyph in the GPU textures.
 #[derive(Clone, Copy, Debug)]
 pub struct GlyphEntry {
-    /// Texel offset of this glyph's band headers in the band texture.
-    /// Linear texel space - the shader's calc_band_loc() wraps at
-    /// BAND_TEXTURE_WIDTH.
-    pub band_offset: u32,
-    /// Number of vertical bands minus 1 (band_max.x in shader).
-    pub band_max_x: u32,
-    /// Number of horizontal bands minus 1 (band_max.y in shader).
-    pub band_max_y: u32,
-    /// Transform from em-space to band index.
-    pub band_transform: [f32; 4],
+    /// Texel offset of this glyph's universal header in the atlas buffer.
+    /// The payload begins five texels after this offset.
+    pub glyph_offset: u32,
     /// Glyph bounding box in em-space.
     pub bounds: [f32; 4],
     /// Font units per em - avoids per-glyph font re-parse on warm path.
@@ -56,10 +49,7 @@ pub struct GlyphEntry {
 
 /// Sentinel for glyphs that have no vector outline (emoji, bitmap fonts).
 pub const NON_VECTOR_GLYPH: GlyphEntry = GlyphEntry {
-    band_offset: u32::MAX,
-    band_max_x: 0,
-    band_max_y: 0,
-    band_transform: [0.0; 4],
+    glyph_offset: u32::MAX,
     bounds: [0.0; 4],
     units_per_em: 1000.0,
     last_used_epoch: 0,
@@ -67,10 +57,7 @@ pub const NON_VECTOR_GLYPH: GlyphEntry = GlyphEntry {
 
 /// Sentinel for COLRv0 color glyphs - look up `color_glyphs` map for layers.
 pub const COLOR_VECTOR_GLYPH: GlyphEntry = GlyphEntry {
-    band_offset: u32::MAX - 1,
-    band_max_x: 0,
-    band_max_y: 0,
-    band_transform: [0.0; 4],
+    glyph_offset: u32::MAX - 1,
     bounds: [0.0; 4],
     units_per_em: 1000.0,
     last_used_epoch: 0,
@@ -92,10 +79,10 @@ pub struct ColorGlyphEntry {
 
 /// A COLRv1 color glyph: command sequence interpreted by the fragment shader.
 pub struct ColorV1GlyphEntry {
-    /// Offset of the command blob in the storage buffer.
-    pub blob_offset: u32,
+    /// Offset of the universal header in the storage buffer.
+    pub glyph_offset: u32,
     /// Number of command texels the shader iterates.
-    pub cmd_count: u32,
+    pub cmd_texel_count: u32,
     /// Union of all sub-glyph bounds in em-space.
     pub bounds: [f32; 4],
     pub units_per_em: f32,
@@ -103,10 +90,7 @@ pub struct ColorV1GlyphEntry {
 
 /// Sentinel for COLRv1 color glyphs - look up `color_v1_glyphs` map.
 pub const COLOR_V1_VECTOR_GLYPH: GlyphEntry = GlyphEntry {
-    band_offset: u32::MAX - 2,
-    band_max_x: 0,
-    band_max_y: 0,
-    band_transform: [0.0; 4],
+    glyph_offset: u32::MAX - 2,
     bounds: [0.0; 4],
     units_per_em: 1000.0,
     last_used_epoch: 0,
@@ -114,19 +98,9 @@ pub const COLOR_V1_VECTOR_GLYPH: GlyphEntry = GlyphEntry {
 
 impl GlyphEntry {
     /// Construct a new GlyphEntry. Sets `last_used_epoch` to 0 (not yet used).
-    pub fn new(
-        band_offset: u32,
-        band_max_x: u32,
-        band_max_y: u32,
-        band_transform: [f32; 4],
-        bounds: [f32; 4],
-        units_per_em: f32,
-    ) -> Self {
+    pub fn new(glyph_offset: u32, bounds: [f32; 4], units_per_em: f32) -> Self {
         Self {
-            band_offset,
-            band_max_x,
-            band_max_y,
-            band_transform,
+            glyph_offset,
             bounds,
             units_per_em,
             last_used_epoch: 0,
@@ -134,15 +108,15 @@ impl GlyphEntry {
     }
 
     pub fn is_non_vector(&self) -> bool {
-        self.band_offset == u32::MAX
+        self.glyph_offset == u32::MAX
     }
 
     pub fn is_color_vector(&self) -> bool {
-        self.band_offset == u32::MAX - 1
+        self.glyph_offset == u32::MAX - 1
     }
 
     pub fn is_color_v1_vector(&self) -> bool {
-        self.band_offset == u32::MAX - 2
+        self.glyph_offset == u32::MAX - 2
     }
 }
 

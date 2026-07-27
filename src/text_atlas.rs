@@ -17,6 +17,7 @@ const INITIAL_BUFFER_CAPACITY: u32 = 131_072;
 /// A grown atlas is eligible for trimming once it reaches this multiple of its
 /// initial allocation.
 const TRIM_GROWTH_FACTOR: u32 = 4;
+const GLYPH_HEADER_TEXELS: u32 = 5;
 
 pub struct TextAtlas {
     pub(crate) cache: Cache,
@@ -279,7 +280,7 @@ impl TextAtlas {
     }
 
     /// Commit a CPU-prepared mono glyph blob to the atlas storage buffer.
-    /// Pure write side: appends `prepared.blob_data` and advances the cursor.
+    /// Pure write side: appends a universal header then `prepared.blob_data`.
     #[hotpath::measure]
     pub(crate) fn commit_mono(
         &mut self,
@@ -290,16 +291,22 @@ impl TextAtlas {
         }
 
         let glyph_offset = self.buffer_cursor;
-        let new_end = self.checked_buffer_end(prepared.blob_size)?;
+        let total_size = GLYPH_HEADER_TEXELS
+            .checked_add(prepared.blob_size)
+            .ok_or(crate::types::PrepareError::AtlasFull)?;
+        let new_end = self.checked_buffer_end(total_size)?;
 
+        self.buffer_data.extend_from_slice(&encode_glyph_header(
+            prepared.bounds,
+            prepared.band_transform,
+            prepared.band_count_x.saturating_sub(1),
+            prepared.band_count_y.saturating_sub(1),
+        ));
         self.buffer_data.extend_from_slice(&prepared.blob_data);
         self.buffer_cursor = new_end;
 
         Ok(GlyphEntry {
-            band_offset: glyph_offset,
-            band_max_x: prepared.band_count_x.saturating_sub(1),
-            band_max_y: prepared.band_count_y.saturating_sub(1),
-            band_transform: prepared.band_transform,
+            glyph_offset,
             bounds: prepared.bounds,
             units_per_em: prepared.units_per_em,
             last_used_epoch: 0,
@@ -308,9 +315,10 @@ impl TextAtlas {
 
     /// Upload a COLRv1 color glyph command blob.
     ///
-    /// Layout: [commands...] [sub_glyph_0: header + bands + curves] [sub_glyph_1: ...] ...
+    /// Layout: [header] [commands...] [sub_glyph_0: header + bands + curves] [sub_glyph_1: ...] ...
     /// Sub-glyph header (3 texels): band_max (packed) + band_transform (4 raw i32).
-    /// Command DRAW opcodes reference sub-glyphs by blob-relative texel offset.
+    /// Command DRAW opcodes reference sub-glyphs by command-payload-relative
+    /// texel offset (relative to the first command texel, after the header).
     ///
     /// COLRv1 commands and headers store raw i32 values (not i16-packed) since
     /// they contain bitcast f32 and packed color data that uses full i32 range.
@@ -444,7 +452,7 @@ impl TextAtlas {
         }
         let total_blob_size = offset;
 
-        // Phase 3: fixup command sub-glyph indices → blob-relative offsets.
+        // Phase 3: fixup command sub-glyph indices → command-payload-relative offsets.
         for cmd in &mut v1.commands {
             let opcode = cmd[0];
             if opcode == crate::outline::CMD_DRAW_SOLID
@@ -460,8 +468,13 @@ impl TextAtlas {
 
         // Phase 4: validate capacity and append to CPU storage.
         let glyph_offset = self.buffer_cursor;
-        let new_end = self.checked_buffer_end(total_blob_size)?;
+        let total_size = GLYPH_HEADER_TEXELS
+            .checked_add(total_blob_size)
+            .ok_or(crate::types::PrepareError::AtlasFull)?;
+        let new_end = self.checked_buffer_end(total_size)?;
 
+        self.buffer_data
+            .extend_from_slice(&encode_glyph_header(union_bounds, [0.0; 4], 0, 0));
         // Append commands: each [i32; 4] command → 4 raw i32 values (2 packed texels)
         for cmd in &v1.commands {
             self.buffer_data.extend_from_slice(cmd);
@@ -483,8 +496,8 @@ impl TextAtlas {
         self.buffer_cursor = new_end;
 
         Ok(ColorV1GlyphEntry {
-            blob_offset: glyph_offset,
-            cmd_count: cmd_texel_count,
+            glyph_offset,
+            cmd_texel_count,
             bounds: union_bounds,
             units_per_em,
         })
@@ -526,6 +539,28 @@ impl TextAtlas {
         self.cache
             .get_or_create_pipeline(device, self.format, multisample, depth_stencil)
     }
+}
+
+/// Encode a universal 5-texel glyph header. Float values retain their exact
+/// bits because the vertex shader reads these raw i32 slots and bitcasts them.
+fn encode_glyph_header(
+    bounds: [f32; 4],
+    band_transform: [f32; 4],
+    band_max_x: u32,
+    band_max_y: u32,
+) -> [i32; 10] {
+    [
+        bounds[0].to_bits() as i32,
+        bounds[1].to_bits() as i32,
+        bounds[2].to_bits() as i32,
+        bounds[3].to_bits() as i32,
+        band_transform[0].to_bits() as i32,
+        band_transform[1].to_bits() as i32,
+        band_transform[2].to_bits() as i32,
+        band_transform[3].to_bits() as i32,
+        pack_i16_pair(band_max_x as i16, band_max_y as i16),
+        0,
+    ]
 }
 
 /// Bytes per texel in the packed layout: 2 i32 values = 8 bytes.
@@ -594,7 +629,7 @@ fn pack_i16_pair(a: i16, b: i16) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{checked_buffer_end, planned_buffer_capacity};
+    use super::{checked_buffer_end, encode_glyph_header, planned_buffer_capacity};
     use crate::types::PrepareError;
 
     #[test]
@@ -630,5 +665,25 @@ mod tests {
             checked_buffer_end(100, 1, 100),
             Err(PrepareError::AtlasFull)
         );
+    }
+
+    #[test]
+    fn glyph_header_preserves_float_bits_and_packs_maxima() {
+        let header = encode_glyph_header(
+            [-0.0, f32::NAN, 3.5, -4.25],
+            [1.0, -2.0, 0.25, f32::INFINITY],
+            12,
+            255,
+        );
+        assert_eq!(header[0] as u32, (-0.0f32).to_bits());
+        assert_eq!(header[1] as u32, f32::NAN.to_bits());
+        assert_eq!(header[2] as u32, 3.5f32.to_bits());
+        assert_eq!(header[3] as u32, (-4.25f32).to_bits());
+        assert_eq!(header[4] as u32, 1.0f32.to_bits());
+        assert_eq!(header[5] as u32, (-2.0f32).to_bits());
+        assert_eq!(header[6] as u32, 0.25f32.to_bits());
+        assert_eq!(header[7] as u32, f32::INFINITY.to_bits());
+        assert_eq!(header[8] as u32, 12 | (255 << 16));
+        assert_eq!(header[9], 0);
     }
 }

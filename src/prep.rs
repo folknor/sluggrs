@@ -19,7 +19,8 @@ pub struct PrepScratch {
     band_scratch: BandScratch,
 }
 
-/// CPU-prepared mono glyph blob, ready for `TextAtlas::commit_mono`.
+/// CPU-prepared mono glyph payload, ready for `TextAtlas::commit_mono`.
+/// The atlas adds the universal header; all offsets here remain payload-relative.
 pub struct PreparedMono {
     pub bounds: [f32; 4],
     pub units_per_em: f32,

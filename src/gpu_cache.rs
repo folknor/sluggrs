@@ -56,47 +56,23 @@ impl Cache {
                     offset: 0,
                     shader_location: 0,
                 },
-                // em_rect: vec4<f32>
+                // color: vec4<f32>
                 wgpu::VertexAttribute {
                     format: VertexFormat::Float32x4,
                     offset: 16,
                     shader_location: 1,
                 },
-                // band_transform: vec4<f32>
+                // glyph_offset, cmd_texel_count
                 wgpu::VertexAttribute {
-                    format: VertexFormat::Float32x4,
+                    format: VertexFormat::Uint32x2,
                     offset: 32,
                     shader_location: 2,
                 },
-                // glyph_data: vec4<u32>
-                wgpu::VertexAttribute {
-                    format: VertexFormat::Uint32x4,
-                    offset: 48,
-                    shader_location: 3,
-                },
-                // color: vec4<f32>
-                wgpu::VertexAttribute {
-                    format: VertexFormat::Float32x4,
-                    offset: 64,
-                    shader_location: 4,
-                },
-                // depth: f32
-                wgpu::VertexAttribute {
-                    format: VertexFormat::Float32,
-                    offset: 80,
-                    shader_location: 5,
-                },
-                // ppem: f32
-                wgpu::VertexAttribute {
-                    format: VertexFormat::Float32,
-                    offset: 84,
-                    shader_location: 6,
-                },
-                // _pad: vec2<f32>
+                // depth, ppem
                 wgpu::VertexAttribute {
                     format: VertexFormat::Float32x2,
-                    offset: 88,
-                    shader_location: 7,
+                    offset: 40,
+                    shader_location: 3,
                 },
             ],
         };
@@ -106,7 +82,10 @@ impl Cache {
             label: Some("sluggrs atlas bind group layout"),
             entries: &[BindGroupLayoutEntry {
                 binding: 0,
-                visibility: ShaderStages::FRAGMENT,
+                // Requires wgpu::DownlevelFlags::VERTEX_STORAGE. Baseline
+                // WebGPU supports it; GLES-style adapters without vertex
+                // storage are unsupported.
+                visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,

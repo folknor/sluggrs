@@ -25,14 +25,12 @@ const NOTO_COLRV1: &[u8] = include_bytes!("fonts/NotoColorEmoji-Regular.ttf");
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct GlyphInstance {
-    screen_rect: [f32; 4],    // x, y, width, height
-    em_rect: [f32; 4],        // min_x, min_y, max_x, max_y
-    band_transform: [f32; 4], // scale_x, scale_y, offset_x, offset_y
-    glyph_data: [u32; 4],     // glyph_loc.x, glyph_loc.y, band_max.x, band_max.y
-    color: [f32; 4],          // RGBA
-    depth: f32,               // z-depth for widget layering
-    ppem: f32,                // pixels per em
-    _pad: [f32; 2],           // alignment padding
+    screen_rect: [f32; 4],
+    color: [f32; 4],
+    glyph_offset: u32,
+    cmd_texel_count: u32,
+    depth: f32,
+    ppem: f32,
 }
 
 #[repr(C)]
@@ -65,6 +63,26 @@ fn pack_i16_pair(a: i16, b: i16) -> i32 {
     (a as u16 as u32 | ((b as u16 as u32) << 16)) as i32
 }
 
+fn encode_glyph_header(
+    bounds: [f32; 4],
+    band_transform: [f32; 4],
+    band_max_x: u32,
+    band_max_y: u32,
+) -> [i32; 10] {
+    [
+        bounds[0].to_bits() as i32,
+        bounds[1].to_bits() as i32,
+        bounds[2].to_bits() as i32,
+        bounds[3].to_bits() as i32,
+        band_transform[0].to_bits() as i32,
+        band_transform[1].to_bits() as i32,
+        band_transform[2].to_bits() as i32,
+        band_transform[3].to_bits() as i32,
+        pack_i16_pair(band_max_x as i16, band_max_y as i16),
+        0,
+    ]
+}
+
 /// Build unified glyph buffer from prepared glyphs.
 /// Each texel (4 i16-safe values) is packed into 2 i32 values.
 fn build_glyph_buffer(glyphs: &[PreparedGlyph]) -> Vec<i32> {
@@ -73,6 +91,12 @@ fn build_glyph_buffer(glyphs: &[PreparedGlyph]) -> Vec<i32> {
     for glyph in glyphs {
         match glyph {
             PreparedGlyph::Normal { outline, band_data } => {
+                buffer.extend_from_slice(&encode_glyph_header(
+                    outline.bounds,
+                    band_data.band_transform,
+                    band_data.band_count_x - 1,
+                    band_data.band_count_y - 1,
+                ));
                 let mut curve_texels: Vec<[i32; 4]> = Vec::new();
                 for curve in &outline.curves {
                     curve_texels.push([
@@ -202,16 +226,14 @@ fn prepare_text(
             let curve_element_count = (num_curves as u32) * 2;
             instances.push(GlyphInstance {
                 screen_rect: [screen_x, screen_y, screen_w, screen_h],
-                em_rect: [min_x, min_y, max_x, max_y],
-                band_transform: band_data.band_transform,
-                glyph_data: [*buffer_offset, band_count - 1, band_count - 1, 0],
                 color: inst_color,
+                glyph_offset: *buffer_offset,
+                cmd_texel_count: 0,
                 depth: 0.0,
                 ppem: font_size,
-                _pad: [0.0; 2],
             });
             prepared.push(PreparedGlyph::Normal { outline, band_data });
-            *buffer_offset += band_element_count + curve_element_count;
+            *buffer_offset += 5 + band_element_count + curve_element_count;
         };
 
         if let Some(ColorGlyphInfo::V0Layers(layers)) =
@@ -331,6 +353,7 @@ fn prepare_text(
 
             // Build the pre-packed blob (flat i32 array, 2 i32 per packed texel)
             let mut blob_data: Vec<i32> = Vec::new();
+            blob_data.extend_from_slice(&encode_glyph_header(union_bounds, [0.0; 4], 0, 0));
             // Commands: raw i32 values (4 per command = 2 packed texels)
             for cmd in &v1_data.commands {
                 blob_data.extend_from_slice(cmd);
@@ -355,17 +378,15 @@ fn prepare_text(
 
             instances.push(GlyphInstance {
                 screen_rect: [screen_x, screen_y, screen_w, screen_h],
-                em_rect: union_bounds,
-                band_transform: [0.0; 4],
-                glyph_data: [buffer_offset, 0, 0, cmd_texels],
                 color,
+                glyph_offset: buffer_offset,
+                cmd_texel_count: cmd_texels,
                 depth: 0.0,
                 ppem: font_size,
-                _pad: [0.0; 2],
             });
 
             prepared.push(PreparedGlyph::RawBlob { data: blob_data });
-            buffer_offset += total_size;
+            buffer_offset += 5 + total_size;
         } else if let Some(outline) = extract_outline(font_data, 0, glyph_id, &location) {
             push_outline(
                 outline,
@@ -680,7 +701,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
                 PreparedGlyph::Normal { outline, band_data } => {
                     let band_elements = (band_data.entries.len() / 4) as u32;
                     let curve_elements = (outline.curves.len() as u32) * 2;
-                    buffer_offset += band_elements + curve_elements;
+                    buffer_offset += 5 + band_elements + curve_elements;
                 }
                 PreparedGlyph::RawBlob { data } => {
                     // data.len() is in i32 units, buffer_offset is in texels (2 i32 each)
@@ -1099,7 +1120,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
         label: Some("texture bgl"),
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 0,
-            visibility: wgpu::ShaderStages::FRAGMENT,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Storage { read_only: true },
                 has_dynamic_offset: false,
@@ -1144,13 +1165,11 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     let instance_data = if all_instances.is_empty() {
         vec![GlyphInstance {
             screen_rect: [0.0; 4],
-            em_rect: [0.0; 4],
-            band_transform: [0.0; 4],
-            glyph_data: [0; 4],
             color: [0.0; 4],
+            glyph_offset: 0,
+            cmd_texel_count: 0,
             depth: 0.0,
             ppem: 0.0,
-            _pad: [0.0; 2],
         }]
     } else {
         all_instances
@@ -1190,34 +1209,14 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
                         shader_location: 1,
                     },
                     wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x4,
+                        format: wgpu::VertexFormat::Uint32x2,
                         offset: 32,
                         shader_location: 2,
                     },
                     wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Uint32x4,
-                        offset: 48,
-                        shader_location: 3,
-                    },
-                    wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x4,
-                        offset: 64,
-                        shader_location: 4,
-                    },
-                    wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32,
-                        offset: 80,
-                        shader_location: 5,
-                    },
-                    wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32,
-                        offset: 84,
-                        shader_location: 6,
-                    },
-                    wgpu::VertexAttribute {
                         format: wgpu::VertexFormat::Float32x2,
-                        offset: 88,
-                        shader_location: 7,
+                        offset: 40,
+                        shader_location: 3,
                     },
                 ],
             }],

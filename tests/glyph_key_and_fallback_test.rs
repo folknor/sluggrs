@@ -142,14 +142,7 @@ fn non_vector_entry_does_not_shadow_real_entries() {
         cache_key_flags: cosmic_text::CacheKeyFlags::empty(),
     };
 
-    let real_entry = GlyphEntry::new(
-        42,
-        3,
-        4,
-        [1.0, 2.0, 3.0, 4.0],
-        [0.0, 0.0, 100.0, 100.0],
-        1000.0,
-    );
+    let real_entry = GlyphEntry::new(42, [0.0, 0.0, 100.0, 100.0], 1000.0);
 
     map.insert_and_mark_used(non_vector_key, NON_VECTOR_GLYPH);
     map.insert_and_mark_used(real_key, real_entry);
@@ -169,5 +162,5 @@ fn non_vector_entry_does_not_shadow_real_entries() {
         !got.is_non_vector(),
         "A real glyph entry should not be flagged as non-vector"
     );
-    assert_eq!(got.band_offset, 42);
+    assert_eq!(got.glyph_offset, 42);
 }

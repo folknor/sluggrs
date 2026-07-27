@@ -203,7 +203,7 @@ fn buffer_growth_preserves_offsets() {
     );
 
     // Now re-prepare the original text. If buffer growth had corrupted the
-    // earlier glyph entries (e.g. stale band_offset pointing into a destroyed
+    // earlier glyph entries (e.g. stale glyph_offset pointing into a destroyed
     // buffer), this would produce incorrect GlyphInstances or panic.
     // The atlas caches entries by GlyphKey, so previously uploaded glyphs
     // should still reference valid offsets after growth because the complete

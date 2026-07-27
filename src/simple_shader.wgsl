@@ -11,6 +11,11 @@ struct Params {
 
 @group(0) @binding(0) var<uniform> params: Params;
 const INV_UNITS: f32 = 0.25; // 1.0 / 4.0 units_per_em
+// Universal per-glyph header size in packed texels. Must match
+// GLYPH_HEADER_TEXELS in text_atlas.rs (and the demo's standalone copy).
+// Layout: em_rect (2 texels raw f32), band_transform (2 texels raw f32),
+// packed band maxima + reserved (1 texel).
+const GLYPH_HEADER_TEXELS: u32 = 5u;
 // Packed storage: each i32 holds two i16 values. A logical "texel" of 4 i16
 // values occupies 2 consecutive i32 elements. Texel addressing: element index
 // = texel_offset * 2. Halves bandwidth vs the old array<vec4<i32>> layout.
@@ -43,19 +48,9 @@ fn read_raw4(base: u32) -> vec4<i32> {
 struct GlyphInstance {
     // Screen-space position and size of the glyph quad
     @location(0) screen_rect: vec4<f32>,     // x, y, width, height
-    // Em-space bounds of the glyph
-    @location(1) em_rect: vec4<f32>,         // min_x, min_y, max_x, max_y
-    // Band transform
-    @location(2) band_transform: vec4<f32>,  // scale_x, scale_y, offset_x, offset_y
-    // Packed glyph data: glyph_offset, band_max.x, band_max.y_with_flags, 0
-    @location(3) glyph_data: vec4<u32>,
-    // Color
-    @location(4) color: vec4<f32>,
-    // Depth for widget layer ordering (from iced's metadata_to_depth)
-    @location(5) depth: f32,
-    // Pixels per em (for MSAA/darkening thresholds)
-    @location(6) ppem: f32,
-    @location(7) _pad: vec2<f32>,
+    @location(1) color: vec4<f32>,
+    @location(2) glyph: vec2<u32>, // header offset, command texel count
+    @location(3) depth_ppem: vec2<f32>,
 }
 
 struct VertexOutput {
@@ -92,29 +87,45 @@ fn vs_main(instance: GlyphInstance, @builtin(vertex_index) vid: u32) -> VertexOu
         -(screen_pos.y / params.screen_size.y * 2.0 - 1.0),
     );
 
-    output.position = vec4<f32>(ndc, instance.depth, 1.0);
+    output.position = vec4<f32>(ndc, instance.depth_ppem.x, 1.0);
+
+    let header_raw = instance.glyph.x * 2u;
+    let em_rect = vec4<f32>(
+        bitcast<f32>(atlas[header_raw]), bitcast<f32>(atlas[header_raw + 1u]),
+        bitcast<f32>(atlas[header_raw + 2u]), bitcast<f32>(atlas[header_raw + 3u]),
+    );
+    let band_transform = vec4<f32>(
+        bitcast<f32>(atlas[header_raw + 4u]), bitcast<f32>(atlas[header_raw + 5u]),
+        bitcast<f32>(atlas[header_raw + 6u]), bitcast<f32>(atlas[header_raw + 7u]),
+    );
+    let band_max = read_texel(instance.glyph.x + GLYPH_HEADER_TEXELS - 1u).xy;
 
     // Undilated em-space texcoord at this corner
     let base_texcoord = vec2<f32>(
-        mix(instance.em_rect.x, instance.em_rect.z, corner.x),
+        mix(em_rect.x, em_rect.z, corner.x),
         // Flip Y for em-space (font coords are Y-up, screen is Y-down)
-        mix(instance.em_rect.w, instance.em_rect.y, corner.y),
+        mix(em_rect.w, em_rect.y, corner.y),
     );
 
     // Convert half-pixel dilation to em-space offset
     let em_size = vec2<f32>(
-        instance.em_rect.z - instance.em_rect.x,
-        instance.em_rect.w - instance.em_rect.y,
+        em_rect.z - em_rect.x,
+        em_rect.w - em_rect.y,
     );
     let ems_per_pixel = em_size / max(instance.screen_rect.zw, vec2<f32>(1.0, 1.0));
 
     // Adjust texcoord for dilation (Y negated: em Y-up, screen Y-down)
     output.texcoord = base_texcoord + vec2<f32>(normal.x, -normal.y) * ems_per_pixel * 0.5;
 
-    output.banding = instance.band_transform;
-    output.glyph = vec4<i32>(instance.glyph_data);
+    output.banding = band_transform;
+    output.glyph = vec4<i32>(
+        i32(instance.glyph.x + GLYPH_HEADER_TEXELS),
+        band_max.x,
+        band_max.y,
+        i32(instance.glyph.y),
+    );
     output.color = instance.color;
-    output.pixels_per_em = vec2<f32>(instance.ppem, instance.ppem);
+    output.pixels_per_em = vec2<f32>(instance.depth_ppem.y, instance.depth_ppem.y);
 
     return output;
 }

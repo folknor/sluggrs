@@ -36,12 +36,29 @@ const _SHADER_WGSL: &str = include_str!("shader.wgsl");
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GlyphInstance {
-    pub screen_rect: [f32; 4],    // x, y, width, height
-    pub em_rect: [f32; 4],        // min_x, min_y, max_x, max_y
-    pub band_transform: [f32; 4], // scale_x, scale_y, offset_x, offset_y
-    pub glyph_data: [u32; 4],     // band_loc_x, band_loc_y, band_max_x, band_max_y
-    pub color: [f32; 4],          // RGBA
-    pub depth: f32,               // z-depth for iced widget layering
-    pub ppem: f32,                // pixels per em (for MSAA/darkening thresholds)
-    pub _pad: [f32; 2],           // alignment padding
+    pub screen_rect: [f32; 4],
+    pub color: [f32; 4],
+    pub glyph_offset: u32,
+    pub cmd_texel_count: u32,
+    pub depth: f32,
+    pub ppem: f32,
+}
+
+const _: () = assert!(std::mem::size_of::<GlyphInstance>() == 48);
+
+#[cfg(test)]
+mod glyph_instance_tests {
+    use super::GlyphInstance;
+    use std::mem::{offset_of, size_of};
+
+    #[test]
+    fn glyph_instance_abi() {
+        assert_eq!(size_of::<GlyphInstance>(), 48);
+        assert_eq!(offset_of!(GlyphInstance, screen_rect), 0);
+        assert_eq!(offset_of!(GlyphInstance, color), 16);
+        assert_eq!(offset_of!(GlyphInstance, glyph_offset), 32);
+        assert_eq!(offset_of!(GlyphInstance, cmd_texel_count), 36);
+        assert_eq!(offset_of!(GlyphInstance, depth), 40);
+        assert_eq!(offset_of!(GlyphInstance, ppem), 44);
+    }
 }
