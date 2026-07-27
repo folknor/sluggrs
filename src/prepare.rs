@@ -1,7 +1,8 @@
 /// GPU preparation stage for glyph outlines.
 ///
-/// Outlines pass through unchanged since line segments use p2=p1 encoding
-/// and the shader handles degenerate quadratics via exact-zero detection.
+/// Outlines pass through unchanged. Lines use p2 = p1 encoding to avoid
+/// midpoint-degenerate coefficients; exact-zero detection handles
+/// exactly-linear real quadratics, not line segments in general.
 /// The only mutation is fake-italic shear for ~1% of glyphs.
 use crate::outline::GlyphOutline;
 

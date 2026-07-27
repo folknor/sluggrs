@@ -135,47 +135,41 @@ fn calc_root_code(y1: f32, y2: f32, y3: f32) -> u32 {
     return (0x2E74u >> shift) & 0x0101u;
 }
 
-fn solve_horiz_poly(p12: vec4<f32>, p3: vec2<f32>) -> vec2<f32> {
-    let a = p12.xy - p12.zw * 2.0 + p3;
-    let b = p12.xy - p12.zw;
-
+fn solve_horiz_poly(a: vec2<f32>, b: vec2<f32>, p1: vec2<f32>) -> vec2<f32> {
     let ra = 1.0 / a.y;
     let rb = 0.5 / b.y;
-    let d = sqrt(max(b.y * b.y - a.y * p12.y, 0.0));
+    let d = sqrt(max(b.y * b.y - a.y * p1.y, 0.0));
     var t1 = (b.y - d) * ra;
     var t2 = (b.y + d) * ra;
 
     if a.y == 0.0 {
-        let lin = p12.y * rb;
+        let lin = p1.y * rb;
         t1 = lin;
         t2 = lin;
     }
 
     return vec2<f32>(
-        (a.x * t1 - b.x * 2.0) * t1 + p12.x,
-        (a.x * t2 - b.x * 2.0) * t2 + p12.x,
+        (a.x * t1 - b.x * 2.0) * t1 + p1.x,
+        (a.x * t2 - b.x * 2.0) * t2 + p1.x,
     );
 }
 
-fn solve_vert_poly(p12: vec4<f32>, p3: vec2<f32>) -> vec2<f32> {
-    let a = p12.xy - p12.zw * 2.0 + p3;
-    let b = p12.xy - p12.zw;
-
+fn solve_vert_poly(a: vec2<f32>, b: vec2<f32>, p1: vec2<f32>) -> vec2<f32> {
     let ra = 1.0 / a.x;
     let rb = 0.5 / b.x;
-    let d = sqrt(max(b.x * b.x - a.x * p12.x, 0.0));
+    let d = sqrt(max(b.x * b.x - a.x * p1.x, 0.0));
     var t1 = (b.x - d) * ra;
     var t2 = (b.x + d) * ra;
 
     if a.x == 0.0 {
-        let lin = p12.x * rb;
+        let lin = p1.x * rb;
         t1 = lin;
         t2 = lin;
     }
 
     return vec2<f32>(
-        (a.y * t1 - b.y * 2.0) * t1 + p12.y,
-        (a.y * t2 - b.y * 2.0) * t2 + p12.y,
+        (a.y * t1 - b.y * 2.0) * t1 + p1.y,
+        (a.y * t2 - b.y * 2.0) * t2 + p1.y,
     );
 }
 
@@ -211,9 +205,11 @@ fn render_single(
         let curve_ref = read_texel(glyph_base + h_data_offset + ci);
         let curve_offset = decode_offset(curve_ref.x);
         let raw12 = read_texel(glyph_base + curve_offset);
-        let p12 = vec4<f32>(raw12) * INV_UNITS - vec4<f32>(render_coord, render_coord);
         let raw3 = read_texel(glyph_base + curve_offset + 1u);
-        let p3 = vec2<f32>(raw3.xy) * INV_UNITS - render_coord;
+        let q12 = vec4<f32>(raw12) * INV_UNITS;
+        let q3 = vec2<f32>(raw3.xy) * INV_UNITS;
+        let p12 = q12 - vec4<f32>(render_coord, render_coord);
+        let p3 = q3 - render_coord;
 
         if h_left_ray {
             if min(min(p12.x, p12.z), p3.x) * pixels_per_em.x > 0.5 { break; }
@@ -223,7 +219,9 @@ fn render_single(
 
         let code = calc_root_code(p12.y, p12.w, p3.y);
         if code != 0u {
-            let r = solve_horiz_poly(p12, p3) * pixels_per_em.x;
+            let a = q12.xy - q12.zw * 2.0 + q3;
+            let b = q12.xy - q12.zw;
+            let r = solve_horiz_poly(a, b, p12.xy) * pixels_per_em.x;
 
             if (code & 1u) != 0u {
                 let cov = select(r.x + 0.5, 0.5 - r.x, h_left_ray);
@@ -251,9 +249,11 @@ fn render_single(
         let curve_ref = read_texel(glyph_base + v_data_offset + ci);
         let curve_offset = decode_offset(curve_ref.x);
         let raw12 = read_texel(glyph_base + curve_offset);
-        let p12 = vec4<f32>(raw12) * INV_UNITS - vec4<f32>(render_coord, render_coord);
         let raw3 = read_texel(glyph_base + curve_offset + 1u);
-        let p3 = vec2<f32>(raw3.xy) * INV_UNITS - render_coord;
+        let q12 = vec4<f32>(raw12) * INV_UNITS;
+        let q3 = vec2<f32>(raw3.xy) * INV_UNITS;
+        let p12 = q12 - vec4<f32>(render_coord, render_coord);
+        let p3 = q3 - render_coord;
 
         if v_left_ray {
             if min(min(p12.y, p12.w), p3.y) * pixels_per_em.y > 0.5 { break; }
@@ -263,7 +263,9 @@ fn render_single(
 
         let code = calc_root_code(p12.x, p12.z, p3.x);
         if code != 0u {
-            let r = solve_vert_poly(p12, p3) * pixels_per_em.y;
+            let a = q12.xy - q12.zw * 2.0 + q3;
+            let b = q12.xy - q12.zw;
+            let r = solve_vert_poly(a, b, p12.xy) * pixels_per_em.y;
 
             if (code & 1u) != 0u {
                 let cov = select(r.x + 0.5, 0.5 - r.x, v_left_ray);

@@ -49,15 +49,6 @@ dominated by compositor/surface, not text math.
   from blob header instead of per-instance vertex attributes. Medium effort.
   *Majority consensus.*
 
-- [ ] **Precompute a,b from unshifted coords** - compute `a` and `b`
-  outside solver from unshifted `q12`/`q3`, pass as arguments. Matches
-  harfbuzz at `hb-gpu-fragment.wgsl:205-206`. Preserves exact zeros for
-  `== 0.0` branch, saves 2 vec2 subtractions per curve. **hb review**
-
-- [ ] **Zero dilation for large text (48ppem+)** - coverage at exact glyph
-  boundary is already 0.0 or 1.0 at large sizes. Set dilation to 0 in
-  vertex shader, reducing fragment count ~4-8%. **hb review**
-
 - [ ] Texture fetch audit - verify no redundant loads in curve inner loop
 - [ ] Branch divergence assessment - `abs(a.y) < 0.25` warp divergence
   between linear and quadratic paths. Confirm with Nsight/RGP if available.
@@ -80,6 +71,11 @@ dominated by compositor/surface, not text math.
 - Supersampling - removed from reference; dilation handles it
 - Compute shader rewrite - fundamentally different architecture, not
   compatible with render-pass integration
+- Zero dilation for large text (48ppem+) - rejected: the AA support band
+  outside the glyph boundary is half a pixel in *screen* space at every
+  ppem (an outside sample at distance d < 0.5px carries 0.5 - d coverage),
+  so killing dilation clips valid AA at tangential extrema regardless of
+  size. Harfbuzz dilates unconditionally. **deep review**
 
 ## Architecture
 
@@ -137,6 +133,13 @@ dominated by compositor/surface, not text math.
 
 - [ ] naga_oil for shader dedup - `#import` to share code between
   simple_shader.wgsl and shader.wgsl. Eliminates copy-paste divergence.
+- [ ] Solver cancellation regression test - GPU test with a constructed
+  atlas curve pinning the exactly-linear-coordinate witness: active-axis
+  q = (-1000, 0, 1000), render_coord 488.0039978027344; shifted-coords
+  `a` computation yields -3.05e-5 and root t = 2.0 instead of the linear
+  root 0.744. Fixed by computing a,b unshifted (this loop); needs a raw
+  atlas-blob + pixel-readback harness that tests/ currently lacks.
+  **deep review**
 - [ ] Texture growth stress test with CJK, mixed fonts
 
 ### Parked
