@@ -245,6 +245,7 @@ impl RasterState {
         font_system: &mut cosmic_text::FontSystem,
         swash_cache: &mut cosmic_text::SwashCache,
         glyphs: &[NonVectorGlyph],
+        scroll: [f32; 2],
     ) -> Vec<RasterVertex> {
         self.frame_used = 0;
         let mut instances = Vec::new();
@@ -331,11 +332,7 @@ impl RasterState {
                 // Cull against clip bounds
                 let w_f = cached.atlas_w as f32;
                 let h_f = cached.atlas_h as f32;
-                if x + w_f < nv.clip_bounds[0] as f32
-                    || x > nv.clip_bounds[2] as f32
-                    || y + h_f < nv.clip_bounds[1] as f32
-                    || y > nv.clip_bounds[3] as f32
-                {
+                if !raster_rect_visible([x, y, w_f, h_f], scroll, nv.clip_bounds) {
                     continue;
                 }
 
@@ -449,6 +446,19 @@ impl RasterState {
     }
 }
 
+/// CPU-side visibility test for a raster quad. Scroll is added here (the
+/// shader adds the same uniform to the emitted, unscrolled `screen_pos`),
+/// while `clip_bounds` stays in fixed screen coordinates.
+fn raster_rect_visible(rect: [f32; 4], scroll: [f32; 2], clip_bounds: [i32; 4]) -> bool {
+    let [x, y, width, height] = rect;
+    let x = x + scroll[0];
+    let y = y + scroll[1];
+    !(x + width < clip_bounds[0] as f32
+        || x > clip_bounds[2] as f32
+        || y + height < clip_bounds[1] as f32
+        || y > clip_bounds[3] as f32)
+}
+
 fn create_atlas_texture(device: &Device, size: u32) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("raster text atlas"),
@@ -531,5 +541,23 @@ fn to_premultiplied_rgba(image: &cosmic_text::SwashImage) -> Vec<u8> {
             }
             data
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::raster_rect_visible;
+
+    #[test]
+    fn raster_culling_applies_scroll_to_position_not_clip() {
+        let rect = [100.0, 100.0, 10.0, 10.0];
+        let clip = [0, 0, 50, 50];
+        // Off-clip without scroll, brought into view by negative scroll.
+        assert!(!raster_rect_visible(rect, [0.0, 0.0], clip));
+        assert!(raster_rect_visible(rect, [-60.0, -60.0], clip));
+        // Pushed out the other side by enough scroll.
+        assert!(!raster_rect_visible(rect, [-111.0, -60.0], clip));
+        // Fractional scroll at the exact inclusive edge.
+        assert!(raster_rect_visible(rect, [-110.0, -60.0], clip));
     }
 }

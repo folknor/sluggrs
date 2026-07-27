@@ -205,6 +205,7 @@ impl TextAtlas {
         queue: &Queue,
         font_system: &mut cosmic_text::FontSystem,
         glyphs: &[NonVectorGlyph],
+        scroll: [f32; 2],
     ) -> Vec<RasterVertex> {
         if glyphs.is_empty() {
             return Vec::new();
@@ -213,7 +214,7 @@ impl TextAtlas {
             Some(r) => r,
             None => return Vec::new(),
         };
-        raster.rasterize_glyphs(queue, font_system, &mut self.swash_cache, glyphs)
+        raster.rasterize_glyphs(queue, font_system, &mut self.swash_cache, glyphs, scroll)
     }
 
     /// Set the raster pipeline and atlas bind group, then draw from the

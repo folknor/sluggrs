@@ -35,6 +35,7 @@ struct CachedFont {
 struct CachedTextArea {
     left: f32,
     top: f32,
+    scroll: [f32; 2],
     scale: f32,
     bounds: TextBounds,
     default_color: cosmic_text::Color,
@@ -42,6 +43,9 @@ struct CachedTextArea {
     instances: Vec<GlyphInstance>,
     distinct_keys: Vec<GlyphKey>,
     non_vector_glyphs: Vec<NonVectorGlyph>,
+    /// Whether the cached candidates cover the entire area, so a later
+    /// placement-only change can re-cull them without re-walking the buffer.
+    complete: bool,
 }
 
 /// One glyph queued for instance packing in pass 3 (cache-miss areas only).
@@ -61,6 +65,7 @@ struct MissArea<'a> {
     bounds_max_x: i32,
     bounds_max_y: i32,
     default_color: [f32; 4],
+    all_runs_included: bool,
 }
 
 /// Plan record per text area produced by pass 1 and consumed by pass 3 in input order.
@@ -68,16 +73,42 @@ enum AreaPlan<'a> {
     HitDirect {
         buffer_ptr: *const cosmic_text::Buffer,
     },
-    HitShifted {
+    ReCull {
         buffer_ptr: *const cosmic_text::Buffer,
         dx: f32,
         dy: f32,
-        bounds_min_x: f32,
-        bounds_min_y: f32,
-        bounds_max_x: f32,
-        bounds_max_y: f32,
+        left: f32,
+        top: f32,
+        bounds: [i32; 4],
+        scroll: [f32; 2],
     },
     Miss(MissArea<'a>),
+}
+
+/// How a cached area relates to the requested placement (`left`, `top`,
+/// viewport scroll). See `classify_placement`.
+enum PlacementClass {
+    Direct,
+    ReCull,
+    Miss,
+}
+
+/// A cache write produced during pass 3 emission, applied only after every
+/// plan has emitted so that plans for a shared buffer pointer all see the
+/// pre-frame cache state they were classified against.
+enum PendingCacheWrite {
+    Insert {
+        buffer_ptr: *const cosmic_text::Buffer,
+        area: CachedTextArea,
+    },
+    Update {
+        buffer_ptr: *const cosmic_text::Buffer,
+        left: f32,
+        top: f32,
+        scroll: [f32; 2],
+        instances: Vec<GlyphInstance>,
+        complete: bool,
+    },
 }
 
 /// A text renderer that uses the Slug algorithm to render text into an
@@ -191,8 +222,8 @@ impl TextRenderer {
             self.cached_resolution = resolution;
         }
 
-        let mut all_hit = true;
-        let mut any_position_changed = false;
+        // Only an all-direct-hit frame may reuse the vector vertex buffer.
+        let mut all_direct_hits = true;
         let mut used_ptrs: Vec<*const cosmic_text::Buffer> = Vec::new();
 
         let mut plans: Vec<AreaPlan<'a>> = Vec::new();
@@ -219,52 +250,61 @@ impl TextRenderer {
                 if glyphs_valid {
                     let dx = text_area.left - cached.left;
                     let dy = text_area.top - cached.top;
-                    if dx == 0.0 && dy == 0.0 {
-                        plans.push(AreaPlan::HitDirect { buffer_ptr });
-                    } else {
-                        any_position_changed = true;
-                        let bounds_min_x = text_area.bounds.left.max(0) as f32;
-                        let bounds_min_y = text_area.bounds.top.max(0) as f32;
-                        let bounds_max_x =
-                            text_area.bounds.right.min(resolution.width as i32) as f32;
-                        let bounds_max_y =
-                            text_area.bounds.bottom.min(resolution.height as i32) as f32;
-                        plans.push(AreaPlan::HitShifted {
-                            buffer_ptr,
-                            dx,
-                            dy,
-                            bounds_min_x,
-                            bounds_min_y,
-                            bounds_max_x,
-                            bounds_max_y,
-                        });
+                    match classify_placement(
+                        dx,
+                        dy,
+                        cached.scroll == scroll,
+                        cached.complete,
+                        !cached.non_vector_glyphs.is_empty(),
+                    ) {
+                        PlacementClass::Direct => {
+                            plans.push(AreaPlan::HitDirect { buffer_ptr });
+                            continue;
+                        }
+                        PlacementClass::ReCull => {
+                            all_direct_hits = false;
+                            plans.push(AreaPlan::ReCull {
+                                buffer_ptr,
+                                dx,
+                                dy,
+                                left: text_area.left,
+                                top: text_area.top,
+                                bounds: clipped_bounds(text_area.bounds, resolution),
+                                scroll,
+                            });
+                            continue;
+                        }
+                        // Fall through to the miss path below.
+                        PlacementClass::Miss => {}
                     }
-                    continue;
                 }
             }
 
-            all_hit = false;
-            let bounds_min_x = text_area.bounds.left.max(0);
-            let bounds_min_y = text_area.bounds.top.max(0);
-            let bounds_max_x = text_area.bounds.right.min(resolution.width as i32);
-            let bounds_max_y = text_area.bounds.bottom.min(resolution.height as i32);
-
-            let is_run_visible = |run: &cosmic_text::LayoutRun| {
-                let start_y = (text_area.top + run.line_top * text_area.scale) as i32;
-                let end_y = start_y + (run.line_height * text_area.scale) as i32;
-                start_y <= bounds_max_y && bounds_min_y <= end_y
-            };
-
-            let layout_runs = text_area
-                .buffer
-                .layout_runs()
-                .skip_while(|run| !is_run_visible(run))
-                .take_while(is_run_visible);
+            all_direct_hits = false;
+            let [bounds_min_x, bounds_min_y, bounds_max_x, bounds_max_y] =
+                clipped_bounds(text_area.bounds, resolution);
 
             let default_color = color_to_f32(text_area.default_color);
             let work_start = work.len();
 
-            for run in layout_runs {
+            let mut all_runs_included = true;
+            let mut started_visible_range = false;
+            for run in text_area.buffer.layout_runs() {
+                if !run_is_visible(
+                    text_area.top,
+                    text_area.scale,
+                    scroll[1],
+                    &run,
+                    bounds_min_y,
+                    bounds_max_y,
+                ) {
+                    all_runs_included = false;
+                    if started_visible_range {
+                        break;
+                    }
+                    continue;
+                }
+                started_visible_range = true;
                 let line_y = run.line_y;
                 for glyph in run.glyphs {
                     let key = GlyphKey::from_layout_glyph(glyph);
@@ -285,6 +325,7 @@ impl TextRenderer {
                 bounds_max_x,
                 bounds_max_y,
                 default_color,
+                all_runs_included,
             }));
         }
 
@@ -299,6 +340,10 @@ impl TextRenderer {
         }
 
         // ===== Pass 3: emit instances per area in input order =====
+        // Cache writes are deferred so every plan emits from the pre-frame
+        // cache state it was classified against, even when several TextAreas
+        // share one buffer pointer (iced deduplicates identical text).
+        let mut pending_cache_writes: Vec<PendingCacheWrite> = Vec::new();
         for plan in &plans {
             match plan {
                 AreaPlan::HitDirect { buffer_ptr } => {
@@ -306,60 +351,51 @@ impl TextRenderer {
                     self.instances.extend_from_slice(&cached.instances);
                     non_vector_collector.extend_from_slice(&cached.non_vector_glyphs);
                 }
-                AreaPlan::HitShifted {
+                AreaPlan::ReCull {
                     buffer_ptr,
                     dx,
                     dy,
-                    bounds_min_x,
-                    bounds_min_y,
-                    bounds_max_x,
-                    bounds_max_y,
+                    left,
+                    top,
+                    bounds,
+                    scroll,
                 } => {
                     let cached = &self.text_area_cache[buffer_ptr];
-                    for inst in &cached.instances {
-                        let sx = inst.screen_rect[0] + dx;
-                        let sy = inst.screen_rect[1] + dy;
-                        let sw = inst.screen_rect[2];
-                        let sh = inst.screen_rect[3];
-                        let vx = sx + scroll[0];
-                        let vy = sy + scroll[1];
-                        if vx + sw + 1.0 < *bounds_min_x
-                            || vx - 1.0 > *bounds_max_x
-                            || vy + sh + 1.0 < *bounds_min_y
-                            || vy - 1.0 > *bounds_max_y
-                        {
-                            continue;
-                        }
-                        let mut adjusted = *inst;
-                        adjusted.screen_rect[0] = sx;
-                        adjusted.screen_rect[1] = sy;
-                        self.instances.push(adjusted);
-                    }
-                    let dx_i = dx.round() as i32;
-                    let dy_i = dy.round() as i32;
-                    for nv in &cached.non_vector_glyphs {
-                        let mut adjusted = nv.clone();
-                        adjusted.physical.x += dx_i;
-                        adjusted.physical.y += dy_i;
-                        adjusted.clip_bounds = [
-                            *bounds_min_x as i32,
-                            *bounds_min_y as i32,
-                            *bounds_max_x as i32,
-                            *bounds_max_y as i32,
-                        ];
-                        non_vector_collector.push(adjusted);
-                    }
+                    let (instances, complete) = re_cull_vector_instances(
+                        &cached.instances,
+                        cached.complete,
+                        *dx,
+                        *dy,
+                        *scroll,
+                        *bounds,
+                    );
+                    non_vector_collector.extend_from_slice(&cached.non_vector_glyphs);
+                    self.instances.extend_from_slice(&instances);
+                    // Deferred: multiple TextAreas can share one buffer, and
+                    // later plans for this pointer were classified against
+                    // (and must emit from) the pre-frame cache state.
+                    pending_cache_writes.push(PendingCacheWrite::Update {
+                        buffer_ptr: *buffer_ptr,
+                        left: *left,
+                        top: *top,
+                        scroll: *scroll,
+                        instances,
+                        complete,
+                    });
                 }
                 AreaPlan::Miss(area) => {
                     let mut area_instances: Vec<GlyphInstance> = Vec::new();
                     let mut area_non_vector: Vec<NonVectorGlyph> = Vec::new();
                     let mut area_keys: Vec<GlyphKey> = Vec::new();
+                    let mut complete = area.all_runs_included;
 
                     let text_area = &area.text_area;
-                    let bounds_min_x_f = area.bounds_min_x as f32;
-                    let bounds_min_y_f = area.bounds_min_y as f32;
-                    let bounds_max_x_f = area.bounds_max_x as f32;
-                    let bounds_max_y_f = area.bounds_max_y as f32;
+                    let bounds = [
+                        area.bounds_min_x,
+                        area.bounds_min_y,
+                        area.bounds_max_x,
+                        area.bounds_max_y,
+                    ];
 
                     for wi in &work[area.work_start..area.work_end] {
                         let glyph = wi.glyph;
@@ -402,15 +438,10 @@ impl TextRenderer {
                                 let screen_w = (max_x - min_x) * scale;
                                 let screen_h = (max_y - min_y) * scale;
 
-                                let vis_x = screen_x + scroll[0];
-                                let vis_y = screen_y + scroll[1];
-                                if vis_x + screen_w + 1.0 >= bounds_min_x_f
-                                    && vis_x - 1.0 <= bounds_max_x_f
-                                    && vis_y + screen_h + 1.0 >= bounds_min_y_f
-                                    && vis_y - 1.0 <= bounds_max_y_f
-                                {
+                                let screen_rect = [screen_x, screen_y, screen_w, screen_h];
+                                if vector_rect_visible(screen_rect, scroll, bounds) {
                                     area_instances.push(GlyphInstance {
-                                        screen_rect: [screen_x, screen_y, screen_w, screen_h],
+                                        screen_rect,
                                         em_rect: [min_x, min_y, max_x, max_y],
                                         band_transform: [0.0; 4],
                                         glyph_data: [
@@ -427,7 +458,11 @@ impl TextRenderer {
                                         ppem: glyph.font_size * text_area.scale,
                                         _pad: [0.0; 2],
                                     });
+                                } else {
+                                    complete = false;
                                 }
+                            } else {
+                                complete = false;
                             }
                             continue;
                         }
@@ -454,13 +489,9 @@ impl TextRenderer {
                                     let screen_w = (max_x - min_x) * scale;
                                     let screen_h = (max_y - min_y) * scale;
 
-                                    let vis_x = screen_x + scroll[0];
-                                    let vis_y = screen_y + scroll[1];
-                                    if vis_x + screen_w + 1.0 < bounds_min_x_f
-                                        || vis_x - 1.0 > bounds_max_x_f
-                                        || vis_y + screen_h + 1.0 < bounds_min_y_f
-                                        || vis_y - 1.0 > bounds_max_y_f
-                                    {
+                                    let screen_rect = [screen_x, screen_y, screen_w, screen_h];
+                                    if !vector_rect_visible(screen_rect, scroll, bounds) {
+                                        complete = false;
                                         continue;
                                     }
 
@@ -471,7 +502,7 @@ impl TextRenderer {
                                     };
 
                                     area_instances.push(GlyphInstance {
-                                        screen_rect: [screen_x, screen_y, screen_w, screen_h],
+                                        screen_rect,
                                         em_rect: [min_x, min_y, max_x, max_y],
                                         band_transform: layer.entry.band_transform,
                                         glyph_data: [
@@ -486,6 +517,8 @@ impl TextRenderer {
                                         _pad: [0.0; 2],
                                     });
                                 }
+                            } else {
+                                complete = false;
                             }
                             continue;
                         }
@@ -502,13 +535,9 @@ impl TextRenderer {
                         let screen_w = (max_x - min_x) * scale;
                         let screen_h = (max_y - min_y) * scale;
 
-                        let vis_x = screen_x + scroll[0];
-                        let vis_y = screen_y + scroll[1];
-                        if vis_x + screen_w + 1.0 < bounds_min_x_f
-                            || vis_x - 1.0 > bounds_max_x_f
-                            || vis_y + screen_h + 1.0 < bounds_min_y_f
-                            || vis_y - 1.0 > bounds_max_y_f
-                        {
+                        let screen_rect = [screen_x, screen_y, screen_w, screen_h];
+                        if !vector_rect_visible(screen_rect, scroll, bounds) {
+                            complete = false;
                             continue;
                         }
 
@@ -518,7 +547,7 @@ impl TextRenderer {
                         };
 
                         area_instances.push(GlyphInstance {
-                            screen_rect: [screen_x, screen_y, screen_w, screen_h],
+                            screen_rect,
                             em_rect: [min_x, min_y, max_x, max_y],
                             band_transform: entry.band_transform,
                             glyph_data: [entry.band_offset, entry.band_max_x, entry.band_max_y, 0],
@@ -536,9 +565,10 @@ impl TextRenderer {
                     non_vector_collector.extend_from_slice(&area_non_vector);
 
                     let buffer_ptr: *const cosmic_text::Buffer = text_area.buffer;
-                    self.text_area_cache.insert(
+                    // Deferred for the same shared-buffer reason as ReCull.
+                    pending_cache_writes.push(PendingCacheWrite::Insert {
                         buffer_ptr,
-                        CachedTextArea {
+                        area: CachedTextArea {
                             left: text_area.left,
                             top: text_area.top,
                             scale: text_area.scale,
@@ -548,8 +578,36 @@ impl TextRenderer {
                             instances: area_instances,
                             distinct_keys: area_keys,
                             non_vector_glyphs: area_non_vector,
+                            scroll,
+                            complete,
                         },
-                    );
+                    });
+                }
+            }
+        }
+
+        // Apply cache writes in plan order (last occurrence of a shared
+        // buffer pointer determines the retained state).
+        for write in pending_cache_writes {
+            match write {
+                PendingCacheWrite::Insert { buffer_ptr, area } => {
+                    self.text_area_cache.insert(buffer_ptr, area);
+                }
+                PendingCacheWrite::Update {
+                    buffer_ptr,
+                    left,
+                    top,
+                    scroll,
+                    instances,
+                    complete,
+                } => {
+                    if let Some(cached) = self.text_area_cache.get_mut(&buffer_ptr) {
+                        cached.left = left;
+                        cached.top = top;
+                        cached.scroll = scroll;
+                        cached.instances = instances;
+                        cached.complete = complete;
+                    }
                 }
             }
         }
@@ -559,16 +617,12 @@ impl TextRenderer {
 
         atlas.flush_uploads(queue);
 
-        self.raster_instances = atlas.rasterize_glyphs(queue, font_system, &non_vector_collector);
+        self.raster_instances =
+            atlas.rasterize_glyphs(queue, font_system, &non_vector_collector, scroll);
         self.raster_glyphs_to_render = self.raster_instances.len() as u32;
 
-        // Whole-frame fast path: if all areas hit cache with no position changes,
-        // the GPU vertex buffer already contains the correct data and raster
-        // instances haven't changed.
-        if all_hit
-            && !any_position_changed
-            && self.instances.len() == self.glyphs_to_render as usize
-        {
+        // Only direct hits leave the vector vertex buffer unchanged.
+        if all_direct_hits && self.instances.len() == self.glyphs_to_render as usize {
             self.upload_raster_vertices(device, queue);
             self.prepared_atlas_generation = atlas_gen;
             return Ok(());
@@ -888,12 +942,97 @@ impl TextRenderer {
     pub fn trim(&mut self) {
         // Raster trim is handled by TextAtlas::trim()
     }
+
+    /// Vector instances emitted by the last `prepare()` call.
+    ///
+    /// This exists for integration tests that assert placement without a
+    /// render pass; it is not part of the stable API.
+    #[doc(hidden)]
+    pub fn prepared_instances(&self) -> &[GlyphInstance] {
+        &self.instances
+    }
 }
 
 /// Determine the band count for a glyph based on its curve complexity.
 /// Matches harfbuzz: 1:1 up to a cap of 16 bands.
 fn band_count_for_curves(num_curves: usize) -> u32 {
     (num_curves as u32).clamp(1, 16)
+}
+
+fn clipped_bounds(bounds: TextBounds, resolution: crate::types::Resolution) -> [i32; 4] {
+    [
+        bounds.left.max(0),
+        bounds.top.max(0),
+        bounds.right.min(resolution.width as i32),
+        bounds.bottom.min(resolution.height as i32),
+    ]
+}
+
+fn run_is_visible(
+    top: f32,
+    scale: f32,
+    scroll_y: f32,
+    run: &cosmic_text::LayoutRun,
+    bounds_min_y: i32,
+    bounds_max_y: i32,
+) -> bool {
+    let start_y = top + run.line_top * scale + scroll_y;
+    let end_y = start_y + run.line_height * scale;
+    start_y <= bounds_max_y as f32 && bounds_min_y as f32 <= end_y
+}
+
+fn vector_rect_visible(screen_rect: [f32; 4], scroll: [f32; 2], bounds: [i32; 4]) -> bool {
+    let [x, y, width, height] = screen_rect;
+    let x = x + scroll[0];
+    let y = y + scroll[1];
+    x + width + 1.0 >= bounds[0] as f32
+        && x - 1.0 <= bounds[2] as f32
+        && y + height + 1.0 >= bounds[1] as f32
+        && y - 1.0 <= bounds[3] as f32
+}
+
+/// Classify a placement-valid cache hit. `Direct` when nothing about the
+/// placement changed; `ReCull` when the cached candidate set is complete and
+/// can be shifted/re-culled (raster candidates forbid a left/top shift
+/// because `LayoutGlyph::physical` recomputes integer placement and subpixel
+/// bins from the origin); `Miss` otherwise.
+fn classify_placement(
+    dx: f32,
+    dy: f32,
+    scroll_matches: bool,
+    complete: bool,
+    has_raster_candidates: bool,
+) -> PlacementClass {
+    if dx == 0.0 && dy == 0.0 && scroll_matches {
+        return PlacementClass::Direct;
+    }
+    if complete && (!has_raster_candidates || (dx == 0.0 && dy == 0.0)) {
+        return PlacementClass::ReCull;
+    }
+    PlacementClass::Miss
+}
+
+fn re_cull_vector_instances(
+    instances: &[GlyphInstance],
+    complete: bool,
+    dx: f32,
+    dy: f32,
+    scroll: [f32; 2],
+    bounds: [i32; 4],
+) -> (Vec<GlyphInstance>, bool) {
+    let mut visible = Vec::with_capacity(instances.len());
+    let mut complete = complete;
+    for instance in instances {
+        let mut adjusted = *instance;
+        adjusted.screen_rect[0] += dx;
+        adjusted.screen_rect[1] += dy;
+        if vector_rect_visible(adjusted.screen_rect, scroll, bounds) {
+            visible.push(adjusted);
+        } else {
+            complete = false;
+        }
+    }
+    (visible, complete)
 }
 
 /// Convert a cosmic_text Color to normalized [f32; 4].
@@ -913,4 +1052,95 @@ fn next_copy_buffer_size(size: u64) -> u64 {
 
 fn zero_depth(_: usize) -> f32 {
     0.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(line_top: f32, line_height: f32) -> cosmic_text::LayoutRun<'static> {
+        cosmic_text::LayoutRun {
+            line_i: 0,
+            text: "",
+            rtl: false,
+            glyphs: &[],
+            decorations: &[],
+            line_y: 0.0,
+            line_top,
+            line_height,
+            line_w: 0.0,
+        }
+    }
+
+    #[test]
+    fn run_visibility_applies_fractional_and_negative_scroll_at_inclusive_edges() {
+        let layout_run = run(10.0, 5.0);
+        assert!(run_is_visible(0.0, 1.0, -15.0, &layout_run, 0, 10));
+        assert!(run_is_visible(0.5, 1.0, -10.5, &layout_run, 0, 5));
+        assert!(!run_is_visible(0.0, 1.0, -15.1, &layout_run, 0, 10));
+    }
+
+    #[test]
+    fn vector_culling_uses_scroll_and_one_pixel_margin() {
+        let rect = [10.0, 10.0, 5.0, 5.0];
+        assert!(vector_rect_visible(rect, [-16.0, 0.0], [0, 0, 10, 20]));
+        assert!(!vector_rect_visible(rect, [-16.1, 0.0], [0, 0, 10, 20]));
+    }
+
+    #[test]
+    fn placement_classification_covers_all_transitions() {
+        use PlacementClass::{Direct, Miss, ReCull};
+        // Exact placement: direct hit regardless of completeness or raster.
+        assert!(matches!(
+            classify_placement(0.0, 0.0, true, false, true),
+            Direct
+        ));
+        // Scroll-only change: re-cull, even with raster candidates.
+        assert!(matches!(
+            classify_placement(0.0, 0.0, false, true, true),
+            ReCull
+        ));
+        // Position change, complete, vector-only: re-cull.
+        assert!(matches!(
+            classify_placement(2.5, -1.0, true, true, false),
+            ReCull
+        ));
+        // Position change with raster candidates: miss.
+        assert!(matches!(
+            classify_placement(0.0, 1.0, true, true, true),
+            Miss
+        ));
+        // Incomplete cache: any placement change is a miss.
+        assert!(matches!(
+            classify_placement(1.0, 0.0, true, false, false),
+            Miss
+        ));
+        assert!(matches!(
+            classify_placement(0.0, 0.0, false, false, false),
+            Miss
+        ));
+    }
+
+    #[test]
+    fn re_cull_keeps_completeness_only_when_every_vector_survives() {
+        let instance = GlyphInstance {
+            screen_rect: [2.0, 2.0, 2.0, 2.0],
+            em_rect: [0.0; 4],
+            band_transform: [0.0; 4],
+            glyph_data: [0; 4],
+            color: [0.0; 4],
+            depth: 0.0,
+            ppem: 0.0,
+            _pad: [0.0; 2],
+        };
+        let (visible, complete) =
+            re_cull_vector_instances(&[instance], true, 1.5, -0.5, [0.0, 0.0], [0, 0, 10, 10]);
+        assert!(complete);
+        assert_eq!(visible[0].screen_rect[..2], [3.5, 1.5]);
+
+        let (visible, complete) =
+            re_cull_vector_instances(&[instance], true, -10.0, 0.0, [0.0, 0.0], [0, 0, 10, 10]);
+        assert!(visible.is_empty());
+        assert!(!complete);
+    }
 }

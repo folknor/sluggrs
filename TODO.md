@@ -97,9 +97,16 @@ dominated by compositor/surface, not text math.
   into color.w (or similar) to shrink to 80 or 64 bytes. See also blob
   header approach under GPU targets. **perf, arch review**
 
-- [ ] **Scroll offset has no public API** - Viewport::update only accepts
-  Resolution, scroll_offset in Params is always [0,0]. Shader reads it but
-  unreachable from library API. **wgpu, arch review**
+- [ ] **iced wrapper does not expose scroll offset** - sluggrs exposes
+  `Viewport::set_scroll_offset`, but the iced wrapper never calls it, so iced
+  rendering always uses `[0,0]`. **wgpu, arch review**
+
+- [ ] **Shared-buffer areas ping-pong the retained cache** - the cache is
+  keyed by buffer pointer and holds one placement, so N TextAreas sharing a
+  buffer at different placements get at most one HitDirect per frame; the
+  rest ReCull every frame (cheap but nonzero). Keying by (pointer,
+  placement) or a per-area identity would let all of them go direct. Low
+  priority. **deep review**
 
 - [ ] **TextRenderer/TextAtlas coupling** - renderer reaches into atlas via
   pub(crate). Policy, cache state, and upload orchestration spread across

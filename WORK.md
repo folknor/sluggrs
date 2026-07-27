@@ -1,54 +1,73 @@
 # WORK
 
-Cold-frame stalls from glyph storage buffer growth in sluggrs.
+Scroll offset breaks culling and the retained text-area cache.
 
-## Problem
+## Symptom
 
-All in `src/text_atlas.rs`:
+In `examples/demo2.rs` (zoom via mousewheel, pan via drag, both applied
+through `Viewport::set_scroll_offset` and viewport resolution): zooming in
+and panning down permanently cuts off the bottom of the content. Zooming
+back out (which changes TextArea bounds and invalidates caches) brings it
+back.
 
-- `INITIAL_BUFFER_CAPACITY = 8192` texels; one texel is 8 bytes (2 packed
-  i32), so the initial GPU storage buffer is 64 KiB (`create_glyph_buffer`).
-- `commit_mono()` and `upload_color_v1()` append glyph blobs. When
-  `new_end > buffer_capacity`, `grow_buffer()` doubles until it fits,
-  creates a new wgpu buffer and bind group, and resets
-  `gpu_flush_cursor = 0`, which makes the next `flush_uploads()` rewrite
-  the entire CPU-side `buffer_data` to the GPU.
-- Growths happen mid-prepare, per glyph, so one cold frame triggers
-  several buffer recreations and the final flush is preceded by
-  progressively larger wasted re-upload state.
-- `trim()` uses `buffer_capacity > INITIAL_BUFFER_CAPACITY * 4` as its
-  "substantial growth" trigger for atlas reset; `reset_atlas()` recreates
-  at `INITIAL_BUFFER_CAPACITY`. Any capacity change must keep this
-  heuristic coherent.
+## Root cause (verified by reading, needs independent confirmation)
 
-Measured workloads (brokkr results.db, commit e98d6d1):
+All in `src/text_renderer.rs`, `prepare_with_depth()`:
 
-- default render bench: 93 glyphs, 22,139 texels (177 KiB) final. The
-  cold frame grows 8192 to 32768 (2 growths).
-- email2 mixed-locale bench: 367 glyphs, 123,149 texels (985 KiB) final.
-  The cold frame grows 8192 to 131072 (4 growths).
+1. Pass 1's `is_run_visible` culls layout runs against the area bounds
+   using `text_area.top + run.line_top * scale` WITHOUT the viewport
+   scroll offset, while pass 3's instance culling adds it
+   (`vis_y = screen_y + scroll[1]`). The two culls disagree whenever
+   scroll is nonzero: runs that scroll would bring into view are dropped
+   before instances are ever built.
 
-Even the smallest workload outgrows the initial buffer immediately.
-Per-glyph cost observed: roughly 240-340 texels (latin vs CJK-heavy).
+2. The retained `CachedTextArea` stores the culled instance list, and its
+   validity check (redraw flag, scale, bounds, default_color,
+   atlas_generation) does not include scroll. After a scroll change,
+   `HitDirect` replays the stale pre-culled list and `HitShifted` re-culls
+   only the instances that survived the original cull. Content culled
+   under one scroll offset never reappears until something else (bounds
+   or resolution change) forces a full miss rebuild.
 
-## Goal
+Note: iced never sets a scroll offset (it is always [0,0]; there is no
+public API for it, see TODO.md), so iced rendering is unaffected. The bug
+bites any consumer that uses `Viewport::set_scroll_offset`, currently the
+demos.
 
-Eliminate growth-copy stalls on the first cold frame. Candidate
-directions from the backlog (pick, combine, or improve):
+## Performance constraints
 
-1. Raise the initial capacity (backlog suggests 1-4 MB).
-2. Predict required size and pre-allocate once per prepare: misses are
-   known after the classify pass, and `prep::prepare_mono` produces each
-   blob (including `blob_size`) before `commit_mono` writes it, so a
-   frame's total could be summed before any commit.
-3. At minimum, collapse multiple growths within one prepare into one.
+- The static-frame fast path is the crown jewel: all-hit frames with no
+  position changes skip instance building and vertex upload entirely
+  (warm prepare ~5us). Any fix must preserve that path unchanged.
+- The scroll uniform exists so scrolling does not require re-shaping.
+  Re-building instances on scroll change is acceptable (the mixed path
+  costs ~100-226us per frame on measured workloads); re-shaping is not
+  needed since cosmic-text buffers are untouched.
 
-Deliverables for this session: verify the problem statement above against
-the code, then produce a concrete implementation plan (files, functions,
-edge cases). Consider at least: coherence of the `trim()` reset heuristic,
-the `max_storage_buffer_binding_size` clamp in `commit_mono()`, the COLRv1
-path (`upload_color_v1` already computes `total_blob_size` before
-appending), and the retained-cache `generation` counter on `TextAtlas`.
+## Candidate directions (pick, combine, or improve)
+
+1. Treat scroll as part of cache validity: store the scroll offset in
+   `CachedTextArea`; a scroll mismatch demotes the area to the miss path
+   (full rebuild with scroll-aware run culling). `is_run_visible` adds
+   `scroll[1]` to its y-range test so the rebuild contains exactly what
+   is visible under the current scroll. Simple and correct; scrolling
+   frames pay the mixed-path rebuild cost.
+2. Cache unculled instances and cull at emit time. Preserves a cheap
+   scroll path (re-cull + re-upload, no instance rebuild), but requires
+   dropping or rethinking run-level culling for cached areas, which
+   exists to keep cold cost proportional to the visible portion of large
+   buffers. Higher risk, larger change.
+
+## Deliverables for this session
+
+Verify the root-cause analysis against the code (challenge anything that
+does not match), then produce a concrete implementation plan: files,
+functions, edge cases, and which candidate direction (or a better one)
+to take. Consider at least: interaction of scroll with `HitShifted`'s
+dx/dy adjustment, the whole-frame fast-path condition
+(`all_hit && !any_position_changed`), non-vector (raster) glyphs whose
+clip bounds are stored per instance, and what invariants tests can pin
+without a GPU.
 
 ## Constraints
 
@@ -61,74 +80,115 @@ appending), and the retained-cache `generation` counter on `TextAtlas`.
 
 ## Plan
 
-Agreed after independent verification. Core idea: since `flush_uploads()`
-is the only GPU write and runs once per prepare, the GPU buffer never
-needs to grow mid-prepare. Commits become CPU-only appends; the flush
-sizes the GPU buffer exactly once.
+Agreed after two consolidation rounds. Core idea: exact placement
+(`left`, `top`, scroll) becomes part of cache validity; a placement-only
+change re-culls the cached instance set when that set is provably
+complete, and rebuilds otherwise. The unsound `HitShifted` rounding path
+is removed. Additionally verified during planning: the raster path has
+its own scroll bug (CPU cull at `raster_text.rs:334` ignores scroll, the
+shader at `raster_text.wgsl:31` applies it), and a `left/top` shift is
+never safe for cached raster glyphs because `LayoutGlyph::physical`
+recomputes integer placement and the subpixel cache-key bin from the new
+origin.
 
-All in `src/text_atlas.rs` unless noted.
+All in `src/text_renderer.rs` unless noted.
 
-1. Raise `INITIAL_BUFFER_CAPACITY` from 8192 to 131072 texels (1 MiB).
-   Covers both measured workloads (22k and 123k texels) with zero growth.
-   Fix its doc comment while there: a texel is 8 bytes (2 packed i32),
-   not 16.
+1. `CachedTextArea` gains `scroll: [f32; 2]` and `complete: bool`.
+   `complete` documents that the cache retains every placement-dependent
+   candidate needed for re-culling: no run skipped by run culling, no
+   mono/COLRv1 instance rejected, no individual COLRv0 layer rejected.
+   Raster candidates always count as retained (they are stored before
+   raster clipping).
 
-2. Cache two limits at construction time:
-   - actual initial capacity: the constant clamped to the device limit;
-   - max capacity: `max_storage_buffer_binding_size / BYTES_PER_TEXEL`.
-   `reset_atlas()` recreates at the actual initial capacity, not the raw
-   constant.
+2. Add an `AreaPlan::ReCull` variant (buffer pointer, dx, dy, current
+   bounds, current scroll, state to update the cache after emission).
 
-3. Add one checked validation helper used by both `commit_mono()` and
-   `upload_color_v1()` before they touch `buffer_data` or `buffer_cursor`:
-   - `checked_add` for `buffer_cursor + blob_size`;
-   - reject ends beyond the cached max capacity with
-     `PrepareError::AtlasFull`;
-   - keep the existing per-blob 65535 check in the mono path.
-   COLRv1 blob-size construction switches its usize-to-u32 conversions,
-   multiplications, and offset additions to checked forms feeding the same
-   error.
+3. Classification (existing redraw/scale/bounds/color/atlas-generation/
+   glyph-residency checks remain prerequisites for both retained paths):
+   - same `left`, `top`, scroll: `HitDirect`;
+   - placement changed AND `cached.complete` AND (no raster candidates
+     OR `dx == 0.0 && dy == 0.0`): `ReCull`;
+   - otherwise: `Miss`. `HitShifted` is removed, including its rounded
+     raster dx/dy adjustment.
 
-4. Defer GPU growth to `flush_uploads()`:
-   - `commit_mono()` / `upload_color_v1()` only append to CPU storage
-     after validation (no `grow_buffer` calls, no Device needed);
-   - at the start of `flush_uploads()`, if `buffer_cursor` exceeds
-     `buffer_capacity`, allocate once: next power of two, capped at max
-     capacity, never below the required end; rebuild the bind group;
-     reset `gpu_flush_cursor` to 0; then do the existing single write.
-   Larger-than-initial prepares get exactly one growth per frame.
+4. Replace the `skip_while`/`take_while` run iteration with an explicit
+   loop over a shared scroll-aware run predicate (pure helper, f32
+   arithmetic: `start_y = top + line_top * scale + scroll_y`,
+   `end_y = start_y + line_height * scale`, inclusive comparison against
+   clipped bounds). Preserve early-stop; record
+   `all_runs_included = false` when a run is skipped or the visible
+   range terminates early.
 
-5. Drop the now-unused `Device` parameters from `commit_mono()` and
-   `upload_color_v1()` (the atlas owns a Device clone). Update callers in
-   `src/text_renderer.rs` (`resolve_glyph_miss`, `upload_colr_v0_layers`).
+5. Miss-path completeness: `complete = all_runs_included && no vector
+   instance was rejected`. Raster CPU clipping does not affect it.
 
-6. Make the trim policy explicit: named growth-factor constant, compare
-   `buffer_capacity >= initial_capacity * 4` (the current strict `>` on
-   power-of-two capacities makes the effective threshold 8x), and document
-   the resulting policy: reset eligibility at 4 MiB, reset returns to
-   1 MiB. The in-use/cached working-set test stays unchanged.
+6. One shared pure vector rectangle-intersection helper (base
+   screen_rect, scroll, clipped bounds, the existing 1 px margin) used
+   by mono, COLRv0, COLRv1, and ReCull. Every rejected vector instance
+   or color layer clears completeness.
 
-7. Generation semantics unchanged: growth does not bump `generation`
-   (offsets stay valid; the single flush lands before prepare records its
-   generation), only `reset_atlas()` increments it.
+7. ReCull emission: shift vector `screen_rect` origins by dx/dy, re-cull
+   with current scroll and bounds via the shared helper, preserve
+   ordering; retain unchanged `NonVectorGlyph` candidates for scroll-only
+   raster reuse. Then update the cache: new `left`/`top`/scroll, cached
+   vector instances replaced by the newly visible list, `complete`
+   preserved only if nothing was rejected. (Replacing the cache after
+   clearing `complete` is safe: the next unchanged frame is `HitDirect`,
+   any later placement change rebuilds.)
 
-8. Tests (`tests/atlas_lifecycle_test.rs`):
-   - The capacity-planning arithmetic (power-of-two target, device-limit
-     clamp, overflow to `AtlasFull`) lands in a pure helper with unit
-     tests that need no GPU.
-   - Tests 7/8 currently force growth past the reset threshold with ~140
-     glyphs; that no longer works at 1 MiB initial. Add a `#[doc(hidden)]`
-     constructor taking an explicit initial capacity so lifecycle tests
-     can exercise growth and reset with small buffers, and update the
-     stale texture-era comments.
+8. Replace `all_hit`/`any_position_changed` with explicit state: only an
+   all-`HitDirect` frame takes the vector upload fast path; any `ReCull`
+   or `Miss` uploads. Keep the existing instance-count guard. The frame
+   after a re-cull is direct again (~5us path restored).
+
+9. `src/text_atlas.rs` + `src/raster_text.rs`: pass the current scroll
+   through `rasterize_glyphs` into `RasterState`; raster visibility
+   tests use `x + scroll[0]` / `y + scroll[1]` while emitted
+   `RasterVertex.screen_pos` stays unscrolled (the shader applies the
+   uniform exactly once).
+
+10. GPU-free unit tests beside the pure helpers:
+    - scroll-aware run visibility, fractional and negative offsets,
+      inclusive edges;
+    - initial completeness true with all runs included; false when a
+      run, mono glyph, COLRv1 glyph, or any COLRv0 layer is rejected;
+    - raster clipping not destroying completeness;
+    - complete vector-only cache accepts combined dx/dy/scroll re-cull;
+      raster cache accepts scroll-only, rejects left/top;
+    - re-cull preserves `complete` when every vector survives, clears it
+      when one is rejected;
+    - exact placement after re-cull takes `HitDirect`; a later placement
+      change after an incomplete re-cull takes `Miss`;
+    - any `ReCull` disables the whole-frame vector upload fast path.
+
+11. `TODO.md`: fix the stale claim that scroll has no public API
+    (sluggrs exposes `Viewport::set_scroll_offset`; the iced wrapper
+    does not use it).
 
 Out of scope for the build session: benchmarks and validation runs (the
-orchestrator does those), TODO.md bookkeeping, commits.
+orchestrator does those), commits.
 
 ## Implementation summary
 
-Raised the default glyph storage buffer to 1 MiB, cached device-clamped
-capacity limits, deferred buffer replacement to the single upload flush, and
-added checked mono/COLRv1 capacity accounting. Updated trim's 4x policy,
-lifecycle coverage for small-buffer growth/reset behavior, and pure planning
-arithmetic tests. No cargo or brokkr commands were run.
+Implemented scroll-aware retained text caching: complete vector caches can
+re-cull on placement changes, while incomplete or raster-position changes
+rebuild. Unified vector culling and run visibility now account for scroll;
+raster CPU culling does too without changing shader-space vertex positions.
+Added GPU-free helper tests and corrected the TODO note about the public
+sluggrs scroll API.
+
+## Review fixes
+
+The deep session's diff review found one defect and one coverage gap, both
+fixed by the orchestrator:
+
+- ReCull (and the pre-existing Miss insert) mutated the cache mid-emission;
+  a later plan for the same buffer pointer (iced deduplicates identical
+  text to one buffer) would emit another area's placement. All cache
+  writes are now collected as `PendingCacheWrite`s and applied after the
+  plan loop, last occurrence winning.
+- Classification extracted into a pure `classify_placement` helper and the
+  raster cull into `raster_rect_visible`, both unit-tested. Added GPU
+  regression tests: two TextAreas sharing one buffer keep distinct
+  placements across retained frames, and content culled under one scroll
+  offset reappears after the offset changes (the original demo2 symptom).

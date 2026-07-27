@@ -290,3 +290,125 @@ fn clipping_bounds_do_not_cause_errors() {
          (sluggrs relies on scissor rect clipping, not per-glyph cropping)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Retained-cache placement regressions (scroll-aware culling rework)
+// ---------------------------------------------------------------------------
+
+/// Prepare one frame containing two TextAreas that share a single buffer at
+/// different horizontal placements. Returns the emitted vector instances.
+fn prepare_shared_buffer_frame(
+    h: &mut TestHarness,
+    buffer: &cosmic_text::Buffer,
+    left_a: f32,
+    left_b: f32,
+) -> Vec<sluggrs::GlyphInstance> {
+    let encoder = h
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    let bounds = TextBounds {
+        left: 0,
+        top: 0,
+        right: 800,
+        bottom: 600,
+    };
+    let area = |left: f32| TextArea {
+        buffer,
+        left,
+        top: 0.0,
+        scale: 1.0,
+        bounds,
+        default_color: Color::rgb(255, 255, 255),
+    };
+    h.renderer
+        .prepare(
+            &h.device,
+            &h.queue,
+            &encoder,
+            &mut h.font_system,
+            &mut h.atlas,
+            &h.viewport,
+            [area(left_a), area(left_b)],
+            &mut h.swash_cache,
+        )
+        .expect("prepare should succeed");
+    h.renderer.prepared_instances().to_vec()
+}
+
+/// Two TextAreas sharing one buffer (iced deduplicates identical text) must
+/// keep distinct placements across retained-cache frames. Regression test for
+/// mid-emission cache writes leaking one area's re-culled placement into a
+/// later plan for the same buffer pointer.
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn shared_buffer_areas_keep_distinct_placements() {
+    let mut h = TestHarness::new();
+    let mut buffer = h.make_buffer("AB");
+    buffer.set_redraw(false);
+
+    for frame in 0..3 {
+        let instances = prepare_shared_buffer_frame(&mut h, &buffer, 0.0, 100.0);
+        assert!(!instances.is_empty(), "frame {frame}: no instances emitted");
+        assert_eq!(
+            instances.len() % 2,
+            0,
+            "frame {frame}: expected two equal-sized area emissions"
+        );
+        let half = instances.len() / 2;
+        for i in 0..half {
+            let delta = instances[half + i].screen_rect[0] - instances[i].screen_rect[0];
+            assert!(
+                (delta - 100.0).abs() < 0.01,
+                "frame {frame}: instance {i} placement delta {delta}, expected 100"
+            );
+        }
+    }
+}
+
+/// The original demo2 symptom: content culled under one scroll offset must
+/// reappear when the scroll offset changes, instead of the retained cache
+/// replaying the stale culled list.
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn scrolled_content_reappears_after_cache_hit() {
+    let mut h = TestHarness::new();
+    let metrics = Metrics::new(24.0, 30.0);
+    let mut buffer = Buffer::new(&mut h.font_system, metrics);
+    buffer.set_text("first\nsecond", &Attrs::new(), Shaping::Advanced, None);
+    buffer.shape_until_scroll(&mut h.font_system, false);
+    buffer.set_redraw(false);
+
+    // Clip to the first line only: the second line's run is culled and the
+    // cached area is incomplete.
+    let bounds = TextBounds {
+        left: 0,
+        top: 0,
+        right: 800,
+        bottom: 25,
+    };
+    h.prepare_with_bounds(&buffer, bounds)
+        .expect("first prepare should succeed");
+    let line2_before = h
+        .renderer
+        .prepared_instances()
+        .iter()
+        .filter(|inst| inst.screen_rect[1] > 25.0)
+        .count();
+    assert_eq!(line2_before, 0, "second line should start culled");
+
+    // Scroll the second line into the clip window and prepare again with
+    // identical areas: the placement mismatch must rebuild, not replay.
+    h.viewport.set_scroll_offset(&h.queue, [0.0, -30.0]);
+    h.prepare_with_bounds(&buffer, bounds)
+        .expect("second prepare should succeed");
+    let line2_after = h
+        .renderer
+        .prepared_instances()
+        .iter()
+        .filter(|inst| inst.screen_rect[1] > 25.0)
+        .count();
+    assert!(
+        line2_after > 0,
+        "second line must reappear after scrolling it into view"
+    );
+}
