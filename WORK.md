@@ -192,3 +192,16 @@ fixed by the orchestrator:
   regression tests: two TextAreas sharing one buffer keep distinct
   placements across retained frames, and content culled under one scroll
   offset reappears after the offset changes (the original demo2 symptom).
+
+## Benchmark verdict (plantasjen, same-host A/B vs parent 10ab57c)
+
+- render: warm 860us (pre 837-879), mixed 237us (pre 226-236). Unchanged.
+- email2: warm 170-171us (pre 175-177), cold 4288us (pre 4096-4523).
+  Unchanged. One 13.4ms cold outlier was page-cache noise (extract_outline
+  P50 normal, P99 195us; immediate re-run normal).
+- email (the scroll-phase workload): warm 223 to 227/215us and cold
+  ~2250us unchanged; scroll phase 255 to 401/381us. The +130-150us per
+  scrolling frame is the cost of correct re-culling. Decisive detail:
+  final glyphs went 157 to 159 and buffer texels 47028 to 47368 - the
+  fixed path renders two glyphs the old shift path silently dropped,
+  benchmark-visible proof of the unsoundness this loop fixed.
