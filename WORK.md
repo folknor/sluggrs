@@ -78,6 +78,17 @@ Deferred: a constructed-atlas regression test for the cancellation
 witness (recorded in TODO.md under Polish; needs a raw-blob + readback
 harness that tests/ lacks).
 
+## Benchmark verdict (plantasjen, same-host A/B vs parent 99276d7)
+
+- gpu_text_render_us: 7 -> 7. Unchanged, as expected (same arithmetic
+  count; the change is exactness and reference alignment).
+- email2: 14.769 -> 14.717 ms (-0.4%), noise.
+- render wall: 31.726 -> 29.280 ms (-7.7%), but the delta sits entirely
+  in CPU-side prepare KVs (cold 7466 -> 7189 us, warm 879 -> 798, mixed
+  268 -> 216) which a fragment-shader change cannot affect: host-state
+  variance, not a real effect. A null A/B on identical code earlier the
+  same day showed +/-1.5% on this wall.
+
 ## Constraints
 
 - Do not run cargo or brokkr; the orchestrator runs all builds, tests,
