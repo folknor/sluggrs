@@ -33,12 +33,6 @@ Mixed-locale baseline: 364 glyphs, ~4.6ms cold prepare (`brokkr hotpath --target
   Mono prep/commit seam (`prep::prepare_mono`, `text_atlas::commit_mono`)
   added in `e98d6d1`. Misses are now deduped before resolution.
 
-- [ ] **Atlas initial capacity** - starts at 8192 elements, `grow_buffer()`
-  doubles with full re-upload. Start at 1-4MB for known workloads, or
-  predict final size from glyph count and pre-allocate once. Eliminates
-  growth-copy stalls on first cold frame. Small effort.
-
-
 ## GPU - Shader
 
 Baseline: 11µs headless / 71µs windowed (RTX 3080, 92 glyphs). Windowed
@@ -135,10 +129,6 @@ dominated by compositor/surface, not text math.
   glyph, never compacted. Intentional (needed for growth re-upload). Fix:
   GPU buffer-to-buffer copy on growth, or LRU eviction with compaction.
 
-- [ ] **Texture growth batching** - multiple growths in one prepare() produce
-  O(n) full re-uploads. Predict final size from glyph count and
-  pre-allocate once. **arch review**
-
 ### Harfbuzz divergences remaining
 
 - [ ] **Jacobian-based vertex dilation** - full MVP-aware half-pixel
@@ -150,6 +140,10 @@ dominated by compositor/surface, not text math.
 - [ ] naga_oil for shader dedup - `#import` to share code between
   simple_shader.wgsl and shader.wgsl. Eliminates copy-paste divergence.
 - [ ] Texture growth stress test with CJK, mixed fonts
+- [ ] **Wire up brokkr visual** - the commands are documented but sluggrs has
+  no `examples/snapshot.rs` target and zero approved snapshots, so
+  `brokkr visual --all` fails to build. Create the snapshot example and
+  approve baselines.
 
 ### Parked
 

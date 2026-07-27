@@ -12,8 +12,11 @@ use wgpu::{
 };
 
 /// An atlas containing cached glyph curve and band data for GPU rendering.
-/// Initial buffer capacity in vec4<i32> elements (16 bytes each).
-const INITIAL_BUFFER_CAPACITY: u32 = 8192;
+/// Initial buffer capacity in packed texels (8 bytes each).
+const INITIAL_BUFFER_CAPACITY: u32 = 131_072;
+/// A grown atlas is eligible for trimming once it reaches this multiple of its
+/// initial allocation.
+const TRIM_GROWTH_FACTOR: u32 = 4;
 
 pub struct TextAtlas {
     pub(crate) cache: Cache,
@@ -25,9 +28,11 @@ pub struct TextAtlas {
     // Buffer state - packed layout: each logical texel (4 i16 values) is stored
     // as 2 i32 elements (each i32 packs a pair of i16 values). All capacity/
     // cursor/offsets are in texel units; physical buffer is 2x in i32 units.
-    buffer_capacity: u32,  // in texels
-    buffer_cursor: u32,    // append cursor in texels
-    buffer_data: Vec<i32>, // CPU-side copy (2 i32 per texel)
+    initial_buffer_capacity: u32, // in texels, clamped to the device limit
+    max_buffer_capacity: u32,     // in texels
+    buffer_capacity: u32,         // in texels
+    buffer_cursor: u32,           // append cursor in texels
+    buffer_data: Vec<i32>,        // CPU-side copy (2 i32 per texel)
 
     // Scratch buffers retained for upload_color_v1's serial sub-glyph builder.
     scratch_band_entries: Vec<i16>,
@@ -62,7 +67,32 @@ impl TextAtlas {
         format: TextureFormat,
         _color_mode: ColorMode,
     ) -> Self {
-        let glyph_buffer = create_glyph_buffer(device, INITIAL_BUFFER_CAPACITY);
+        Self::with_initial_buffer_capacity(
+            device,
+            cache,
+            format,
+            _color_mode,
+            INITIAL_BUFFER_CAPACITY,
+        )
+    }
+
+    /// Construct an atlas with a caller-selected initial storage capacity.
+    ///
+    /// This exists for lifecycle tests that need to exercise growth without
+    /// allocating a production-sized atlas.
+    #[doc(hidden)]
+    pub fn with_initial_buffer_capacity(
+        device: &Device,
+        cache: &Cache,
+        format: TextureFormat,
+        _color_mode: ColorMode,
+        initial_buffer_capacity: u32,
+    ) -> Self {
+        let max_buffer_capacity = max_buffer_capacity(device);
+        // Zero would create a storage binding that fails wgpu validation and
+        // a zero trim threshold; clamp to at least one texel.
+        let initial_buffer_capacity = initial_buffer_capacity.clamp(1, max_buffer_capacity);
+        let glyph_buffer = create_glyph_buffer(device, initial_buffer_capacity);
         let bind_group = cache.create_atlas_bind_group(device, &glyph_buffer);
 
         Self {
@@ -71,7 +101,9 @@ impl TextAtlas {
             glyph_buffer,
             bind_group,
             format,
-            buffer_capacity: INITIAL_BUFFER_CAPACITY,
+            initial_buffer_capacity,
+            max_buffer_capacity,
+            buffer_capacity: initial_buffer_capacity,
             buffer_cursor: 0,
             buffer_data: Vec::new(),
             scratch_band_entries: Vec::new(),
@@ -96,7 +128,7 @@ impl TextAtlas {
         &self.glyphs
     }
 
-    /// Buffer elements used (in vec4<i32> units).
+    /// Current atlas generation.
     pub fn generation(&self) -> u32 {
         self.generation
     }
@@ -107,19 +139,24 @@ impl TextAtlas {
 
     /// End-of-frame cache management.
     ///
-    /// Clears per-frame usage tracking. When the buffer has grown beyond
+    /// Clears per-frame usage tracking. When the buffer reaches four times
     /// its initial size AND fewer than a quarter of cached glyphs are in use,
     /// performs a full reset: recreates buffer at initial size (reclaiming
     /// GPU memory immediately), clears the glyph cache. The next prepare()
     /// re-extracts only the visible glyphs.
     ///
-    /// This is pressure-based: a stable document with many glyphs will not
-    /// trigger reset as long as the textures haven't grown. Only when GPU
-    /// memory has expanded (texture growth happened) AND the working set
+    /// With the default 1 MiB initial allocation, reset eligibility begins at
+    /// 4 MiB and a reset returns the atlas to 1 MiB. This is pressure-based:
+    /// a stable document with many glyphs will not trigger reset as long as
+    /// the buffer has not substantially grown. Only when GPU memory has
+    /// expanded AND the working set
     /// has shifted does eviction fire.
     pub fn trim(&mut self) {
         // Only consider reset when buffer has grown substantially.
-        let substantial_growth = self.buffer_capacity > INITIAL_BUFFER_CAPACITY * 4;
+        let substantial_growth = self.buffer_capacity
+            >= self
+                .initial_buffer_capacity
+                .saturating_mul(TRIM_GROWTH_FACTOR);
 
         if substantial_growth {
             let cached = self.glyphs.len();
@@ -212,7 +249,7 @@ impl TextAtlas {
         self.gpu_flush_cursor = 0;
         self.generation = self.generation.wrapping_add(1);
 
-        self.buffer_capacity = INITIAL_BUFFER_CAPACITY;
+        self.buffer_capacity = self.initial_buffer_capacity;
         self.glyph_buffer = create_glyph_buffer(&self.device, self.buffer_capacity);
         self.bind_group = self
             .cache
@@ -222,6 +259,10 @@ impl TextAtlas {
     /// Flush all pending glyph uploads to the GPU in a single write_buffer call.
     /// Call this once per frame after all upload_glyph calls are complete.
     pub(crate) fn flush_uploads(&mut self, queue: &Queue) {
+        if self.buffer_cursor > self.buffer_capacity {
+            self.grow_buffer(self.buffer_cursor);
+        }
+
         let start = self.gpu_flush_cursor as usize;
         let end = self.buffer_cursor as usize;
         if start < end {
@@ -237,12 +278,10 @@ impl TextAtlas {
     }
 
     /// Commit a CPU-prepared mono glyph blob to the atlas storage buffer.
-    /// Pure write side: appends `prepared.blob_data`, advances the cursor,
-    /// grows the underlying GPU buffer if needed.
+    /// Pure write side: appends `prepared.blob_data` and advances the cursor.
     #[hotpath::measure]
     pub(crate) fn commit_mono(
         &mut self,
-        device: &Device,
         prepared: &crate::prep::PreparedMono,
     ) -> Result<GlyphEntry, crate::types::PrepareError> {
         if prepared.blob_size > 65535 {
@@ -250,15 +289,7 @@ impl TextAtlas {
         }
 
         let glyph_offset = self.buffer_cursor;
-        let new_end = glyph_offset + prepared.blob_size;
-        if new_end > self.buffer_capacity {
-            let required_bytes = new_end as u64 * BYTES_PER_TEXEL;
-            let max_bytes = device.limits().max_storage_buffer_binding_size;
-            if required_bytes > max_bytes {
-                return Err(crate::types::PrepareError::AtlasFull);
-            }
-            self.grow_buffer(device, new_end);
-        }
+        let new_end = self.checked_buffer_end(prepared.blob_size)?;
 
         self.buffer_data.extend_from_slice(&prepared.blob_data);
         self.buffer_cursor = new_end;
@@ -286,7 +317,6 @@ impl TextAtlas {
     /// Band and curve data within sub-glyphs are i16-packed as usual.
     pub(crate) fn upload_color_v1(
         &mut self,
-        device: &wgpu::Device,
         v1: &mut crate::outline::ColorV1Data,
         units_per_em: f32,
     ) -> Result<ColorV1GlyphEntry, crate::types::PrepareError> {
@@ -301,13 +331,17 @@ impl TextAtlas {
         }
 
         // Commands occupy 2 packed texels each (4 raw i32 values per command)
-        let cmd_texel_count = v1.commands.len() as u32 * 2;
+        let cmd_texel_count = u32::try_from(v1.commands.len())
+            .ok()
+            .and_then(|count| count.checked_mul(2))
+            .ok_or(crate::types::PrepareError::AtlasFull)?;
         let mut sub_blobs: Vec<SubGlyphBlob> = Vec::with_capacity(v1.sub_glyphs.len());
         let mut union_bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
 
         for sub in &v1.sub_glyphs {
             let outline = &sub.outline;
-            let num_curves = outline.curves.len() as u32;
+            let num_curves = u32::try_from(outline.curves.len())
+                .map_err(|_| crate::types::PrepareError::AtlasFull)?;
 
             // Union bounds
             union_bounds[0] = union_bounds[0].min(outline.bounds[0]);
@@ -317,8 +351,14 @@ impl TextAtlas {
 
             // Build curve texels
             let q = |v: f32| -> i32 { (v * 4.0).round() as i32 };
-            let mut curve_texels = Vec::with_capacity(num_curves as usize * 2);
-            let mut curve_locations = Vec::with_capacity(num_curves as usize);
+            let curve_capacity = usize::try_from(num_curves)
+                .ok()
+                .and_then(|count| count.checked_mul(2))
+                .ok_or(crate::types::PrepareError::AtlasFull)?;
+            let mut curve_texels = Vec::with_capacity(curve_capacity);
+            let mut curve_locations = Vec::with_capacity(
+                usize::try_from(num_curves).map_err(|_| crate::types::PrepareError::AtlasFull)?,
+            );
 
             for (i, curve) in outline.curves.iter().enumerate() {
                 let is_continuation = i > 0 && curve.p1 == outline.curves[i - 1].p3;
@@ -335,7 +375,10 @@ impl TextAtlas {
                     ]);
                 }
                 curve_locations.push(CurveLocation {
-                    offset: curve_texels.len() as u32 - 1,
+                    offset: u32::try_from(curve_texels.len())
+                        .ok()
+                        .and_then(|length| length.checked_sub(1))
+                        .ok_or(crate::types::PrepareError::AtlasFull)?,
                 });
                 curve_texels.push([q(curve.p3[0]), q(curve.p3[1]), 0, 0]);
             }
@@ -387,8 +430,16 @@ impl TextAtlas {
         for (i, blob) in sub_blobs.iter().enumerate() {
             v1.sub_glyphs[i].blob_offset = offset;
             // header(3 texels) + bands (already in texel units) + curves
-            let band_texels = blob.band_entries_packed.len() as u32 / 2;
-            offset += 3 + band_texels + blob.curve_texels.len() as u32;
+            let band_texels = u32::try_from(blob.band_entries_packed.len())
+                .map_err(|_| crate::types::PrepareError::AtlasFull)?
+                / 2;
+            let curve_texels = u32::try_from(blob.curve_texels.len())
+                .map_err(|_| crate::types::PrepareError::AtlasFull)?;
+            offset = offset
+                .checked_add(3)
+                .and_then(|value| value.checked_add(band_texels))
+                .and_then(|value| value.checked_add(curve_texels))
+                .ok_or(crate::types::PrepareError::AtlasFull)?;
         }
         let total_blob_size = offset;
 
@@ -400,17 +451,15 @@ impl TextAtlas {
             {
                 let sub_idx = cmd[1] as usize;
                 if sub_idx < v1.sub_glyphs.len() {
-                    cmd[1] = v1.sub_glyphs[sub_idx].blob_offset as i32;
+                    cmd[1] = i32::try_from(v1.sub_glyphs[sub_idx].blob_offset)
+                        .map_err(|_| crate::types::PrepareError::AtlasFull)?;
                 }
             }
         }
 
-        // Phase 4: ensure capacity and append to buffer.
+        // Phase 4: validate capacity and append to CPU storage.
         let glyph_offset = self.buffer_cursor;
-        let new_end = glyph_offset + total_blob_size;
-        if new_end > self.buffer_capacity {
-            self.grow_buffer(device, new_end);
-        }
+        let new_end = self.checked_buffer_end(total_blob_size)?;
 
         // Append commands: each [i32; 4] command → 4 raw i32 values (2 packed texels)
         for cmd in &v1.commands {
@@ -440,13 +489,14 @@ impl TextAtlas {
         })
     }
 
-    fn grow_buffer(&mut self, device: &Device, min_capacity: u32) {
-        let mut new_cap = self.buffer_capacity;
-        while new_cap < min_capacity {
-            new_cap *= 2;
-        }
-        // Use max to avoid multiple growths in one frame
-        new_cap = new_cap.max(min_capacity);
+    fn checked_buffer_end(&self, blob_size: u32) -> Result<u32, crate::types::PrepareError> {
+        checked_buffer_end(self.buffer_cursor, blob_size, self.max_buffer_capacity)
+    }
+
+    fn grow_buffer(&mut self, min_capacity: u32) {
+        let new_cap =
+            planned_buffer_capacity(self.buffer_capacity, min_capacity, self.max_buffer_capacity)
+                .expect("validated buffer capacity");
 
         log::debug!(
             "Growing glyph buffer: {} → {} elements (cursor: {})",
@@ -455,7 +505,7 @@ impl TextAtlas {
             self.buffer_cursor,
         );
 
-        self.glyph_buffer = create_glyph_buffer(device, new_cap);
+        self.glyph_buffer = create_glyph_buffer(&self.device, new_cap);
         self.buffer_capacity = new_cap;
 
         // Mark all data as needing flush to the new buffer
@@ -463,7 +513,7 @@ impl TextAtlas {
 
         self.bind_group = self
             .cache
-            .create_atlas_bind_group(device, &self.glyph_buffer);
+            .create_atlas_bind_group(&self.device, &self.glyph_buffer);
     }
 
     pub(crate) fn get_or_create_pipeline(
@@ -480,6 +530,51 @@ impl TextAtlas {
 /// Bytes per texel in the packed layout: 2 i32 values = 8 bytes.
 const BYTES_PER_TEXEL: u64 = 8;
 
+fn max_buffer_capacity(device: &Device) -> u32 {
+    let limits = device.limits();
+    // A storage binding is constrained by both the binding-size limit and
+    // the overall buffer-size limit; honor whichever is smaller.
+    let max_bytes = limits
+        .max_storage_buffer_binding_size
+        .min(limits.max_buffer_size);
+    let max_texels = max_bytes / BYTES_PER_TEXEL;
+    max_texels.min(u64::from(u32::MAX)) as u32
+}
+
+/// Choose a single allocation that can hold `required_capacity` texels.
+///
+/// Kept independent of wgpu so the overflow and device-limit behavior can be
+/// tested without a device.
+fn planned_buffer_capacity(
+    current_capacity: u32,
+    required_capacity: u32,
+    max_capacity: u32,
+) -> Result<u32, crate::types::PrepareError> {
+    if required_capacity > max_capacity {
+        return Err(crate::types::PrepareError::AtlasFull);
+    }
+
+    let rounded = required_capacity
+        .checked_next_power_of_two()
+        .unwrap_or(max_capacity)
+        .min(max_capacity);
+    Ok(current_capacity.max(rounded).min(max_capacity))
+}
+
+fn checked_buffer_end(
+    cursor: u32,
+    blob_size: u32,
+    max_capacity: u32,
+) -> Result<u32, crate::types::PrepareError> {
+    let end = cursor
+        .checked_add(blob_size)
+        .ok_or(crate::types::PrepareError::AtlasFull)?;
+    if end > max_capacity {
+        return Err(crate::types::PrepareError::AtlasFull);
+    }
+    Ok(end)
+}
+
 fn create_glyph_buffer(device: &Device, capacity_texels: u32) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("sluggrs glyph buffer"),
@@ -494,4 +589,45 @@ fn create_glyph_buffer(device: &Device, capacity_texels: u32) -> wgpu::Buffer {
 /// Matches the shader's `unpack_lo/unpack_hi` extraction.
 fn pack_i16_pair(a: i16, b: i16) -> i32 {
     (a as u16 as u32 | ((b as u16 as u32) << 16)) as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{checked_buffer_end, planned_buffer_capacity};
+    use crate::types::PrepareError;
+
+    #[test]
+    fn capacity_plan_rounds_up_once() {
+        assert_eq!(planned_buffer_capacity(128, 129, 4096), Ok(256));
+        assert_eq!(planned_buffer_capacity(128, 1025, 4096), Ok(2048));
+    }
+
+    #[test]
+    fn capacity_plan_clamps_to_device_limit() {
+        assert_eq!(planned_buffer_capacity(128, 3000, 3072), Ok(3072));
+    }
+
+    #[test]
+    fn capacity_plan_rejects_limit_misses() {
+        assert_eq!(
+            planned_buffer_capacity(128, u32::MAX, u32::MAX - 1),
+            Err(PrepareError::AtlasFull)
+        );
+        assert_eq!(
+            planned_buffer_capacity(128, u32::MAX, u32::MAX),
+            Ok(u32::MAX)
+        );
+    }
+
+    #[test]
+    fn buffer_end_rejects_overflow_and_limit_misses() {
+        assert_eq!(
+            checked_buffer_end(u32::MAX, 1, u32::MAX),
+            Err(PrepareError::AtlasFull)
+        );
+        assert_eq!(
+            checked_buffer_end(100, 1, 100),
+            Err(PrepareError::AtlasFull)
+        );
+    }
 }

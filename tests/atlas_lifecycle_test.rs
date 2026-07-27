@@ -1,4 +1,4 @@
-//! Integration tests for TextAtlas trim() semantics and texture growth invariants.
+//! Integration tests for TextAtlas trim() semantics and storage-buffer growth invariants.
 //!
 //! These tests require a wgpu Device and Queue (GPU or software renderer).
 //! They are marked #[ignore] because CI environments may lack GPU/software
@@ -43,11 +43,20 @@ struct TestHarness {
 
 impl TestHarness {
     fn new() -> Self {
+        Self::with_initial_buffer_capacity(131_072)
+    }
+
+    fn with_initial_buffer_capacity(initial_buffer_capacity: u32) -> Self {
         let (device, queue) = create_test_device();
         let cache = Cache::new(&device);
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-        let mut atlas =
-            TextAtlas::with_color_mode(&device, &queue, &cache, format, ColorMode::Accurate);
+        let mut atlas = TextAtlas::with_initial_buffer_capacity(
+            &device,
+            &cache,
+            format,
+            ColorMode::Accurate,
+            initial_buffer_capacity,
+        );
         let renderer =
             TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None);
         let mut viewport = Viewport::new(&device, &cache);
@@ -144,23 +153,24 @@ fn trim_retains_cached_glyphs() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 2: Texture growth preserves offsets (observable via stable rendering)
+// Test 2: Storage-buffer growth preserves offsets (observable via stable rendering)
 // ---------------------------------------------------------------------------
 
 #[test]
 #[ignore = "Requires GPU or software renderer (wgpu adapter)"]
-fn texture_growth_preserves_offsets() {
-    let mut h = TestHarness::new();
+fn buffer_growth_preserves_offsets() {
+    let mut h = TestHarness::with_initial_buffer_capacity(256);
 
     // Upload a batch of glyphs that will be cached
     h.prepare_text("ABCDEFGHIJ")
         .expect("Initial prepare should succeed");
+    let generation_before_growth = h.atlas.generation();
 
-    // Now upload a large number of distinct glyphs to force texture growth.
-    // The curve texture starts at width 4096 x height 1 (4096 texels).
+    // Now upload a large number of distinct glyphs to force storage-buffer growth.
+    // The test uses a 256-texel initial buffer.
     // Each glyph uses ~2 texels per curve and typical glyphs have 10-40 curves,
-    // so ~20-80 texels per glyph. With ~100-200 distinct glyphs we should
-    // overflow the initial 4096-texel row.
+    // so ~20-80 texels per glyph. The distinct glyphs below overflow the
+    // small initial buffer.
     //
     // We use a wide variety of Unicode characters to maximize distinct glyph IDs.
     // The system font should cover basic Latin, extended Latin, and common symbols.
@@ -183,12 +193,21 @@ fn texture_growth_preserves_offsets() {
     h.prepare_text(growth_text)
         .expect("Growth prepare should succeed");
 
-    // Now re-prepare the original text. If texture growth had corrupted the
+    // Deferred growth must not bump the generation: glyph offsets stay
+    // valid, and a bump here would make an immediate render() fail with
+    // RemovedFromAtlas.
+    assert_eq!(
+        h.atlas.generation(),
+        generation_before_growth,
+        "buffer growth must not increment the atlas generation"
+    );
+
+    // Now re-prepare the original text. If buffer growth had corrupted the
     // earlier glyph entries (e.g. stale band_offset pointing into a destroyed
-    // texture), this would produce incorrect GlyphInstances or panic.
+    // buffer), this would produce incorrect GlyphInstances or panic.
     // The atlas caches entries by GlyphKey, so previously uploaded glyphs
-    // should still reference valid offsets after growth (because grow_*_texture
-    // re-uploads the CPU-side data copies into the new, larger texture).
+    // should still reference valid offsets after growth because the complete
+    // CPU-side data copy is flushed into the replacement buffer.
     h.prepare_text("ABCDEFGHIJ")
         .expect("Re-prepare after growth should succeed");
 }
@@ -244,9 +263,10 @@ fn trim_empty_atlas_is_safe() {
 #[test]
 #[ignore = "Requires GPU or software renderer (wgpu adapter)"]
 fn growth_then_trim_then_more_glyphs() {
-    let mut h = TestHarness::new();
+    // Small initial capacity so this glyph count actually forces growth.
+    let mut h = TestHarness::with_initial_buffer_capacity(256);
 
-    // Force texture growth with many distinct glyphs
+    // Force storage-buffer growth with many distinct glyphs.
     let many_chars: String = ('A'..='z').collect();
     h.prepare_text(&many_chars)
         .expect("Initial large prepare should succeed");
@@ -254,7 +274,7 @@ fn growth_then_trim_then_more_glyphs() {
     // Trim
     h.atlas.trim();
 
-    // Add more glyphs (these may land in the grown texture)
+    // Add more glyphs (these may land in the grown buffer)
     h.prepare_text("0123456789!@#$%")
         .expect("Prepare after growth+trim should succeed");
 
@@ -267,43 +287,43 @@ fn growth_then_trim_then_more_glyphs() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: trim() does not reset when textures haven't grown
+// Test 6: trim() does not reset when the buffer has not grown
 // ---------------------------------------------------------------------------
 
 #[test]
 #[ignore = "Requires GPU or software renderer (wgpu adapter)"]
-fn trim_does_not_reset_without_texture_growth() {
+fn trim_does_not_reset_without_buffer_growth() {
     let mut h = TestHarness::new();
 
-    // Upload a small number of glyphs - not enough to trigger texture growth
+    // Upload a small number of glyphs - not enough to trigger buffer growth.
     h.prepare_text("Hi").expect("Prepare should succeed");
 
     let glyph_count_before = h.atlas.glyph_count();
     assert!(glyph_count_before > 0);
 
     // Trim with no glyphs marked as in-use (we didn't call prepare again
-    // after the last trim). Even though in_use < cached / 2, the textures
-    // haven't grown beyond initial size, so no reset should happen.
+    // after the last trim). Even though in_use < cached / 2, the buffer has
+    // not reached the reset threshold, so no reset should happen.
     h.atlas.trim();
 
     // Glyphs should still be cached
     assert_eq!(
         h.atlas.glyph_count(),
         glyph_count_before,
-        "trim() should not evict when textures haven't grown"
+        "trim() should not evict when the buffer has not grown"
     );
 }
 
 // ---------------------------------------------------------------------------
-// Test 7: trim() resets when textures grew and working set shifted
+// Test 7: trim() resets when the buffer grew and working set shifted
 // ---------------------------------------------------------------------------
 
 #[test]
 #[ignore = "Requires GPU or software renderer (wgpu adapter)"]
-fn trim_resets_when_textures_grew_and_working_set_shifted() {
-    let mut h = TestHarness::new();
+fn trim_resets_when_buffer_grew_and_working_set_shifted() {
+    let mut h = TestHarness::with_initial_buffer_capacity(256);
 
-    // Upload enough distinct glyphs to force texture growth.
+    // Upload enough distinct glyphs to force storage-buffer growth.
     let many_chars = concat!(
         "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
         "abcdefghijklmnopqrstuvwxyz",
@@ -322,18 +342,29 @@ fn trim_resets_when_textures_grew_and_working_set_shifted() {
     let cached_after_growth = h.atlas.glyph_count();
     assert!(cached_after_growth > 50, "Should have cached many glyphs");
 
+    // Advance the frame epoch. Without this, the growth prepare and the
+    // small prepare below land in the same epoch, every glyph still counts
+    // as in-use at trim time, and reset legitimately refuses to fire. This
+    // trim itself must not reset: all glyphs are in use.
+    h.atlas.trim();
+    assert_eq!(
+        h.atlas.glyph_count(),
+        cached_after_growth,
+        "trim() with a fully in-use working set should retain"
+    );
+
     // Now prepare only a small subset - the working set has shifted.
     // This marks only a few glyphs as in-use.
     h.prepare_text("AB").expect("Small prepare should succeed");
 
-    // Trim: textures grew + in_use < cached / 2 → should reset
+    // Trim: buffer reached its growth threshold + in_use < cached / 4 → reset.
     h.atlas.trim();
 
     // After reset, the glyph cache should be empty (all evicted).
     assert_eq!(
         h.atlas.glyph_count(),
         0,
-        "trim() should reset when textures grew and working set shifted"
+        "trim() should reset when the buffer grew and working set shifted"
     );
 
     // Buffer should be back at initial size
@@ -359,9 +390,9 @@ fn trim_resets_when_textures_grew_and_working_set_shifted() {
 #[test]
 #[ignore = "Requires GPU or software renderer (wgpu adapter)"]
 fn trim_does_not_reset_when_working_set_stable() {
-    let mut h = TestHarness::new();
+    let mut h = TestHarness::with_initial_buffer_capacity(256);
 
-    // Upload enough to trigger texture growth
+    // Upload enough to trigger storage-buffer growth.
     let many_chars = concat!(
         "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
         "abcdefghijklmnopqrstuvwxyz",
@@ -383,7 +414,7 @@ fn trim_does_not_reset_when_working_set_stable() {
     h.prepare_text(many_chars)
         .expect("Repeat prepare should succeed");
 
-    // Trim: textures grew, but in_use >= cached / 2 → should NOT reset
+    // Trim: buffer grew, but in_use >= cached / 2 → should NOT reset.
     h.atlas.trim();
 
     assert_eq!(

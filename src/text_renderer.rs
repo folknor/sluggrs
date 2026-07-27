@@ -295,7 +295,7 @@ impl TextRenderer {
         distinct_misses.sort_unstable();
         distinct_misses.dedup();
         for key in &distinct_misses {
-            self.resolve_glyph_miss(device, font_system, atlas, *key)?;
+            self.resolve_glyph_miss(font_system, atlas, *key)?;
         }
 
         // ===== Pass 3: emit instances per area in input order =====
@@ -585,7 +585,6 @@ impl TextRenderer {
     /// uploads glyph blob, and inserts into cache.
     fn resolve_glyph_miss(
         &mut self,
-        device: &Device,
         font_system: &mut cosmic_text::FontSystem,
         atlas: &mut TextAtlas,
         key: GlyphKey,
@@ -658,7 +657,6 @@ impl TextRenderer {
                     .cache_key_flags
                     .contains(cosmic_text::CacheKeyFlags::FAKE_ITALIC);
                 match self.upload_colr_v0_layers(
-                    device,
                     atlas,
                     font_data,
                     face_index,
@@ -673,7 +671,7 @@ impl TextRenderer {
                 }
             }
             Some(ColorGlyphInfo::V1(mut v1_data)) => {
-                match atlas.upload_color_v1(device, &mut v1_data, units_per_em) {
+                match atlas.upload_color_v1(&mut v1_data, units_per_em) {
                     Ok(v1_entry) => {
                         atlas.color_v1_glyphs.insert(key, v1_entry);
                         COLOR_V1_VECTOR_GLYPH
@@ -699,7 +697,7 @@ impl TextRenderer {
                             units_per_em,
                             &mut self.prep_scratch,
                         ) {
-                            Some(prepared) => atlas.commit_mono(device, &prepared)?,
+                            Some(prepared) => atlas.commit_mono(&prepared)?,
                             None => NON_VECTOR_GLYPH,
                         }
                     }
@@ -716,7 +714,6 @@ impl TextRenderer {
     #[allow(clippy::too_many_arguments)]
     fn upload_colr_v0_layers(
         &mut self,
-        device: &Device,
         atlas: &mut TextAtlas,
         font_data: &[u8],
         face_index: u32,
@@ -747,7 +744,7 @@ impl TextRenderer {
                 units_per_em,
                 &mut self.prep_scratch,
             ) {
-                Some(prepared) => atlas.commit_mono(device, &prepared)?,
+                Some(prepared) => atlas.commit_mono(&prepared)?,
                 None => NON_VECTOR_GLYPH,
             };
             entries.push(ColorGlyphLayer {
