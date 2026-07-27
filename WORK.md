@@ -1,143 +1,126 @@
 # WORK
 
-Shrink GlyphInstance from 96 to 48 bytes by moving per-glyph constants
-(em_rect, band_transform, band_max) into a 5-texel glyph header stored in
-the atlas storage buffer, decoded by the vertex shader. Rendering must be
-pixel-identical: every value the shader consumes must be bit-identical to
-what the old per-instance fields carried.
+Implement a GPU regression test pinning the solver cancellation fix from
+commit 17bb626 in `src/simple_shader.wgsl`. Double-sided: the shipped
+shader must produce the analytically expected coverage at an exact f32
+witness coordinate, and a deliberately re-broken shader variant must
+fail the same predicate.
 
 ## Agreed plan (implement exactly this)
 
-### New instance ABI (src/lib.rs, mirrored in simple_shader.wgsl)
+New file `tests/solver_regression_test.rs`, one test:
 
-48-byte repr(C), four vertex attributes:
+    #[test]
+    #[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+    fn solver_cancellation_regression()
 
-| byte | field                              | vertex format        |
-|-----:|------------------------------------|----------------------|
-|    0 | screen_rect: [f32; 4]              | loc 0, Float32x4     |
-|   16 | color: [f32; 4]                    | loc 1, Float32x4     |
-|   32 | glyph_offset: u32, cmd_texel_count: u32 | loc 2, Uint32x2 |
-|   40 | depth: f32, ppem: f32              | loc 3, Float32x2     |
+Device creation like tests/atlas_lifecycle_test.rs. No TextAtlas or
+TextRenderer: build a standalone pipeline modeled on examples/demo.rs
+(~:1070), using the public `sluggrs::GlyphInstance` 48-byte ABI and its
+4-attribute vertex layout, Params uniform at group 0 (screen_size =
+[1.0, 1.0], zero scroll, flags = 0), read-only storage buffer at
+group 1.
 
-Add a compile-time size assertion (48) and offset tests. Keep bytemuck
-Pod/Zeroable.
+### Geometry (horizontal-solver case)
 
-### Universal glyph header (5 packed texels = 10 raw i32)
+Synthetic `sluggrs::outline::GlyphOutline`, contour order:
 
-| texel | raw slots | contents                                        |
-|------:|----------:|-------------------------------------------------|
-|     0 |      0, 1 | bounds.min_x, bounds.min_y (exact f32::to_bits) |
-|     1 |      2, 3 | bounds.max_x, bounds.max_y                      |
-|     2 |      4, 5 | band_transform.scale_x, scale_y                 |
-|     3 |      6, 7 | band_transform.offset_x, offset_y               |
-|     4 |      8, 9 | pack_i16_pair(band_max_x, band_max_y), reserved 0 |
+1. quadratic (0,-1000) ctrl (500,0) to (0,1000)   <- witness curve,
+   real midpoint control point, exactly-linear y: -1000 - 2*0 + 1000 = 0
+2. line (0,1000) to (-1000,1000)      (p2 = p1 encoding)
+3. line (-1000,1000) to (-1000,-1000) (p2 = p1)
+4. line (-1000,-1000) to (0,-1000)    (p2 = p1)
 
-Layout per glyph: `[header: 5 texels][payload]` where payload is the
-existing band+curve blob (mono/COLRv0) or command stream (COLRv1).
-`glyph_offset` points at the header; payload base = glyph_offset + 5.
-All 16-bit offsets inside the payload stay payload-relative - no rebasing
-anywhere. COLRv1 outer header: union bounds, zero transform, zero maxima;
-the existing 3-texel sub-glyph headers are unchanged.
+bounds = [-1000, -1000, 500, 1000].
+`prepare_mono(&outline, 1, 1, 2000.0, &mut scratch)`.
 
-The header values must be the exact same f32 bits the emission sites
-previously wrote into per-instance em_rect/band_transform. If any
-emission site turns out to apply a per-instance adjustment to one of
-these fields, stop: that field is not per-glyph constant and the plan
-needs revisiting.
+Vertical-solver case: transpose every point (swap x/y everywhere),
+bounds = [-1000, -1000, 1000, 500].
 
-### Shader + pipeline (src/gpu_cache.rs, src/simple_shader.wgsl)
+### Witness sample (exact f32 literals)
 
-- Atlas bind group visibility: FRAGMENT -> VERTEX | FRAGMENT. Read-only;
-  no VERTEX_WRITABLE_STORAGE, no usage change.
-- Replace the eight vertex attributes with the four above.
-- vs_main decodes the header (bitcast raw slots for rects/transform,
-  read_texel(glyph_offset + 4).xy for maxima), generates texcoords and
-  dilation exactly as today, and forwards the existing flat varyings.
-  Forward the PAYLOAD base, not the header base:
-    mono/COLRv0: glyph = [glyph_offset + 5, max_x, max_y, 0]
-    COLRv1:      glyph = [glyph_offset + 5, 0, 0, cmd_texel_count]
-  fs_main, render_single, render_color, render_sub_glyph stay
-  semantically unchanged (keep the band_max.y &= 0x00FF mask).
-- Document the wgpu DownlevelFlags::VERTEX_STORAGE requirement (baseline
-  WebGPU provides it; GLES-style adapters without vertex storage become
-  unsupported).
+Horizontal: render_coord = (187.9630126953125, 488.003997802734375),
+pixels_per_em = (0.1, 0.1). On the witness curve y(t) = -1000 + 2000t,
+t = 0.744002..., x(t) = 1000 t (1-t) = 190.4630127...; the sample is
+2.5 decoded units = 0.25 px inside, so correct coverage = 0.75 exactly
+(combined term: |0.75 * 0.5| / 0.5; fallback term: min(0.75, 1)).
+Vertical: swap the two coordinates.
 
-### Upload + cache (src/text_atlas.rs, src/glyph_cache.rs, src/prep.rs)
+### Test-only fragment entry points
 
-- text_atlas: private header encoder returning [i32; 10]. commit_mono:
-  capacity-check 5 + prepared.blob_size, append header then payload,
-  store the header offset in the entry. Keep the blob_size <= 65535
-  check (offsets are payload-relative). upload_color_v1: same pattern -
-  header before commands, sub-glyph offsets computed exactly as today,
-  return the header offset.
-- prep.rs: blob stays header-free and payload-relative; clarify the seam
-  comment.
-- glyph_cache: rename band_offset -> glyph_offset; remove band_max_x,
-  band_max_y, band_transform; keep bounds, units_per_em,
-  last_used_epoch. Update the three sentinels (u32::MAX family) and
-  GlyphEntry::new. Rename ColorV1GlyphEntry::blob_offset ->
-  glyph_offset and cmd_count -> cmd_texel_count.
+Append two extra fragment entry points to `sluggrs::SIMPLE_SHADER_WGSL`
+at runtime (string concatenation), one per axis, each calling the real
+`render_single` with the literal witness coordinates:
 
-### Emission (src/text_renderer.rs, three sites ~:443/:506/:551)
+    let coverage = render_single(
+        vec2<f32>(187.9630126953125, 488.003997802734375),
+        vec2<f32>(0.1, 0.1),
+        input.banding,
+        u32(input.glyph.x),
+        input.glyph.yz,
+    );
+    return vec4<f32>(coverage, coverage, coverage, coverage);
 
-- Mono: glyph_offset = entry.glyph_offset, cmd_texel_count = 0.
-- COLRv0: per layer, layer.entry.glyph_offset, 0.
-- COLRv1: glyph_offset, cmd_texel_count.
-- screen_rect construction keeps using cached entry bounds on the CPU.
-- CachedTextArea / HitDirect / re-cull logic unchanged (Vec shrinks).
-- Update the local GlyphInstance test fixture (~:1128).
+Production `vs_main` is used unchanged, so header decode, payload-base
+forwarding, band lookup, curve decode, root classification, and coverage
+combination are all under test; only interpolation is bypassed.
 
-### Supporting changes
+### Buffers
 
-- examples/demo.rs builds its own standalone pipeline and blobs - migrate
-  its layout, header creation, offsets, bind visibility, and vertex
-  attributes to match. (demo2 uses the library path; verify, and migrate
-  only if it too hand-builds instances.)
-- tests/glyph_pipeline_test.rs and tests/glyph_key_and_fallback_test.rs:
-  adapt to the smaller GlyphEntry. Add header-encoding tests and the
-  48-byte ABI assertion.
-- docs/integration-spec.md: GlyphEntry/instance sections + the
-  VERTEX_STORAGE note.
-- Leave untouched: shader.wgsl (dead), raster_text.rs/.wgsl, public
-  prepare/render signatures, email benchmark corpus text (even where it
-  mentions 96 bytes - benchmark input must stay comparable).
+Prepend the 5-texel header to `PreparedMono::blob_data` (local encoder
+mirroring examples/demo.rs:66): 4x bounds f32::to_bits as i32, 4x
+band_transform to_bits, pack_i16_pair(band_count_x-1, band_count_y-1),
+reserved 0. Instance: screen_rect [0,0,1,1], color [1;4],
+glyph_offset 0, cmd_texel_count 0, depth 0, ppem 200.
+
+### Broken shader variant
+
+Patch the source string: replace both occurrences of
+
+    let a = q12.xy - q12.zw * 2.0 + q3;
+    let b = q12.xy - q12.zw;
+
+with the pre-fix shifted forms
+
+    let a = p12.xy - p12.zw * 2.0 + p3;
+    let b = p12.xy - p12.zw;
+
+Assert (hard test assertion) that the original block occurs exactly
+twice before patching - a future shader refactor must fail loudly here
+rather than silently defusing the sensitivity check.
+
+### Render + readback + assertions
+
+1x1 Bgra8UnormSrgb target, RENDER_ATTACHMENT | COPY_SRC, transparent
+clear, 256-byte-padded readback (pattern from examples/snapshot.rs).
+Read alpha (byte 3, unaffected by sRGB). For each axis and each shader
+(fixed, broken), render and read coverage = alpha / 255.
+
+Mandatory assertions:
+- fixed: |coverage - 0.75| <= 2/255, both axes;
+- broken: NOT(|coverage - 0.75| <= 2/255), both axes.
+
+Do not assert a specific broken value (0 vs saturated is empirical);
+include the measured fixed and broken values in every assertion message
+so a failure is self-diagnosing.
 
 ## Constraints
 
-- Do not run cargo or brokkr; the orchestrator runs all builds, tests,
-  snapshots, and benchmarks.
-- WGSL under naga/wgpu 29. Rust edition 2024. bytemuck derive for the
-  instance struct.
+- Do not run cargo or brokkr; the orchestrator runs all builds and
+  tests.
+- Rust edition 2024, wgpu 29. Match the existing GPU test conventions
+  (#[ignore] reason string, device creation, no unwrap-lint allows
+  beyond what tests/ already uses).
 - No non-ASCII characters in code or comments.
-- Pixel-identical rendering is a hard requirement; when in doubt, prefer
-  copying the exact existing expression over re-deriving a value.
 
 ## Implementation summary
 
-Implemented by the build session per plan; both diff reviews (direct +
-resumed deep session) confirmed correctness with no blocking defects.
-Bit-identity of the header values was verified by reading: all three
-emission sites destructured entry bounds verbatim into the old em_rect,
-which is exactly what encode_glyph_header now stores via f32::to_bits
-(unit test pins NaN/-0.0/infinity preservation).
-
-Review follow-ups applied by the orchestrator: sub-glyph offsets renamed
-command-payload-relative in comments (outline.rs, text_atlas.rs); the
-demo header now encodes band_data.band_count_x/y - 1 instead of
-recomputing from curve count; the WGSL header offsets use a
-GLYPH_HEADER_TEXELS constant instead of literal 4u/5u.
-
-Validation: 74 tests + 13 GPU tests pass; all four approved snapshots at
-0.0% pixel diff (pixel-identical requirement met).
-
-## Benchmark verdict (plantasjen, same-host A/B vs 17bb626)
-
-- GPU render time unchanged: render 7 -> 7 us, email 123 -> 122 us. The
-  4 vertex-stage header reads per quad cost nothing measurable.
-- CPU prepare: email scroll 367 -> 348 us (-5%), cold 2142 -> 2032 us,
-  warm ~flat - directionally consistent with the 50% smaller instance
-  stream, near the noise floor.
-- Atlas storage grew exactly as predicted: +40 bytes per cached vector
-  glyph (render +3640 B, email +6240 B, to the byte).
-- Walls (email -3.1%, email2 -2.1%, render +3.9%) all within the
-  established +/-4% same-host noise band; the KVs above are the signal.
+Implemented as tests/solver_regression_test.rs per plan; both diff
+reviews (direct + resumed deep session) found no defects. Empirically
+double-sided on this host: fixed shader hits 0.75 within 2/255 on both
+solver axes, the string-patched broken variant fails the predicate on
+both (measured coverage 0), and the occurrence assertion fails closed if
+the solver blocks are ever refactored. Full suite: 74 tests + 14 GPU
+tests pass. Explanatory comments on the witness geometry and constants
+added per review polish. No shader or library changes - test only, so no
+visual or benchmark run needed this loop.

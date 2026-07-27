@@ -123,13 +123,6 @@ dominated by compositor/surface, not text math.
 
 - [ ] naga_oil for shader dedup - `#import` to share code between
   simple_shader.wgsl and shader.wgsl. Eliminates copy-paste divergence.
-- [ ] Solver cancellation regression test - GPU test with a constructed
-  atlas curve pinning the exactly-linear-coordinate witness: active-axis
-  q = (-1000, 0, 1000), render_coord 488.0039978027344; shifted-coords
-  `a` computation yields -3.05e-5 and root t = 2.0 instead of the linear
-  root 0.744. Fixed by computing a,b unshifted (this loop); needs a raw
-  atlas-blob + pixel-readback harness that tests/ currently lacks.
-  **deep review**
 - [ ] Texture growth stress test with CJK, mixed fonts
 
 ### Parked
