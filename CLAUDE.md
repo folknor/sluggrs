@@ -105,7 +105,46 @@ Cargo.toml has 27 clippy deny-level rules covering style, error handling, async 
 
 ## iced integration
 
-The `repos/iced/` checkout (branch `sluggrs` on `folknor/iced`) has `text.rs` swapped from cryoglyph to sluggrs. To test in ratatoskr, point its iced dependency at the fork.
+`repos/iced/` is the canonical checkout. Branch `sluggrs`, with `text.rs`
+swapped from cryoglyph to sluggrs (cryoglyph is removed from the workspace
+entirely). To test in ratatoskr, point its iced dependency at the fork.
+
+Remotes in `repos/iced/` are named unusually - check before pulling:
+- `origin` = `squidowl/iced`, branch `arboard-full-patch` (**upstream**)
+- `fork` = `folknor/iced`, branch `sluggrs` (ours)
+
+So `git pull` there pulls from *upstream*, not the fork.
+
+### The path dependency
+
+iced's `Cargo.toml` uses `sluggrs = { path = "../../../sluggrs" }`. That
+resolves only from a checkout exactly three levels below `/home/folk/Programs`,
+i.e. `repos/iced/`. A clone anywhere else - e.g. `/home/folk/Programs/iced` -
+resolves to `/home/sluggrs` and fails to build.
+
+`repos/iced/` is the **only** iced checkout, and the one downstream projects
+point their iced dependency at. Don't make a second one - `research/` briefly
+held a shallow copy and it only caused confusion about which tree was live.
+
+Because it's a path dep and not a git rev, iced always sees the working tree
+of the local sluggrs checkout. No push or rev bump needed to test a change.
+
+### Catching up with upstream
+
+The fork is kept at exactly **one commit** ahead of upstream ("Replace
+cryoglyph with sluggrs..."), which makes catch-ups mechanical:
+
+```sh
+git fetch origin arboard-full-patch
+git rebase --onto origin/arboard-full-patch <our-commit>^ sluggrs
+cargo check --workspace
+git push --force-with-lease fork sluggrs
+```
+
+Upstream **rebases and rewords** its branch, so our older copies of upstream
+commits will not match by patch-id - `git cherry` reports them as new. Verify
+by commit subject instead, and drop the duplicates. Never `git pull` (merge)
+the fork after a rebase; reset to `fork/sluggrs` instead.
 
 ## Code review
 
