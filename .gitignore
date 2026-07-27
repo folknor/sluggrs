@@ -12,3 +12,5 @@ examples/fonts/BerlingskeSerif-Regular.ttf
 examples/fonts/NotoColorEmoji*.ttf
 examples/emoji_test/target
 examples/emoji_test/Cargo.lock
+snapshots/*/output.png
+snapshots/*/diff.png

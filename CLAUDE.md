@@ -63,6 +63,23 @@ The hotpath example emits KV pairs to stderr (captured by brokkr):
 `warm_prepare_avg_us`, `mixed_prepare_avg_us`, `curve_texture_bytes`,
 `band_texture_bytes`, `gpu_text_render_us`.
 
+### Cross-commit A/B
+
+Same-host A/B verdicts no longer need manual checkout juggling:
+
+- `brokkr hotpath --bench` builds the example bare (no hotpath
+  instrumentation) and runs it 3 times by default - these uninstrumented
+  walls are the numbers to compare across commits.
+- `--commit <sha>` builds and benchmarks an old commit in a brokkr-managed
+  worktree, leaving the working tree alone. Worktrees are persistent (with
+  their own target dir, deliberately not the shared one); remove them with
+  `brokkr clean --worktrees` when done.
+- `brokkr results --compare <sha_a> <sha_b> --mode bench` shows the verdict
+  side-by-side.
+
+Run counts ride on the mode flags (`--bench 5`, `--hotpath 3`, `--alloc 5`);
+the old `-n` flag and `results --compare-last` are gone.
+
 ### GPU profiling
 
 Both CPU and GPU profiling run headless - no user interaction needed.

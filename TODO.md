@@ -12,15 +12,6 @@ Cleanup opportunities in `wgpu/src/text.rs` - cryoglyph heritage and dual-pipeli
 - [ ] **Remove unused `_encoder` and `_cache` params** - thread through 4 functions, never used. Cryoglyph API compat.
 
 
-## Bugs
-
-- [ ] **Signed/unsigned confusion in shader texture addressing** - shader
-  casts `vec2<u32>` to `vec2<i32>` for textureLoad coordinates, uses
-  arithmetic right shift on signed `i32` for row calculation. If band_loc.x
-  wraps negative, sign bit propagates and corrupts row calculation silently.
-  Works today because numbers are small. **wgpu review**
-
-
 ## CPU - Cold path
 
 Baseline: 92 glyphs, ~1.8ms cold prepare on RTX 3080.
@@ -147,10 +138,6 @@ dominated by compositor/surface, not text math.
 - [ ] naga_oil for shader dedup - `#import` to share code between
   simple_shader.wgsl and shader.wgsl. Eliminates copy-paste divergence.
 - [ ] Texture growth stress test with CJK, mixed fonts
-- [ ] **Wire up brokkr visual** - the commands are documented but sluggrs has
-  no `examples/snapshot.rs` target and zero approved snapshots, so
-  `brokkr visual --all` fails to build. Create the snapshot example and
-  approve baselines.
 
 ### Parked
 

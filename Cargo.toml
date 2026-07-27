@@ -23,6 +23,7 @@ winit = "0.30"
 pollster = "1"
 env_logger = "0.11.10"
 wgpu-profiler = "0.27"
+png = "0.18"
 
 [[example]]
 name = "demo"
@@ -47,6 +48,10 @@ path = "examples/email_bench.rs"
 [[example]]
 name = "email2_bench"
 path = "examples/email2_bench.rs"
+
+[[example]]
+name = "snapshot"
+path = "examples/snapshot.rs"
 
 [lints.clippy]
 # Style: modern idiomatic Rust

@@ -2,18 +2,53 @@ project = "sluggrs"
 
 # These carry emoji deliberately - they are emoji-rendering fixtures (the whole
 # point is exercising the emoji glyph path), so the gremlin scan must skip them.
+# snapshot.rs also carries runic fixture text.
 [gremlins]
 exclude = [
     "docs/emoji-fallback-spec.md",
     "examples/email_bench.rs",
     "examples/emoji_test",
+    "examples/snapshot.rs",
 ]
 
 [sluggrs]
 width = 1920
 height = 1080
 pixel_diff_threshold = 0.1
-snapshot = []
+
+[[sluggrs.snapshot]]
+id = "latin-sizes"
+description = "Latin size sweep 8-72px: MSAA blend region, midrange, darkening cutoff, large sizes"
+fonts = [
+    "examples/fonts/InterVariable.ttf",
+    "examples/fonts/Roboto-Regular.ttf",
+    "examples/fonts/Roboto-Bold.ttf",
+]
+
+[[sluggrs.snapshot]]
+id = "thin-stems"
+description = "Roboto Thin at small sizes and several brightness levels (stem darkening gamma)"
+fonts = [
+    "examples/fonts/Roboto-Thin.ttf",
+    "examples/fonts/Roboto-Regular.ttf",
+]
+
+[[sluggrs.snapshot]]
+id = "emoji-colr"
+description = "COLRv0 (Twemoji) and COLRv1 (Noto) color emoji at 16/32/64px"
+fonts = [
+    "examples/fonts/InterVariable.ttf",
+    "examples/fonts/TwemojiCOLRv0.ttf",
+    "examples/fonts/NotoColorEmoji-Regular.ttf",
+]
+
+[[sluggrs.snapshot]]
+id = "rune-mono"
+description = "Runic outlines and ligature-heavy monospace (CaskaydiaCove)"
+fonts = [
+    "examples/fonts/EBH Runes.otf",
+    "examples/fonts/CaskaydiaCoveNerdFont-Regular.ttf",
+]
 
 [test]
 debug = true

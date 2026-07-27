@@ -154,6 +154,10 @@ fn main() {
     eprintln!("bench_frames={BENCH_FRAMES}");
     eprintln!("resolution={WIDTH}x{HEIGHT}");
 
+    // Self-reported wall for brokkr --bench (mandatory elapsed_ms KV on the
+    // kv-raw harness path): warmup + benchmark frame loops.
+    let measured_start = std::time::Instant::now();
+
     // Warmup
     for _ in 0..WARMUP_FRAMES {
         render_frame(
@@ -202,8 +206,11 @@ fn main() {
     }
 
     if gpu_times_us.is_empty() {
+        // Exit nonzero: with elapsed_ms mandatory on the bench harness path,
+        // a clean exit without KVs would error the whole brokkr run instead
+        // of recording one ERROR row.
         eprintln!("No valid GPU timestamps collected");
-        return;
+        std::process::exit(1);
     }
 
     gpu_times_us.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
@@ -221,6 +228,10 @@ fn main() {
     );
 
     // KV output
+    eprintln!(
+        "elapsed_ms={:.3}",
+        measured_start.elapsed().as_secs_f64() * 1000.0
+    );
     eprintln!("gpu_min_us={min:.0}");
     eprintln!("gpu_median_us={median:.0}");
     eprintln!("gpu_avg_us={avg:.0}");

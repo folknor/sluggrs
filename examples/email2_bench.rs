@@ -325,6 +325,10 @@ fn main() {
     let mut buffers = build_buffers(&mut harness.font_system, &messages);
     let text_areas = layout_text_areas(&buffers);
 
+    // Self-reported wall for brokkr --bench (mandatory elapsed_ms KV on the
+    // kv-raw harness path). Excludes device/font init and buffer building.
+    let measured_start = Instant::now();
+
     // -- Cold prepare: all caches empty --
     let cold_start = Instant::now();
     harness
@@ -375,6 +379,10 @@ fn main() {
     let buffer_elements = harness.atlas.buffer_elements_used();
 
     // -- Emit KV pairs for brokkr --
+    eprintln!(
+        "elapsed_ms={:.3}",
+        measured_start.elapsed().as_secs_f64() * 1000.0
+    );
     eprintln!("distinct_glyphs={distinct_glyphs}");
     eprintln!("final_glyphs={final_glyphs}");
     eprintln!("total_glyph_instances={total_instances}");

@@ -44,6 +44,11 @@ fn main() {
         "How vexingly quick daft zebras jump!",
     );
 
+    // Self-reported wall for brokkr --bench (mandatory elapsed_ms KV on the
+    // kv-raw harness path). Excludes device and font-system init: covers
+    // cold + warm + mixed prepare and the GPU render loop.
+    let measured_start = Instant::now();
+
     // -- Cold path: first prepare with empty cache --
     let cold_start = Instant::now();
     harness
@@ -92,6 +97,10 @@ fn main() {
     let buffer_elements = harness.atlas.buffer_elements_used();
 
     // -- Emit KV pairs to stderr for brokkr capture --
+    eprintln!(
+        "elapsed_ms={:.3}",
+        measured_start.elapsed().as_secs_f64() * 1000.0
+    );
     eprintln!("distinct_glyphs={distinct_glyphs}");
     eprintln!("final_glyphs={final_glyphs}");
     eprintln!("buffer_elements={buffer_elements}");

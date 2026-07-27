@@ -53,12 +53,15 @@ brokkr check                                  # clippy + tests
 brokkr check -- --test glyph_pipeline_test    # run one test file
 brokkr check -- -- --ignored                  # run ignored (GPU-only) tests
 brokkr hotpath                                # timing profile (1 run, stored in results.db)
-brokkr hotpath -n 3                           # 3 runs
+brokkr hotpath --hotpath 3                    # 3 timing runs (run count rides on the mode flag)
 brokkr hotpath --alloc                        # allocation profile
-brokkr hotpath --alloc -n 5                   # 5 alloc runs
+brokkr hotpath --alloc 5                      # 5 alloc runs
+brokkr hotpath --bench                        # uninstrumented build, 3 runs - walls comparable across commits
+brokkr hotpath --bench --commit 736e18c       # build + bench an old commit (brokkr-managed worktree)
 brokkr hotpath --target email                 # email-client-scale benchmark (8k+ glyphs)
 brokkr hotpath --target email2                # mixed-locale inbox (CJK/Arabic/Hindi, 200 messages)
 brokkr hotpath --target email --alloc         # email benchmark with allocation tracking
+brokkr hotpath -v                             # full build/bench/result output
 brokkr visual [snapshot] [--all]              # run visual snapshot tests
 brokkr fmt                                    # cargo fmt (args forwarded raw)
 brokkr list                                   # list snapshots and approval state
@@ -67,7 +70,7 @@ brokkr report <run_id>                        # show detailed results for a past
 brokkr visual-status                          # dashboard: all snapshots vs approved baselines
 brokkr results                                # last 20 results
 brokkr results <uuid>                         # look up by UUID prefix
-brokkr results --compare-last --mode hotpath    # compare two most recent hotpath runs
+brokkr results --compare abc1 def2 --mode bench   # compare two commits side-by-side
 brokkr results --commit abc1                  # filter by commit prefix
 brokkr env                                    # show environment info
 brokkr clean                                  # clean build artifacts and scratch data
@@ -75,7 +78,9 @@ brokkr history                                # browse command history
 ```
 
 The `--target` flag is a free-form string. `brokkr hotpath --target foo` builds
-`examples/foo_bench.rs` and stores results with variant "foo". To add a new
+`examples/foo_bench.rs` and files results under the command name "foo" (the
+default `hotpath` target files under "render"). The measurement mode is a
+separate axis: exact values `bench`, `hotpath`, `alloc`. To add a new
 benchmark target, create `examples/{name}_bench.rs` and a `[[example]]` entry
 in `Cargo.toml`.
 
