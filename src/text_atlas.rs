@@ -181,11 +181,11 @@ impl TextAtlas {
 
     /// Set the raster pipeline and atlas bind group, then draw from the
     /// caller's vertex buffer.
-    pub(crate) fn render_raster_pass<'a>(
-        &'a self,
-        viewport: &'a Viewport,
-        pass: &mut RenderPass<'a>,
-        vertex_buffer: &'a Buffer,
+    pub(crate) fn render_raster_pass(
+        &self,
+        viewport: &Viewport,
+        pass: &mut RenderPass<'_>,
+        vertex_buffer: &Buffer,
         count: u32,
     ) {
         if let Some(raster) = &self.raster {

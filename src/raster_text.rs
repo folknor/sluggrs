@@ -342,11 +342,11 @@ impl RasterState {
 
     /// Set the raster pipeline and atlas bind group, then draw from the
     /// caller's vertex buffer.
-    pub fn render_pass<'a>(
-        &'a self,
-        viewport_bind_group: &'a BindGroup,
-        pass: &mut RenderPass<'a>,
-        vertex_buffer: &'a Buffer,
+    pub fn render_pass(
+        &self,
+        viewport_bind_group: &BindGroup,
+        pass: &mut RenderPass<'_>,
+        vertex_buffer: &Buffer,
         count: u32,
     ) {
         if count == 0 {

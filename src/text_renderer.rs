@@ -861,11 +861,11 @@ impl TextRenderer {
     }
 
     /// Renders all layouts that were previously provided to `prepare`.
-    pub fn render<'a>(
-        &'a self,
-        atlas: &'a TextAtlas,
-        viewport: &'a Viewport,
-        pass: &mut RenderPass<'a>,
+    pub fn render(
+        &self,
+        atlas: &TextAtlas,
+        viewport: &Viewport,
+        pass: &mut RenderPass<'_>,
     ) -> Result<(), RenderError> {
         // Detect trim(reset) between prepare() and render(): the atlas was
         // recreated so our instance buffer references stale glyph offsets.
