@@ -129,3 +129,15 @@ GLYPH_HEADER_TEXELS constant instead of literal 4u/5u.
 
 Validation: 74 tests + 13 GPU tests pass; all four approved snapshots at
 0.0% pixel diff (pixel-identical requirement met).
+
+## Benchmark verdict (plantasjen, same-host A/B vs 17bb626)
+
+- GPU render time unchanged: render 7 -> 7 us, email 123 -> 122 us. The
+  4 vertex-stage header reads per quad cost nothing measurable.
+- CPU prepare: email scroll 367 -> 348 us (-5%), cold 2142 -> 2032 us,
+  warm ~flat - directionally consistent with the 50% smaller instance
+  stream, near the noise floor.
+- Atlas storage grew exactly as predicted: +40 bytes per cached vector
+  glyph (render +3640 B, email +6240 B, to the byte).
+- Walls (email -3.1%, email2 -2.1%, render +3.9%) all within the
+  established +/-4% same-host noise band; the KVs above are the signal.
