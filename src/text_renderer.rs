@@ -1,7 +1,7 @@
 use crate::GlyphInstance;
 use crate::glyph_cache::{
-    ColorGlyphEntry, ColorGlyphLayer, GlyphKey,
-    COLOR_V1_VECTOR_GLYPH, COLOR_VECTOR_GLYPH, NON_VECTOR_GLYPH,
+    COLOR_V1_VECTOR_GLYPH, COLOR_VECTOR_GLYPH, ColorGlyphEntry, ColorGlyphLayer, GlyphKey,
+    NON_VECTOR_GLYPH,
 };
 use crate::outline::{ColorGlyphInfo, extract_color_info, extract_outline};
 use crate::prep::{PrepScratch, prepare_mono};
@@ -363,17 +363,12 @@ impl TextRenderer {
 
                     for wi in &work[area.work_start..area.work_end] {
                         let glyph = wi.glyph;
-                        let entry = atlas
-                            .glyphs
-                            .get(&wi.key)
-                            .expect("miss resolved in pass 2");
+                        let entry = atlas.glyphs.get(&wi.key).expect("miss resolved in pass 2");
                         area_keys.push(wi.key);
 
                         if entry.is_non_vector() {
-                            let physical = glyph.physical(
-                                (text_area.left, text_area.top),
-                                text_area.scale,
-                            );
+                            let physical =
+                                glyph.physical((text_area.left, text_area.top), text_area.scale);
                             let color = match glyph.color_opt {
                                 Some(c) => color_to_f32(c),
                                 None => area.default_color,
@@ -397,10 +392,10 @@ impl TextRenderer {
                             if let Some(v1_entry) = atlas.color_v1_glyphs.get(&wi.key) {
                                 let scale =
                                     glyph.font_size * text_area.scale / v1_entry.units_per_em;
-                                let glyph_x = text_area.left
-                                    + (glyph.x + glyph.x_offset) * text_area.scale;
-                                let glyph_y = text_area.top
-                                    + (wi.line_y + glyph.y_offset) * text_area.scale;
+                                let glyph_x =
+                                    text_area.left + (glyph.x + glyph.x_offset) * text_area.scale;
+                                let glyph_y =
+                                    text_area.top + (wi.line_y + glyph.y_offset) * text_area.scale;
                                 let [min_x, min_y, max_x, max_y] = v1_entry.bounds;
                                 let screen_x = glyph_x + min_x * scale;
                                 let screen_y = glyph_y - max_y * scale;
@@ -443,12 +438,12 @@ impl TextRenderer {
                                     Some(c) => color_to_f32(c),
                                     None => area.default_color,
                                 };
-                                let scale = glyph.font_size * text_area.scale
-                                    / color_entry.units_per_em;
-                                let glyph_x = text_area.left
-                                    + (glyph.x + glyph.x_offset) * text_area.scale;
-                                let glyph_y = text_area.top
-                                    + (wi.line_y + glyph.y_offset) * text_area.scale;
+                                let scale =
+                                    glyph.font_size * text_area.scale / color_entry.units_per_em;
+                                let glyph_x =
+                                    text_area.left + (glyph.x + glyph.x_offset) * text_area.scale;
+                                let glyph_y =
+                                    text_area.top + (wi.line_y + glyph.y_offset) * text_area.scale;
                                 let depth = metadata_to_depth(glyph.metadata);
                                 let ppem = glyph.font_size * text_area.scale;
 
@@ -498,8 +493,7 @@ impl TextRenderer {
                         let scale = glyph.font_size * text_area.scale / entry.units_per_em;
                         let [min_x, min_y, max_x, max_y] = entry.bounds;
 
-                        let glyph_x =
-                            text_area.left + (glyph.x + glyph.x_offset) * text_area.scale;
+                        let glyph_x = text_area.left + (glyph.x + glyph.x_offset) * text_area.scale;
                         let glyph_y =
                             text_area.top + (wi.line_y + glyph.y_offset) * text_area.scale;
 
@@ -527,12 +521,7 @@ impl TextRenderer {
                             screen_rect: [screen_x, screen_y, screen_w, screen_h],
                             em_rect: [min_x, min_y, max_x, max_y],
                             band_transform: entry.band_transform,
-                            glyph_data: [
-                                entry.band_offset,
-                                entry.band_max_x,
-                                entry.band_max_y,
-                                0,
-                            ],
+                            glyph_data: [entry.band_offset, entry.band_max_x, entry.band_max_y, 0],
                             color,
                             depth: metadata_to_depth(glyph.metadata),
                             ppem: glyph.font_size * text_area.scale,
@@ -603,9 +592,7 @@ impl TextRenderer {
     ) -> Result<crate::glyph_cache::GlyphEntry, PrepareError> {
         let font_weight = cosmic_text::Weight(key.font_weight);
         let cache_key = (key.font_id, font_weight);
-        if let std::collections::hash_map::Entry::Vacant(slot) =
-            self.font_cache.entry(cache_key)
-        {
+        if let std::collections::hash_map::Entry::Vacant(slot) = self.font_cache.entry(cache_key) {
             let face_index = font_system
                 .db()
                 .face(key.font_id)
@@ -671,8 +658,15 @@ impl TextRenderer {
                     .cache_key_flags
                     .contains(cosmic_text::CacheKeyFlags::FAKE_ITALIC);
                 match self.upload_colr_v0_layers(
-                    device, atlas, font_data, face_index, units_per_em,
-                    &location, &layers, fake_italic, key,
+                    device,
+                    atlas,
+                    font_data,
+                    face_index,
+                    units_per_em,
+                    &location,
+                    &layers,
+                    fake_italic,
+                    key,
                 ) {
                     Ok(entry) => entry,
                     Err(_) => NON_VECTOR_GLYPH,

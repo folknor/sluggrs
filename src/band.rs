@@ -432,7 +432,14 @@ mod tests {
             p3: [50.0, 50.0],
         }]);
         let locs = sequential_locations(1);
-        let data = build_bands(&outline, &locs, 4, 4, Vec::new(), &mut BandScratch::default());
+        let data = build_bands(
+            &outline,
+            &locs,
+            4,
+            4,
+            Vec::new(),
+            &mut BandScratch::default(),
+        );
 
         // Should not panic, should produce valid band data
         assert!(!data.entries.is_empty());
@@ -448,7 +455,14 @@ mod tests {
             p3: [100.0, 0.0],
         }]);
         let locs = sequential_locations(1);
-        let data = build_bands(&outline, &locs, 1, 1, Vec::new(), &mut BandScratch::default());
+        let data = build_bands(
+            &outline,
+            &locs,
+            1,
+            1,
+            Vec::new(),
+            &mut BandScratch::default(),
+        );
 
         // 2 band headers (h + v) * 4 u32 each = 8
         // 1 curve * 2 bands * 2 lists (desc+asc) * 4 u32 each = 16
@@ -475,7 +489,14 @@ mod tests {
             },
         ]);
         let locs = sequential_locations(2);
-        let data = build_bands(&outline, &locs, 1, 2, Vec::new(), &mut BandScratch::default());
+        let data = build_bands(
+            &outline,
+            &locs,
+            1,
+            2,
+            Vec::new(),
+            &mut BandScratch::default(),
+        );
 
         // 3 band headers (2 hbands + 1 vband) * 4 u32 = 12
         // h-band 0 (bottom) should contain curve 0
@@ -497,7 +518,14 @@ mod tests {
             p3: [90.0, 20.0],
         }]);
         let locs = sequential_locations(1);
-        let data = build_bands(&outline, &locs, 4, 4, Vec::new(), &mut BandScratch::default());
+        let data = build_bands(
+            &outline,
+            &locs,
+            4,
+            4,
+            Vec::new(),
+            &mut BandScratch::default(),
+        );
 
         let [scale_x, scale_y, offset_x, offset_y] = data.band_transform;
 
@@ -534,7 +562,14 @@ mod tests {
             p3: [100.0, 0.0],
         }]);
         let locs = sequential_locations(1);
-        let data = build_bands(&outline, &locs, 4, 1, Vec::new(), &mut BandScratch::default());
+        let data = build_bands(
+            &outline,
+            &locs,
+            4,
+            1,
+            Vec::new(),
+            &mut BandScratch::default(),
+        );
 
         // 1 h-band header + 4 v-band headers = 5 * 4 = 20 u32s
         // The curve appears in hband (1 ref * 2 lists) + all 4 vbands (4 refs * 2 lists)
@@ -559,7 +594,14 @@ mod tests {
             },
         ]);
         let locs = sequential_locations(2);
-        let data = build_bands(&outline, &locs, 3, 3, Vec::new(), &mut BandScratch::default());
+        let data = build_bands(
+            &outline,
+            &locs,
+            3,
+            3,
+            Vec::new(),
+            &mut BandScratch::default(),
+        );
         assert_eq!(data.entries.len() % 4, 0, "entries must be uint4-aligned");
     }
 }

@@ -243,6 +243,6 @@ impl Cache {
 pub(crate) struct Params {
     pub screen_size: [f32; 2],
     pub scroll_offset: [f32; 2],
-    pub flags: u32,     // bit 0: enable MSAA+stem darkening
+    pub flags: u32, // bit 0: enable MSAA+stem darkening
     pub _pad: u32,
 }

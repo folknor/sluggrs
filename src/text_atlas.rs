@@ -25,9 +25,9 @@ pub struct TextAtlas {
     // Buffer state - packed layout: each logical texel (4 i16 values) is stored
     // as 2 i32 elements (each i32 packs a pair of i16 values). All capacity/
     // cursor/offsets are in texel units; physical buffer is 2x in i32 units.
-    buffer_capacity: u32,       // in texels
-    buffer_cursor: u32,         // append cursor in texels
-    buffer_data: Vec<i32>,      // CPU-side copy (2 i32 per texel)
+    buffer_capacity: u32,  // in texels
+    buffer_cursor: u32,    // append cursor in texels
+    buffer_data: Vec<i32>, // CPU-side copy (2 i32 per texel)
 
     // Scratch buffers retained for upload_color_v1's serial sub-glyph builder.
     scratch_band_entries: Vec<i16>,
@@ -229,7 +229,8 @@ impl TextAtlas {
             // buffer_data has 2 i32s per texel
             let i32_start = start * 2;
             let i32_end = end * 2;
-            let blob_bytes: &[u8] = bytemuck::cast_slice::<i32, u8>(&self.buffer_data[i32_start..i32_end]);
+            let blob_bytes: &[u8] =
+                bytemuck::cast_slice::<i32, u8>(&self.buffer_data[i32_start..i32_end]);
             queue.write_buffer(&self.glyph_buffer, byte_offset, blob_bytes);
             self.gpu_flush_cursor = self.buffer_cursor;
         }
@@ -295,7 +296,7 @@ impl TextAtlas {
             /// [0-1]: band_max_x, band_max_y (packed i16 pair + padding)
             /// [2-5]: band_transform (4 raw i32, bitcast f32)
             header: [i32; 6],
-            band_entries_packed: Vec<i32>,  // 2 i32 per texel (packed i16 pairs)
+            band_entries_packed: Vec<i32>, // 2 i32 per texel (packed i16 pairs)
             curve_texels: Vec<[i32; 4]>,   // intermediate; packed at append time
         }
 
@@ -327,7 +328,10 @@ impl TextAtlas {
                     last[3] = q(curve.p2[1]);
                 } else {
                     curve_texels.push([
-                        q(curve.p1[0]), q(curve.p1[1]), q(curve.p2[0]), q(curve.p2[1]),
+                        q(curve.p1[0]),
+                        q(curve.p1[1]),
+                        q(curve.p2[0]),
+                        q(curve.p2[1]),
                     ]);
                 }
                 curve_locations.push(CurveLocation {
@@ -370,7 +374,11 @@ impl TextAtlas {
                 f32::to_bits(bt[3]) as i32,
             ];
 
-            sub_blobs.push(SubGlyphBlob { header, band_entries_packed, curve_texels });
+            sub_blobs.push(SubGlyphBlob {
+                header,
+                band_entries_packed,
+                curve_texels,
+            });
         }
 
         // Phase 2: compute sub-glyph offsets within the blob.
@@ -387,7 +395,9 @@ impl TextAtlas {
         // Phase 3: fixup command sub-glyph indices → blob-relative offsets.
         for cmd in &mut v1.commands {
             let opcode = cmd[0];
-            if opcode == crate::outline::CMD_DRAW_SOLID || opcode == crate::outline::CMD_DRAW_GRADIENT {
+            if opcode == crate::outline::CMD_DRAW_SOLID
+                || opcode == crate::outline::CMD_DRAW_GRADIENT
+            {
                 let sub_idx = cmd[1] as usize;
                 if sub_idx < v1.sub_glyphs.len() {
                     cmd[1] = v1.sub_glyphs[sub_idx].blob_offset as i32;
@@ -409,11 +419,14 @@ impl TextAtlas {
         // Append sub-glyph blobs
         for blob in &sub_blobs {
             self.buffer_data.extend_from_slice(&blob.header);
-            self.buffer_data.extend_from_slice(&blob.band_entries_packed);
+            self.buffer_data
+                .extend_from_slice(&blob.band_entries_packed);
             // Pack curve texels
             for v in &blob.curve_texels {
-                self.buffer_data.push(pack_i16_pair(v[0] as i16, v[1] as i16));
-                self.buffer_data.push(pack_i16_pair(v[2] as i16, v[3] as i16));
+                self.buffer_data
+                    .push(pack_i16_pair(v[0] as i16, v[1] as i16));
+                self.buffer_data
+                    .push(pack_i16_pair(v[2] as i16, v[3] as i16));
             }
         }
 

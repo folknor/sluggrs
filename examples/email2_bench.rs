@@ -258,7 +258,13 @@ impl Pools {
         let ko: Vec<char> = KO_POOL.chars().filter(|c| !c.is_whitespace()).collect();
         let ar: Vec<char> = AR_POOL.chars().filter(|c| !c.is_whitespace()).collect();
         let hi: Vec<char> = HI_POOL.chars().filter(|c| !c.is_whitespace()).collect();
-        Self { cjk, ja, ko, ar, hi }
+        Self {
+            cjk,
+            ja,
+            ko,
+            ar,
+            hi,
+        }
     }
 }
 
@@ -391,9 +397,7 @@ fn build_buffers(font_system: &mut FontSystem, messages: &[String]) -> Vec<Buffe
             let spans: Vec<(&str, Attrs)> = vec![
                 (
                     subject,
-                    Attrs::new()
-                        .family(Family::SansSerif)
-                        .weight(Weight::BOLD),
+                    Attrs::new().family(Family::SansSerif).weight(Weight::BOLD),
                 ),
                 ("\n\n", Attrs::new()),
                 (body, Attrs::new().family(Family::SansSerif)),

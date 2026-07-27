@@ -84,7 +84,9 @@ pub fn prepare_mono(
             ]);
         }
         let curve_linear = curve_texels.len() as u32 - 1;
-        scratch.curve_locations.push(CurveLocation { offset: curve_linear });
+        scratch.curve_locations.push(CurveLocation {
+            offset: curve_linear,
+        });
         curve_texels.push([quantize(curve.p3[0]), quantize(curve.p3[1]), 0, 0]);
     }
     let curve_element_count = curve_texels.len() as u32;

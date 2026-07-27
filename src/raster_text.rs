@@ -126,35 +126,33 @@ impl RasterState {
             source: wgpu::ShaderSource::Wgsl(SHADER_SOURCE.into()),
         });
 
-        let bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("raster text bgl"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("raster text bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
 
-        let pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("raster text pipeline layout"),
-                bind_group_layouts: &[Some(uniforms_layout), Some(&bind_group_layout)],
-                immediate_size: 0,
-            });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("raster text pipeline layout"),
+            bind_group_layouts: &[Some(uniforms_layout), Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("raster text pipeline"),
@@ -166,12 +164,36 @@ impl RasterState {
                     array_stride: mem::size_of::<RasterVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 0, shader_location: 0 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 8, shader_location: 1 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 16, shader_location: 2 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 24, shader_location: 3 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 4 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 48, shader_location: 5 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 8,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 16,
+                            shader_location: 2,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 24,
+                            shader_location: 3,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 32,
+                            shader_location: 4,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32,
+                            offset: 48,
+                            shader_location: 5,
+                        },
                     ],
                 }],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -235,10 +257,11 @@ impl RasterState {
                 let cached = if let Some(&c) = self.glyph_cache.get(&nv.physical.cache_key) {
                     c
                 } else {
-                    let image = match swash_cache.get_image_uncached(font_system, nv.physical.cache_key) {
-                        Some(img) => img,
-                        None => continue,
-                    };
+                    let image =
+                        match swash_cache.get_image_uncached(font_system, nv.physical.cache_key) {
+                            Some(img) => img,
+                            None => continue,
+                        };
 
                     let w = image.placement.width;
                     let h = image.placement.height;
@@ -267,7 +290,11 @@ impl RasterState {
                         wgpu::TexelCopyTextureInfo {
                             texture: &self.atlas_texture,
                             mip_level: 0,
-                            origin: wgpu::Origin3d { x: ax as u32, y: ay as u32, z: 0 },
+                            origin: wgpu::Origin3d {
+                                x: ax as u32,
+                                y: ay as u32,
+                                z: 0,
+                            },
                             aspect: wgpu::TextureAspect::All,
                         },
                         &rgba_data,
@@ -276,7 +303,11 @@ impl RasterState {
                             bytes_per_row: Some(w * 4),
                             rows_per_image: None,
                         },
-                        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                        wgpu::Extent3d {
+                            width: w,
+                            height: h,
+                            depth_or_array_layers: 1,
+                        },
                     );
 
                     let is_color = matches!(image.content, cosmic_text::SwashContent::Color);
@@ -294,8 +325,7 @@ impl RasterState {
                 };
 
                 let x = (nv.physical.x + cached.placement_left as i32) as f32;
-                let y = (nv.line_y_scaled_rounded as i32
-                    + nv.physical.y
+                let y = (nv.line_y_scaled_rounded as i32 + nv.physical.y
                     - cached.placement_top as i32) as f32;
 
                 // Cull against clip bounds
@@ -324,7 +354,10 @@ impl RasterState {
                 instances.push(RasterVertex {
                     screen_pos: [x, y],
                     screen_size: [w_f, h_f],
-                    atlas_pos: [cached.atlas_x as f32 / atlas_f, cached.atlas_y as f32 / atlas_f],
+                    atlas_pos: [
+                        cached.atlas_x as f32 / atlas_f,
+                        cached.atlas_y as f32 / atlas_f,
+                    ],
                     atlas_size: [w_f / atlas_f, h_f / atlas_f],
                     color,
                     depth: nv.depth,
@@ -364,13 +397,23 @@ impl RasterState {
         if cached > 0 && self.frame_used < cached / 4 && self.atlas_size > INITIAL_ATLAS_SIZE {
             log::debug!(
                 "raster_text: trim reset ({}/{} glyphs in use, atlas {}x{})",
-                self.frame_used, cached, self.atlas_size, self.atlas_size
+                self.frame_used,
+                cached,
+                self.atlas_size,
+                self.atlas_size
             );
             self.atlas_size = INITIAL_ATLAS_SIZE;
             self.atlas_texture = create_atlas_texture(&self.device, INITIAL_ATLAS_SIZE);
-            self.atlas_view = self.atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.atlas_view = self
+                .atlas_texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
             let sampler = create_sampler(&self.device);
-            self.bind_group = create_bind_group(&self.device, &self.bind_group_layout, &self.atlas_view, &sampler);
+            self.bind_group = create_bind_group(
+                &self.device,
+                &self.bind_group_layout,
+                &self.atlas_view,
+                &sampler,
+            );
             self.packer.reset(INITIAL_ATLAS_SIZE, INITIAL_ATLAS_SIZE);
             self.glyph_cache.clear();
         }
@@ -383,12 +426,23 @@ impl RasterState {
             log::error!("Raster atlas at device max {max_dim}, cannot grow");
             return false;
         }
-        log::debug!("Growing raster atlas: {0}x{0} → {1}x{1}", self.atlas_size, new_size);
+        log::debug!(
+            "Growing raster atlas: {0}x{0} → {1}x{1}",
+            self.atlas_size,
+            new_size
+        );
         self.atlas_size = new_size;
         self.atlas_texture = create_atlas_texture(&self.device, new_size);
-        self.atlas_view = self.atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.atlas_view = self
+            .atlas_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = create_sampler(&self.device);
-        self.bind_group = create_bind_group(&self.device, &self.bind_group_layout, &self.atlas_view, &sampler);
+        self.bind_group = create_bind_group(
+            &self.device,
+            &self.bind_group_layout,
+            &self.atlas_view,
+            &sampler,
+        );
         self.packer.reset(new_size, new_size);
         self.glyph_cache.clear();
         true
@@ -398,7 +452,11 @@ impl RasterState {
 fn create_atlas_texture(device: &Device, size: u32) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("raster text atlas"),
-        size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -427,8 +485,14 @@ fn create_bind_group(
         label: Some("raster text bind group"),
         layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
         ],
     })
 }

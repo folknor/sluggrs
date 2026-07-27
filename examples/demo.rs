@@ -1,9 +1,9 @@
 use sluggrs::band::{self, CurveLocation, build_bands};
-use sluggrs::outline::{
-    char_to_glyph_id, encode_colr_v1, extract_color_info, extract_outline,
-    ColorGlyphInfo, CMD_DRAW_GRADIENT, CMD_DRAW_SOLID,
-};
 use sluggrs::outline::GlyphOutline;
+use sluggrs::outline::{
+    CMD_DRAW_GRADIENT, CMD_DRAW_SOLID, ColorGlyphInfo, char_to_glyph_id, encode_colr_v1,
+    extract_color_info, extract_outline,
+};
 
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -40,14 +40,17 @@ struct GlyphInstance {
 struct Params {
     screen_size: [f32; 2],
     scroll_offset: [f32; 2],
-    flags: u32,     // bit 0: enable MSAA+stem darkening
+    flags: u32, // bit 0: enable MSAA+stem darkening
     _pad: u32,
 }
 
 /// Prepared glyph data ready for GPU upload.
 enum PreparedGlyph {
     /// Standard monochrome or COLRv0 layer glyph.
-    Normal { outline: GlyphOutline, band_data: band::BandData },
+    Normal {
+        outline: GlyphOutline,
+        band_data: band::BandData,
+    },
     /// Pre-built COLRv1 blob (pre-packed i32 values, 2 per texel).
     RawBlob { data: Vec<i32> },
 }
@@ -72,7 +75,12 @@ fn build_glyph_buffer(glyphs: &[PreparedGlyph]) -> Vec<i32> {
             PreparedGlyph::Normal { outline, band_data } => {
                 let mut curve_texels: Vec<[i32; 4]> = Vec::new();
                 for curve in &outline.curves {
-                    curve_texels.push([q(curve.p1[0]), q(curve.p1[1]), q(curve.p2[0]), q(curve.p2[1])]);
+                    curve_texels.push([
+                        q(curve.p1[0]),
+                        q(curve.p1[1]),
+                        q(curve.p2[0]),
+                        q(curve.p2[1]),
+                    ]);
                     curve_texels.push([q(curve.p3[0]), q(curve.p3[1]), 0, 0]);
                 }
                 // Pack band entries: 4 i16 values → 2 packed i32 values
@@ -166,10 +174,10 @@ fn prepare_text(
             .unwrap_or_default();
         // Helper: push one outline as a glyph instance + prepared data.
         let push_outline = |outline: GlyphOutline,
-                                inst_color: [f32; 4],
-                                instances: &mut Vec<GlyphInstance>,
-                                prepared: &mut Vec<PreparedGlyph>,
-                                buffer_offset: &mut u32| {
+                            inst_color: [f32; 4],
+                            instances: &mut Vec<GlyphInstance>,
+                            prepared: &mut Vec<PreparedGlyph>,
+                            buffer_offset: &mut u32| {
             let num_curves = outline.curves.len();
             let curve_locations: Vec<CurveLocation> = (0..num_curves)
                 .map(|i| CurveLocation {
@@ -211,8 +219,18 @@ fn prepare_text(
         {
             for layer in &layers {
                 if let Some(outline) = extract_outline(font_data, 0, layer.glyph_id, &location) {
-                    let c = if layer.use_foreground { color } else { layer.color };
-                    push_outline(outline, c, &mut instances, &mut prepared, &mut buffer_offset);
+                    let c = if layer.use_foreground {
+                        color
+                    } else {
+                        layer.color
+                    };
+                    push_outline(
+                        outline,
+                        c,
+                        &mut instances,
+                        &mut prepared,
+                        &mut buffer_offset,
+                    );
                 }
             }
         } else if let Some(mut v1_data) = encode_colr_v1(font_data, 0, glyph_id, &location) {
@@ -220,7 +238,7 @@ fn prepare_text(
 
             // Build sub-glyph blobs (header + bands + curves)
             struct SubBlob {
-                header: [i32; 6],           // 3 packed texels
+                header: [i32; 6],            // 3 packed texels
                 band_entries: Vec<i32>,      // packed i16 pairs
                 curve_texels: Vec<[i32; 4]>, // intermediate; packed at blob time
             }
@@ -244,15 +262,31 @@ fn prepare_text(
                         last[2] = q(curve.p2[0]);
                         last[3] = q(curve.p2[1]);
                     } else {
-                        curve_texels.push([q(curve.p1[0]), q(curve.p1[1]), q(curve.p2[0]), q(curve.p2[1])]);
+                        curve_texels.push([
+                            q(curve.p1[0]),
+                            q(curve.p1[1]),
+                            q(curve.p2[0]),
+                            q(curve.p2[1]),
+                        ]);
                     }
-                    curve_locs.push(CurveLocation { offset: curve_texels.len() as u32 - 1 });
+                    curve_locs.push(CurveLocation {
+                        offset: curve_texels.len() as u32 - 1,
+                    });
                     curve_texels.push([q(curve.p3[0]), q(curve.p3[1]), 0, 0]);
                 }
 
                 let bc = (num_curves as u32).clamp(1, 16);
-                let bd = build_bands(o, &curve_locs, bc, bc, Vec::new(), &mut band::BandScratch::default());
-                let band_entries: Vec<i32> = bd.entries.chunks(4)
+                let bd = build_bands(
+                    o,
+                    &curve_locs,
+                    bc,
+                    bc,
+                    Vec::new(),
+                    &mut band::BandScratch::default(),
+                );
+                let band_entries: Vec<i32> = bd
+                    .entries
+                    .chunks(4)
                     .flat_map(|c| [pack_i16_pair(c[0], c[1]), pack_i16_pair(c[2], c[3])])
                     .collect();
 
@@ -261,10 +295,16 @@ fn prepare_text(
                 let header: [i32; 6] = [
                     pack_i16_pair(bc.saturating_sub(1) as i16, bc.saturating_sub(1) as i16),
                     0,
-                    f32::to_bits(bt[0]) as i32, f32::to_bits(bt[1]) as i32,
-                    f32::to_bits(bt[2]) as i32, f32::to_bits(bt[3]) as i32,
+                    f32::to_bits(bt[0]) as i32,
+                    f32::to_bits(bt[1]) as i32,
+                    f32::to_bits(bt[2]) as i32,
+                    f32::to_bits(bt[3]) as i32,
                 ];
-                sub_blobs.push(SubBlob { header, band_entries, curve_texels });
+                sub_blobs.push(SubBlob {
+                    header,
+                    band_entries,
+                    curve_texels,
+                });
             }
 
             // Compute sub-glyph offsets (in packed texel units)
@@ -327,7 +367,13 @@ fn prepare_text(
             prepared.push(PreparedGlyph::RawBlob { data: blob_data });
             buffer_offset += total_size;
         } else if let Some(outline) = extract_outline(font_data, 0, glyph_id, &location) {
-            push_outline(outline, color, &mut instances, &mut prepared, &mut buffer_offset);
+            push_outline(
+                outline,
+                color,
+                &mut instances,
+                &mut prepared,
+                &mut buffer_offset,
+            );
         }
 
         cursor_x += advance * scale;
@@ -865,12 +911,21 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     add_line(
         TWEMOJI_COLR,
         "\u{1F600}\u{1F60D}\u{1F525}\u{2764}\u{1F680}\u{1F308}\u{1F3B5}\u{2B50}",
-        48.0, left, y, white, None,
+        48.0,
+        left,
+        y,
+        white,
+        None,
     );
     y += 24.0;
     add_line(
-        INTER_VARIABLE, "48px Twemoji COLRv0: color vector emoji",
-        14.0, left, y, light_gray, None,
+        INTER_VARIABLE,
+        "48px Twemoji COLRv0: color vector emoji",
+        14.0,
+        left,
+        y,
+        light_gray,
+        None,
     );
     y += 40.0;
 
@@ -879,12 +934,21 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     add_line(
         NOTO_COLRV1,
         "\u{1F600}\u{1F60D}\u{1F525}\u{2764}\u{1F680}\u{1F308}\u{1F3B5}\u{2B50}",
-        48.0, left, y, white, None,
+        48.0,
+        left,
+        y,
+        white,
+        None,
     );
     y += 24.0;
     add_line(
-        INTER_VARIABLE, "48px Noto COLRv1: gradient vector emoji",
-        14.0, left, y, light_gray, None,
+        INTER_VARIABLE,
+        "48px Noto COLRv1: gradient vector emoji",
+        14.0,
+        left,
+        y,
+        light_gray,
+        None,
     );
     y += 40.0;
 
@@ -998,7 +1062,11 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
 
     // Build unified glyph buffer
     let glyph_buffer_data = build_glyph_buffer(&all_prepared);
-    log::info!("Glyph buffer: {} i32 elements ({} bytes)", glyph_buffer_data.len(), glyph_buffer_data.len() * 4);
+    log::info!(
+        "Glyph buffer: {} i32 elements ({} bytes)",
+        glyph_buffer_data.len(),
+        glyph_buffer_data.len() * 4
+    );
 
     let glyph_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("glyph buffer"),
@@ -1217,8 +1285,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
 
 fn render(state: &mut RenderState) {
     let frame = match state.surface.get_current_texture() {
-        wgpu::CurrentSurfaceTexture::Success(f)
-        | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+        wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
         other => {
             log::error!("Failed to get surface texture: {other:?}");
             return;

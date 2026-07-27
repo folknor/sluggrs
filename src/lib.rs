@@ -9,11 +9,11 @@ pub mod viewport;
 // not part of the stable iced integration API. Internal representations
 // may change.
 pub mod band;
-pub(crate) mod raster_text;
 pub mod glyph_cache;
 pub mod outline;
 pub mod prep;
 pub mod prepare;
+pub(crate) mod raster_text;
 
 // Public API - matches cryoglyph's interface for iced integration
 pub use glyph_cache::GlyphKey;
@@ -43,5 +43,5 @@ pub struct GlyphInstance {
     pub color: [f32; 4],          // RGBA
     pub depth: f32,               // z-depth for iced widget layering
     pub ppem: f32,                // pixels per em (for MSAA/darkening thresholds)
-    pub _pad: [f32; 2],          // alignment padding
+    pub _pad: [f32; 2],           // alignment padding
 }

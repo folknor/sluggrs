@@ -453,7 +453,14 @@ fn band_data_single_band() {
         })
         .collect();
 
-    let band_data = build_bands(gpu_outline, &curve_locations, 1, 1, Vec::new(), &mut sluggrs::band::BandScratch::default());
+    let band_data = build_bands(
+        gpu_outline,
+        &curve_locations,
+        1,
+        1,
+        Vec::new(),
+        &mut sluggrs::band::BandScratch::default(),
+    );
 
     assert_eq!(band_data.band_count_x, 1);
     assert_eq!(band_data.band_count_y, 1);
@@ -462,16 +469,24 @@ fn band_data_single_band() {
     // in both bands, with dual sorted lists (desc + asc) per band.
     // Headers: 2 bands * 4 u32s = 8
     // Curve refs: non_horiz * 2 lists + non_vert * 2 lists, * 4 u32s each
-    let non_horiz = gpu_outline.curves.iter().filter(|c| {
-        let min_y = c.p1[1].min(c.p2[1]).min(c.p3[1]);
-        let max_y = c.p1[1].max(c.p2[1]).max(c.p3[1]);
-        min_y != max_y
-    }).count();
-    let non_vert = gpu_outline.curves.iter().filter(|c| {
-        let min_x = c.p1[0].min(c.p2[0]).min(c.p3[0]);
-        let max_x = c.p1[0].max(c.p2[0]).max(c.p3[0]);
-        min_x != max_x
-    }).count();
+    let non_horiz = gpu_outline
+        .curves
+        .iter()
+        .filter(|c| {
+            let min_y = c.p1[1].min(c.p2[1]).min(c.p3[1]);
+            let max_y = c.p1[1].max(c.p2[1]).max(c.p3[1]);
+            min_y != max_y
+        })
+        .count();
+    let non_vert = gpu_outline
+        .curves
+        .iter()
+        .filter(|c| {
+            let min_x = c.p1[0].min(c.p2[0]).min(c.p3[0]);
+            let max_x = c.p1[0].max(c.p2[0]).max(c.p3[0]);
+            min_x != max_x
+        })
+        .count();
     let expected_curve_refs = (non_horiz * 2 + non_vert * 2) * 4;
     let expected_total = 8 + expected_curve_refs;
     assert_eq!(

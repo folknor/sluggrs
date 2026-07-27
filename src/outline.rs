@@ -2,9 +2,9 @@
 /// Converts all curves to quadratic beziers (TrueType is native, CFF cubics are subdivided).
 use skrifa::{
     MetadataProvider,
+    color::{Brush, ColorGlyphFormat, ColorPainter, CompositeMode, Transform},
     instance::Size,
     outline::{DrawSettings, OutlinePen},
-    color::{Brush, ColorGlyphFormat, ColorPainter, CompositeMode, Transform},
 };
 
 /// A quadratic bezier curve: 3 control points in em-space.
@@ -393,8 +393,7 @@ pub fn extract_color_info(
 
     match color_glyph.format() {
         ColorGlyphFormat::ColrV1 => {
-            encode_colr_v1(font_data, face_index, glyph_id, location)
-                .map(ColorGlyphInfo::V1)
+            encode_colr_v1(font_data, face_index, glyph_id, location).map(ColorGlyphInfo::V1)
         }
         ColorGlyphFormat::ColrV0 => {
             let palettes = font.color_palettes();
@@ -493,8 +492,10 @@ pub fn encode_colr_v1(
 ) -> Option<ColorV1Data> {
     let font = skrifa::FontRef::from_index(font_data, face_index).ok()?;
     let color_glyphs = font.color_glyphs();
-    let color_glyph =
-        color_glyphs.get_with_format(skrifa::GlyphId::new(glyph_id as u32), ColorGlyphFormat::ColrV1)?;
+    let color_glyph = color_glyphs.get_with_format(
+        skrifa::GlyphId::new(glyph_id as u32),
+        ColorGlyphFormat::ColrV1,
+    )?;
 
     let palettes = font.color_palettes();
     let palette = palettes.get(0);
@@ -535,14 +536,24 @@ pub fn encode_colr_v1(
 /// y' = yx*x + yy*y + dy
 #[derive(Debug, Clone, Copy)]
 struct AffineTransform {
-    xx: f32, yx: f32,
-    xy: f32, yy: f32,
-    dx: f32, dy: f32,
+    xx: f32,
+    yx: f32,
+    xy: f32,
+    yy: f32,
+    dx: f32,
+    dy: f32,
 }
 
 impl AffineTransform {
     fn identity() -> Self {
-        Self { xx: 1.0, yx: 0.0, xy: 0.0, yy: 1.0, dx: 0.0, dy: 0.0 }
+        Self {
+            xx: 1.0,
+            yx: 0.0,
+            xy: 0.0,
+            yy: 1.0,
+            dx: 0.0,
+            dy: 0.0,
+        }
     }
 
     /// Concatenate: self * other (apply other first, then self).
@@ -581,7 +592,14 @@ impl AffineTransform {
     }
 
     fn from_skrifa(t: &Transform) -> Self {
-        Self { xx: t.xx, yx: t.yx, xy: t.xy, yy: t.yy, dx: t.dx, dy: t.dy }
+        Self {
+            xx: t.xx,
+            yx: t.yx,
+            xy: t.xy,
+            yy: t.yy,
+            dx: t.dx,
+            dy: t.dy,
+        }
     }
 }
 
@@ -615,19 +633,22 @@ struct CommandEncoder<'a> {
 
 impl<'a> CommandEncoder<'a> {
     fn current_transform(&self) -> &AffineTransform {
-        self.transform_stack.last().expect("transform stack not empty")
+        self.transform_stack
+            .last()
+            .expect("transform stack not empty")
     }
 
     /// Extract a glyph outline and apply the current transform to all control points.
     fn extract_transformed_outline(&self, glyph_id: skrifa::GlyphId) -> Option<GlyphOutline> {
         let mut outline = extract_outline(
-            self.font_data, self.face_index, glyph_id.to_u32() as u16, self.location,
+            self.font_data,
+            self.face_index,
+            glyph_id.to_u32() as u16,
+            self.location,
         )?;
 
         let t = self.current_transform();
-        if t.xx != 1.0 || t.xy != 0.0 || t.yx != 0.0 || t.yy != 1.0
-            || t.dx != 0.0 || t.dy != 0.0
-        {
+        if t.xx != 1.0 || t.xy != 0.0 || t.yx != 0.0 || t.yy != 1.0 || t.dx != 0.0 || t.dy != 0.0 {
             let mut min = [f32::MAX; 2];
             let mut max = [f32::MIN; 2];
             for curve in &mut outline.curves {
@@ -650,7 +671,10 @@ impl<'a> CommandEncoder<'a> {
     /// Add a sub-glyph and return its index (offset will be set during upload).
     fn add_sub_glyph(&mut self, outline: GlyphOutline) -> u32 {
         let idx = self.sub_glyphs.len() as u32;
-        self.sub_glyphs.push(ColorV1SubGlyph { outline, blob_offset: 0 });
+        self.sub_glyphs.push(ColorV1SubGlyph {
+            outline,
+            blob_offset: 0,
+        });
         idx
     }
 
@@ -676,7 +700,8 @@ impl<'a> CommandEncoder<'a> {
 
     fn emit_draw_solid(&mut self, sub_glyph_idx: u32, color: [f32; 4]) {
         let [rg, ba] = pack_color_i32(color[0], color[1], color[2], color[3]);
-        self.commands.push([CMD_DRAW_SOLID, sub_glyph_idx as i32, rg, ba]);
+        self.commands
+            .push([CMD_DRAW_SOLID, sub_glyph_idx as i32, rg, ba]);
     }
 
     fn emit_draw_gradient(
@@ -694,12 +719,24 @@ impl<'a> CommandEncoder<'a> {
         } else {
             current
         };
-        let inv = full_transform.invert().unwrap_or_else(AffineTransform::identity);
+        let inv = full_transform
+            .invert()
+            .unwrap_or_else(AffineTransform::identity);
 
         match brush {
-            Brush::LinearGradient { p0, p1, color_stops, extend: _ } => {
+            Brush::LinearGradient {
+                p0,
+                p1,
+                color_stops,
+                extend: _,
+            } => {
                 // Command header
-                self.commands.push([CMD_DRAW_GRADIENT, sub_glyph_idx as i32, 0, color_stops.len() as i32]);
+                self.commands.push([
+                    CMD_DRAW_GRADIENT,
+                    sub_glyph_idx as i32,
+                    0,
+                    color_stops.len() as i32,
+                ]);
                 // Inverse transform (2 texels, 6 fixed-point values)
                 let [ixx_i, ixx_f] = pack_fixed(inv.xx);
                 let [ixy_i, ixy_f] = pack_fixed(inv.xy);
@@ -725,8 +762,20 @@ impl<'a> CommandEncoder<'a> {
                     self.commands.push([off_i, off_f, rg, ba]);
                 }
             }
-            Brush::RadialGradient { c0, r0, c1, r1, color_stops, extend: _ } => {
-                self.commands.push([CMD_DRAW_GRADIENT, sub_glyph_idx as i32, 1, color_stops.len() as i32]);
+            Brush::RadialGradient {
+                c0,
+                r0,
+                c1,
+                r1,
+                color_stops,
+                extend: _,
+            } => {
+                self.commands.push([
+                    CMD_DRAW_GRADIENT,
+                    sub_glyph_idx as i32,
+                    1,
+                    color_stops.len() as i32,
+                ]);
                 // Inverse transform (3 texels)
                 let [ixx_i, ixx_f] = pack_fixed(inv.xx);
                 let [ixy_i, ixy_f] = pack_fixed(inv.xy);
@@ -755,8 +804,19 @@ impl<'a> CommandEncoder<'a> {
                     self.commands.push([off_i, off_f, rg, ba]);
                 }
             }
-            Brush::SweepGradient { c0, start_angle, end_angle, color_stops, extend: _ } => {
-                self.commands.push([CMD_DRAW_GRADIENT, sub_glyph_idx as i32, 2, color_stops.len() as i32]);
+            Brush::SweepGradient {
+                c0,
+                start_angle,
+                end_angle,
+                color_stops,
+                extend: _,
+            } => {
+                self.commands.push([
+                    CMD_DRAW_GRADIENT,
+                    sub_glyph_idx as i32,
+                    2,
+                    color_stops.len() as i32,
+                ]);
                 // Inverse transform (3 texels)
                 let [ixx_i, ixx_f] = pack_fixed(inv.xx);
                 let [ixy_i, ixy_f] = pack_fixed(inv.xy);
@@ -782,7 +842,10 @@ impl<'a> CommandEncoder<'a> {
                     self.commands.push([off_i, off_f, rg, ba]);
                 }
             }
-            Brush::Solid { palette_index, alpha } => {
+            Brush::Solid {
+                palette_index,
+                alpha,
+            } => {
                 let color = self.resolve_color(*palette_index, *alpha);
                 self.emit_draw_solid(sub_glyph_idx, color);
             }
@@ -792,7 +855,9 @@ impl<'a> CommandEncoder<'a> {
 
 impl ColorPainter for CommandEncoder<'_> {
     fn push_transform(&mut self, transform: Transform) {
-        let new = self.current_transform().then(&AffineTransform::from_skrifa(&transform));
+        let new = self
+            .current_transform()
+            .then(&AffineTransform::from_skrifa(&transform));
         self.transform_stack.push(new);
     }
 
@@ -829,7 +894,10 @@ impl ColorPainter for CommandEncoder<'_> {
         let sub_idx = self.add_sub_glyph(outline);
 
         match &brush {
-            Brush::Solid { palette_index, alpha } => {
+            Brush::Solid {
+                palette_index,
+                alpha,
+            } => {
                 let color = self.resolve_color(*palette_index, *alpha);
                 self.emit_draw_solid(sub_idx, color);
             }
@@ -852,13 +920,17 @@ impl ColorPainter for CommandEncoder<'_> {
         let sub_idx = self.add_sub_glyph(outline);
 
         match &brush {
-            Brush::Solid { palette_index, alpha } => {
+            Brush::Solid {
+                palette_index,
+                alpha,
+            } => {
                 let color = self.resolve_color(*palette_index, *alpha);
                 self.emit_draw_solid(sub_idx, color);
             }
             _ => {
                 let bt = brush_transform.map(|t| {
-                    self.current_transform().then(&AffineTransform::from_skrifa(&t))
+                    self.current_transform()
+                        .then(&AffineTransform::from_skrifa(&t))
                 });
                 self.emit_draw_gradient(sub_idx, &brush, bt.as_ref());
             }
@@ -877,7 +949,8 @@ impl ColorPainter for CommandEncoder<'_> {
 
     fn pop_layer_with_mode(&mut self, composite_mode: CompositeMode) {
         self.composite_mode_stack.pop(); // discard stored mode
-        self.commands.push([CMD_POP_GROUP, composite_mode as i32, 0, 0]);
+        self.commands
+            .push([CMD_POP_GROUP, composite_mode as i32, 0, 0]);
     }
 }
 
@@ -888,8 +961,7 @@ mod tests {
     #[test]
     fn noto_color_emoji_colrv1() {
         let font_data = include_bytes!("../examples/fonts/NotoColorEmoji-Regular.ttf");
-        let gid = char_to_glyph_id(font_data.as_slice(), 0, '\u{1F600}')
-            .expect("U+1F600 in cmap");
+        let gid = char_to_glyph_id(font_data.as_slice(), 0, '\u{1F600}').expect("U+1F600 in cmap");
         let info = extract_color_info(font_data.as_slice(), 0, gid, &[]);
         match &info {
             Some(ColorGlyphInfo::V1(v1)) => {
@@ -911,13 +983,14 @@ mod tests {
             let color_info = extract_color_info(font_data.as_slice(), 0, gid, &[]);
             match &color_info {
                 Some(ColorGlyphInfo::V0Layers(layers)) => {
-                    assert!(!layers.is_empty(),
-                        "U+{:04X}: V0 but no layers", ch as u32);
+                    assert!(!layers.is_empty(), "U+{:04X}: V0 but no layers", ch as u32);
                     for (i, l) in layers.iter().enumerate() {
                         let outline = extract_outline(font_data.as_slice(), 0, l.glyph_id, &[]);
-                        assert!(outline.is_some(),
+                        assert!(
+                            outline.is_some(),
                             "U+{:04X} layer {i}: glyph_id={} has no outline",
-                            ch as u32, l.glyph_id,
+                            ch as u32,
+                            l.glyph_id,
                         );
                     }
                 }

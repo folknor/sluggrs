@@ -3,7 +3,7 @@
 //!
 //! Run with: cargo test --test outline_edge_cases_test -- --nocapture
 
-use sluggrs::band::{build_bands, CurveLocation};
+use sluggrs::band::{CurveLocation, build_bands};
 use sluggrs::outline::{char_to_glyph_id, extract_outline};
 use sluggrs::prepare::apply_italic_shear;
 
@@ -21,8 +21,7 @@ fn load_inter() -> Vec<u8> {
 #[test]
 fn fake_italic_changes_geometry() {
     let font_data = load_inter();
-    let glyph_id =
-        char_to_glyph_id(&font_data, 0, 'A').expect("'A' should be mapped in Inter");
+    let glyph_id = char_to_glyph_id(&font_data, 0, 'A').expect("'A' should be mapped in Inter");
 
     let outline =
         extract_outline(&font_data, 0, glyph_id, &[]).expect("'A' should have an outline");
@@ -78,7 +77,9 @@ fn fake_italic_changes_geometry() {
                 assert!(
                     ps[0] > po[0],
                     "For positive y ({:.1}), sheared x ({:.4}) should be greater than original x ({:.4})",
-                    po[1], ps[0], po[0]
+                    po[1],
+                    ps[0],
+                    po[0]
                 );
             }
             // y coordinates must be unchanged
@@ -100,7 +101,9 @@ fn find_ttc_font() -> Option<Vec<u8>> {
         let entries = std::fs::read_dir(dir).ok()?;
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() && let Some(data) = walk(&path) {
+            if path.is_dir()
+                && let Some(data) = walk(&path)
+            {
                 return Some(data);
             } else if let Some(ext) = path.extension()
                 && ext.eq_ignore_ascii_case("ttc")
@@ -118,7 +121,9 @@ fn find_ttc_font() -> Option<Vec<u8>> {
 
     for dir in &["/usr/share/fonts", "/usr/local/share/fonts"] {
         let p = std::path::Path::new(dir);
-        if p.is_dir() && let Some(data) = walk(p) {
+        if p.is_dir()
+            && let Some(data) = walk(p)
+        {
             return Some(data);
         }
     }
@@ -158,10 +163,8 @@ fn ttc_face_index_correctness() {
         }
     };
 
-    let outline_0 =
-        extract_outline(&font_data, 0, glyph_id, &[]).expect("Face 0 outline");
-    let outline_1 =
-        extract_outline(&font_data, 1, glyph_id, &[]).expect("Face 1 outline");
+    let outline_0 = extract_outline(&font_data, 0, glyph_id, &[]).expect("Face 0 outline");
+    let outline_1 = extract_outline(&font_data, 1, glyph_id, &[]).expect("Face 1 outline");
 
     // The two faces should produce different geometry (different typefaces in the collection).
     let bounds_differ = outline_0.bounds != outline_1.bounds;
@@ -173,9 +176,7 @@ fn ttc_face_index_correctness() {
             .curves
             .iter()
             .zip(outline_1.curves.iter())
-            .any(|(a, b)| {
-                a.p1 != b.p1 || a.p2 != b.p2 || a.p3 != b.p3
-            })
+            .any(|(a, b)| a.p1 != b.p1 || a.p2 != b.p2 || a.p3 != b.p3)
     } else {
         true
     };
@@ -202,12 +203,11 @@ fn ttc_face_index_correctness() {
 #[test]
 fn comma_line_only_glyph_regression() {
     let font_data = load_inter();
-    let glyph_id =
-        char_to_glyph_id(&font_data, 0, ',').expect("Comma should be mapped in Inter");
+    let glyph_id = char_to_glyph_id(&font_data, 0, ',').expect("Comma should be mapped in Inter");
 
     // Step 1: Extract outline and verify it has curves.
-    let outline = extract_outline(&font_data, 0, glyph_id, &[])
-        .expect("Comma should have an outline");
+    let outline =
+        extract_outline(&font_data, 0, glyph_id, &[]).expect("Comma should have an outline");
     eprintln!(
         "Comma outline: {} curves, bounds={:?}",
         outline.curves.len(),
@@ -220,14 +220,18 @@ fn comma_line_only_glyph_regression() {
 
     // The comma in Inter Variable is made of line segments, encoded as degenerate
     // quadratics where p2 = p1 (harfbuzz-style encoding).
-    let all_linear = outline.curves.iter().all(|c| {
-        (c.p2[0] - c.p1[0]).abs() < 1e-6 && (c.p2[1] - c.p1[1]).abs() < 1e-6
-    });
+    let all_linear = outline
+        .curves
+        .iter()
+        .all(|c| (c.p2[0] - c.p1[0]).abs() < 1e-6 && (c.p2[1] - c.p1[1]).abs() < 1e-6);
     assert!(
         all_linear,
         "All comma curves should be degenerate quadratics (p2 = p1)"
     );
-    eprintln!("Confirmed: all {} comma curves are linear (p2 = p1)", outline.curves.len());
+    eprintln!(
+        "Confirmed: all {} comma curves are linear (p2 = p1)",
+        outline.curves.len()
+    );
 
     // Step 2: Build bands with a single band (1x1) - the simplest case.
     let curve_locations: Vec<CurveLocation> = (0..outline.curves.len())
@@ -236,7 +240,14 @@ fn comma_line_only_glyph_regression() {
         })
         .collect();
 
-    let band_data = build_bands(&outline, &curve_locations, 1, 1, Vec::new(), &mut sluggrs::band::BandScratch::default());
+    let band_data = build_bands(
+        &outline,
+        &curve_locations,
+        1,
+        1,
+        Vec::new(),
+        &mut sluggrs::band::BandScratch::default(),
+    );
 
     // Band data should be non-empty.
     assert!(
@@ -257,16 +268,24 @@ fn comma_line_only_glyph_regression() {
     // hbands and vertical curves from vbands (they can never produce ray
     // crossings on that axis). Count expected curves per band type.
     let num_curves = outline.curves.len();
-    let non_horizontal = outline.curves.iter().filter(|c| {
-        let min_y = c.p1[1].min(c.p2[1]).min(c.p3[1]);
-        let max_y = c.p1[1].max(c.p2[1]).max(c.p3[1]);
-        min_y != max_y
-    }).count();
-    let non_vertical = outline.curves.iter().filter(|c| {
-        let min_x = c.p1[0].min(c.p2[0]).min(c.p3[0]);
-        let max_x = c.p1[0].max(c.p2[0]).max(c.p3[0]);
-        min_x != max_x
-    }).count();
+    let non_horizontal = outline
+        .curves
+        .iter()
+        .filter(|c| {
+            let min_y = c.p1[1].min(c.p2[1]).min(c.p3[1]);
+            let max_y = c.p1[1].max(c.p2[1]).max(c.p3[1]);
+            min_y != max_y
+        })
+        .count();
+    let non_vertical = outline
+        .curves
+        .iter()
+        .filter(|c| {
+            let min_x = c.p1[0].min(c.p2[0]).min(c.p3[0]);
+            let max_x = c.p1[0].max(c.p2[0]).max(c.p3[0]);
+            min_x != max_x
+        })
+        .count();
 
     // Headers = 2 bands * 4 u32s = 8, plus curve refs * 2 lists (desc+asc) * 4 u32s each
     let expected_total = 8 + (non_horizontal + non_vertical) * 2 * 4;
@@ -316,10 +335,8 @@ fn ttc_units_per_em_face_index() {
     use skrifa::raw::TableProvider;
 
     // Parse both faces and extract units_per_em
-    let face_0 = skrifa::FontRef::from_index(&font_data, 0)
-        .expect("Face 0 should parse");
-    let face_1 = skrifa::FontRef::from_index(&font_data, 1)
-        .expect("Face 1 should parse");
+    let face_0 = skrifa::FontRef::from_index(&font_data, 0).expect("Face 0 should parse");
+    let face_1 = skrifa::FontRef::from_index(&font_data, 1).expect("Face 1 should parse");
 
     let upem_0 = face_0.head().expect("face 0 head").units_per_em();
     let upem_1 = face_1.head().expect("face 1 head").units_per_em();
@@ -327,13 +344,18 @@ fn ttc_units_per_em_face_index() {
     eprintln!("TTC face 0 units_per_em={upem_0}, face 1 units_per_em={upem_1}");
 
     // Both values must be valid (non-zero, reasonable range)
-    assert!(upem_0 > 0 && upem_0 <= 16384, "face 0 upem out of range: {upem_0}");
-    assert!(upem_1 > 0 && upem_1 <= 16384, "face 1 upem out of range: {upem_1}");
+    assert!(
+        upem_0 > 0 && upem_0 <= 16384,
+        "face 0 upem out of range: {upem_0}"
+    );
+    assert!(
+        upem_1 > 0 && upem_1 <= 16384,
+        "face 1 upem out of range: {upem_1}"
+    );
 
     // Verify that FontRef::new() would have returned face 0's value,
     // demonstrating why from_index() is necessary for face 1.
-    let face_default = skrifa::FontRef::new(&font_data)
-        .expect("Default face should parse");
+    let face_default = skrifa::FontRef::new(&font_data).expect("Default face should parse");
     let upem_default = face_default.head().expect("default head").units_per_em();
     assert_eq!(
         upem_default, upem_0,

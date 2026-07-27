@@ -5,9 +5,7 @@ use sluggrs::{
     Cache, ColorMode, Resolution, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
 
-use cosmic_text::{
-    Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Weight,
-};
+use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
 
 use std::sync::Arc;
 use winit::{
@@ -124,97 +122,268 @@ fn build_lines(font_system: &mut FontSystem, sf: f32) -> Vec<TextLine> {
     macro_rules! line {
         ($family:expr, $weight:expr, $text:expr, $size:expr, $color:expr) => {
             lines.push(make_line(
-                font_system, $text, $family, $weight, $size, left, y, sf, $color,
+                font_system,
+                $text,
+                $family,
+                $weight,
+                $size,
+                left,
+                y,
+                sf,
+                $color,
             ));
         };
     }
 
     // --- Sizes (Inter Variable) ---
-    line!(inter, w(400), "8px Inter: the quick brown fox jumps over the lazy dog \u{2014} MSAA target", 8.0, light_gray);
+    line!(
+        inter,
+        w(400),
+        "8px Inter: the quick brown fox jumps over the lazy dog \u{2014} MSAA target",
+        8.0,
+        light_gray
+    );
     y += 16.0;
-    line!(inter, w(400), "10px Inter: the quick brown fox jumps over the lazy dog", 10.0, light_gray);
+    line!(
+        inter,
+        w(400),
+        "10px Inter: the quick brown fox jumps over the lazy dog",
+        10.0,
+        light_gray
+    );
     y += 20.0;
-    line!(inter, w(400), "12px Inter: the quick brown fox jumps over the lazy dog", 12.0, light_gray);
+    line!(
+        inter,
+        w(400),
+        "12px Inter: the quick brown fox jumps over the lazy dog",
+        12.0,
+        light_gray
+    );
     y += 24.0;
-    line!(inter, w(400), "16px Inter: the quick brown fox jumps over the lazy dog", 16.0, white);
+    line!(
+        inter,
+        w(400),
+        "16px Inter: the quick brown fox jumps over the lazy dog",
+        16.0,
+        white
+    );
     y += 30.0;
-    line!(inter, w(400), "24px Inter: the quick brown fox jumps over the lazy dog", 24.0, white);
+    line!(
+        inter,
+        w(400),
+        "24px Inter: the quick brown fox jumps over the lazy dog",
+        24.0,
+        white
+    );
     y += 40.0;
-    line!(inter, w(400), "48px Inter: Slug GPU text rendering", 48.0, white);
+    line!(
+        inter,
+        w(400),
+        "48px Inter: Slug GPU text rendering",
+        48.0,
+        white
+    );
     y += 68.0;
     line!(inter, w(400), "72px Inter", 72.0, gold);
     y += 90.0;
 
     // --- Inter Variable weights ---
-    line!(inter, w(100), "24px Inter Thin (wght=100): fine hairline strokes", 24.0, light_gray);
+    line!(
+        inter,
+        w(100),
+        "24px Inter Thin (wght=100): fine hairline strokes",
+        24.0,
+        light_gray
+    );
     y += 38.0;
-    line!(inter, w(300), "24px Inter Light (wght=300): lightweight text", 24.0, white);
+    line!(
+        inter,
+        w(300),
+        "24px Inter Light (wght=300): lightweight text",
+        24.0,
+        white
+    );
     y += 38.0;
-    line!(inter, w(400), "24px Inter Regular (wght=400): standard weight", 24.0, white);
+    line!(
+        inter,
+        w(400),
+        "24px Inter Regular (wght=400): standard weight",
+        24.0,
+        white
+    );
     y += 38.0;
-    line!(inter, w(700), "24px Inter Bold (wght=700): heavy strokes", 24.0, white);
+    line!(
+        inter,
+        w(700),
+        "24px Inter Bold (wght=700): heavy strokes",
+        24.0,
+        white
+    );
     y += 38.0;
-    line!(inter, w(900), "24px Inter Black (wght=900): maximum weight", 24.0, white);
+    line!(
+        inter,
+        w(900),
+        "24px Inter Black (wght=900): maximum weight",
+        24.0,
+        white
+    );
     y += 44.0;
 
     // --- Roboto weights ---
-    line!(roboto, Weight::THIN, "24px Roboto Thin (separate TTF)", 24.0, light_gray);
+    line!(
+        roboto,
+        Weight::THIN,
+        "24px Roboto Thin (separate TTF)",
+        24.0,
+        light_gray
+    );
     y += 38.0;
-    line!(roboto, Weight::NORMAL, "24px Roboto Regular (separate TTF)", 24.0, white);
+    line!(
+        roboto,
+        Weight::NORMAL,
+        "24px Roboto Regular (separate TTF)",
+        24.0,
+        white
+    );
     y += 38.0;
-    line!(roboto, Weight::BOLD, "24px Roboto Bold (separate TTF): tight joins", 24.0, white);
+    line!(
+        roboto,
+        Weight::BOLD,
+        "24px Roboto Bold (separate TTF): tight joins",
+        24.0,
+        white
+    );
     y += 44.0;
 
     // --- Font variety ---
-    line!(caskaydia, w(400), "20px Caskaydia Cove (mono, TTF): fn main() { let x = 42; }", 20.0, cyan);
+    line!(
+        caskaydia,
+        w(400),
+        "20px Caskaydia Cove (mono, TTF): fn main() { let x = 42; }",
+        20.0,
+        cyan
+    );
     y += 36.0;
 
     // Optional disk fonts
-    if font_system.db().faces().any(|f| {
-        f.families.iter().any(|(name, _)| name == "Tisa Pro")
-    }) {
-        line!(Family::Name("Tisa Pro"), w(400), "22px Tisa Pro (serif, OTF/CFF cubic curves)", 22.0, white);
+    if font_system
+        .db()
+        .faces()
+        .any(|f| f.families.iter().any(|(name, _)| name == "Tisa Pro"))
+    {
+        line!(
+            Family::Name("Tisa Pro"),
+            w(400),
+            "22px Tisa Pro (serif, OTF/CFF cubic curves)",
+            22.0,
+            white
+        );
         y += 38.0;
     }
 
     if font_system.db().faces().any(|f| {
-        f.families.iter().any(|(name, _)| name == "Berlingske Serif")
+        f.families
+            .iter()
+            .any(|(name, _)| name == "Berlingske Serif")
     }) {
-        line!(Family::Name("Berlingske Serif"), w(400), "22px Berlingske Serif (TTF)", 22.0, white);
+        line!(
+            Family::Name("Berlingske Serif"),
+            w(400),
+            "22px Berlingske Serif (TTF)",
+            22.0,
+            white
+        );
         y += 38.0;
     }
 
     line!(runes, w(400), "abcdefghijklm", 36.0, gold);
     y += 14.0;
-    line!(inter, w(400), "36px EBH Runes (OTF): decorative outlines", 14.0, light_gray);
+    line!(
+        inter,
+        w(400),
+        "36px EBH Runes (OTF): decorative outlines",
+        14.0,
+        light_gray
+    );
     y += 40.0;
 
     // --- COLRv0 color emoji ---
     y += 16.0;
-    line!(twemoji, w(400), "\u{1F600}\u{1F60D}\u{1F525}\u{2764}\u{1F680}\u{1F308}\u{1F3B5}\u{2B50}", 48.0, white);
+    line!(
+        twemoji,
+        w(400),
+        "\u{1F600}\u{1F60D}\u{1F525}\u{2764}\u{1F680}\u{1F308}\u{1F3B5}\u{2B50}",
+        48.0,
+        white
+    );
     y += 24.0;
-    line!(inter, w(400), "48px Twemoji COLRv0: color vector emoji", 14.0, light_gray);
+    line!(
+        inter,
+        w(400),
+        "48px Twemoji COLRv0: color vector emoji",
+        14.0,
+        light_gray
+    );
     y += 40.0;
 
     // --- COLRv1 gradient emoji ---
     y += 16.0;
-    line!(noto_emoji, w(400), "\u{1F600}\u{1F60D}\u{1F525}\u{2764}\u{1F680}\u{1F308}\u{1F3B5}\u{2B50}", 48.0, white);
+    line!(
+        noto_emoji,
+        w(400),
+        "\u{1F600}\u{1F60D}\u{1F525}\u{2764}\u{1F680}\u{1F308}\u{1F3B5}\u{2B50}",
+        48.0,
+        white
+    );
     y += 24.0;
-    line!(inter, w(400), "48px Noto COLRv1: gradient vector emoji", 14.0, light_gray);
+    line!(
+        inter,
+        w(400),
+        "48px Noto COLRv1: gradient vector emoji",
+        14.0,
+        light_gray
+    );
     y += 40.0;
 
     // --- CFF/OTF cubic subdivision ---
     let cff_fonts: &[(&str, &str, f32, cosmic_text::Color)] = &[
-        ("Nimbus Roman", "24px Nimbus Roman (CFF): Sphinx of black quartz, judge my vow", 24.0, white),
-        ("Nimbus Roman", "48px Nimbus Roman (CFF): QWERTY &@#", 48.0, gold),
-        ("Nimbus Sans", "24px Nimbus Sans (CFF): Pack my box with five dozen liquor jugs", 24.0, white),
-        ("URW Bookman", "24px URW Bookman Light (CFF): Curved serifs test", 24.0, cyan),
-        ("Z003", "30px Zapf Chancery (CFF italic): Flowing script curves", 30.0, pink),
+        (
+            "Nimbus Roman",
+            "24px Nimbus Roman (CFF): Sphinx of black quartz, judge my vow",
+            24.0,
+            white,
+        ),
+        (
+            "Nimbus Roman",
+            "48px Nimbus Roman (CFF): QWERTY &@#",
+            48.0,
+            gold,
+        ),
+        (
+            "Nimbus Sans",
+            "24px Nimbus Sans (CFF): Pack my box with five dozen liquor jugs",
+            24.0,
+            white,
+        ),
+        (
+            "URW Bookman",
+            "24px URW Bookman Light (CFF): Curved serifs test",
+            24.0,
+            cyan,
+        ),
+        (
+            "Z003",
+            "30px Zapf Chancery (CFF italic): Flowing script curves",
+            30.0,
+            pink,
+        ),
     ];
     for (family_name, text, size, clr) in cff_fonts {
-        if font_system.db().faces().any(|f| {
-            f.families.iter().any(|(name, _)| name == *family_name)
-        }) {
+        if font_system
+            .db()
+            .faces()
+            .any(|f| f.families.iter().any(|(name, _)| name == *family_name))
+        {
             line!(Family::Name(family_name), w(400), text, *size, *clr);
             let spacing = (*size * 1.5).max(38.0);
             y += spacing;
@@ -222,9 +391,21 @@ fn build_lines(font_system: &mut FontSystem, sf: f32) -> Vec<TextLine> {
     }
 
     // --- Known artifact glyphs ---
-    line!(inter, w(700), "36px Inter Bold artifact test: a & a & a & a", 36.0, pink);
+    line!(
+        inter,
+        w(700),
+        "36px Inter Bold artifact test: a & a & a & a",
+        36.0,
+        pink
+    );
     y += 54.0;
-    line!(roboto, Weight::BOLD, "36px Roboto Bold artifact test: a & a & a & a", 36.0, pink);
+    line!(
+        roboto,
+        Weight::BOLD,
+        "36px Roboto Bold artifact test: a & a & a & a",
+        36.0,
+        pink
+    );
     y += 54.0;
     line!(inter, w(700), "60px Inter Bold: & & & a a a", 60.0, green);
 
@@ -233,7 +414,9 @@ fn build_lines(font_system: &mut FontSystem, sf: f32) -> Vec<TextLine> {
 
 async fn init_render_state(window: Arc<Window>) -> RenderState {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let surface = instance.create_surface(Arc::clone(&window)).expect("render failed");
+    let surface = instance
+        .create_surface(Arc::clone(&window))
+        .expect("render failed");
 
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
@@ -306,17 +489,18 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
 
     // --- Library pipeline ---
     let cache = Cache::new(&device);
-    let mut atlas = TextAtlas::with_color_mode(
-        &device, &queue, &cache, config.format, ColorMode::Accurate,
-    );
-    let text_renderer = TextRenderer::new(
-        &mut atlas, &device, wgpu::MultisampleState::default(), None,
-    );
+    let mut atlas =
+        TextAtlas::with_color_mode(&device, &queue, &cache, config.format, ColorMode::Accurate);
+    let text_renderer =
+        TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None);
     let mut viewport = Viewport::new(&device, &cache);
-    viewport.update(&queue, Resolution {
-        width: config.width,
-        height: config.height,
-    });
+    viewport.update(
+        &queue,
+        Resolution {
+            width: config.width,
+            height: config.height,
+        },
+    );
 
     let lines = build_lines(&mut font_system, sf);
     eprintln!("Built {} text lines", lines.len());
@@ -359,8 +543,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
 
 fn render(state: &mut RenderState) {
     let frame = match state.surface.get_current_texture() {
-        wgpu::CurrentSurfaceTexture::Success(f)
-        | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+        wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
         other => {
             log::error!("Failed to get surface texture: {other:?}");
             return;
@@ -374,26 +557,33 @@ fn render(state: &mut RenderState) {
     // Update viewport for current zoom
     let vp_w = (state.config.width as f32 / state.zoom) as u32;
     let vp_h = (state.config.height as f32 / state.zoom) as u32;
-    state.viewport.update(&state.queue, Resolution {
-        width: vp_w.max(1),
-        height: vp_h.max(1),
-    });
+    state.viewport.update(
+        &state.queue,
+        Resolution {
+            width: vp_w.max(1),
+            height: vp_h.max(1),
+        },
+    );
     state.viewport.set_scroll_offset(&state.queue, state.scroll);
 
     // Build text areas from pre-built lines
-    let text_areas: Vec<TextArea<'_>> = state.lines.iter().map(|line| TextArea {
-        buffer: &line.buffer,
-        left: line.left,
-        top: line.top,
-        scale: 1.0,
-        bounds: TextBounds {
-            left: 0,
-            top: 0,
-            right: vp_w as i32,
-            bottom: vp_h as i32,
-        },
-        default_color: line.default_color,
-    }).collect();
+    let text_areas: Vec<TextArea<'_>> = state
+        .lines
+        .iter()
+        .map(|line| TextArea {
+            buffer: &line.buffer,
+            left: line.left,
+            top: line.top,
+            scale: 1.0,
+            bounds: TextBounds {
+                left: 0,
+                top: 0,
+                right: vp_w as i32,
+                bottom: vp_h as i32,
+            },
+            default_color: line.default_color,
+        })
+        .collect();
 
     let encoder = state
         .device
