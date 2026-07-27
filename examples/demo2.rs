@@ -115,7 +115,9 @@ fn build_lines(font_system: &mut FontSystem, sf: f32) -> Vec<TextLine> {
     let roboto = Family::Name("Roboto");
     let caskaydia = Family::Name("CaskaydiaCove Nerd Font");
     let runes = Family::Name("EBH Runes");
-    let twemoji = Family::Name("Twemoji Mozilla");
+    // The embedded font's actual family name - "Twemoji Mozilla" never
+    // matched, and the line fell back to whatever emoji font won instead.
+    let twemoji = Family::Name("Twemoji COLRv0");
     let noto_emoji = Family::Name("Noto Color Emoji");
     let w = |v: u16| Weight(v);
 
@@ -297,7 +299,8 @@ fn build_lines(font_system: &mut FontSystem, sf: f32) -> Vec<TextLine> {
     }
 
     line!(runes, w(400), "abcdefghijklm", 36.0, gold);
-    y += 14.0;
+    // 36px line box is 43.2px tall - clear it before placing the caption.
+    y += 46.0;
     line!(
         inter,
         w(400),
@@ -316,7 +319,8 @@ fn build_lines(font_system: &mut FontSystem, sf: f32) -> Vec<TextLine> {
         48.0,
         white
     );
-    y += 24.0;
+    // 48px line box is 57.6px tall - clear it before placing the caption.
+    y += 60.0;
     line!(
         inter,
         w(400),
@@ -335,7 +339,7 @@ fn build_lines(font_system: &mut FontSystem, sf: f32) -> Vec<TextLine> {
         48.0,
         white
     );
-    y += 24.0;
+    y += 60.0;
     line!(
         inter,
         w(400),
@@ -463,15 +467,20 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
     eprintln!("Scale factor: {sf}");
 
     // --- Font system ---
-    let mut font_system = FontSystem::new();
-    font_system.db_mut().load_font_data(INTER_VARIABLE.to_vec());
-    font_system.db_mut().load_font_data(ROBOTO_REGULAR.to_vec());
-    font_system.db_mut().load_font_data(ROBOTO_THIN.to_vec());
-    font_system.db_mut().load_font_data(ROBOTO_BOLD.to_vec());
-    font_system.db_mut().load_font_data(CASKAYDIA.to_vec());
-    font_system.db_mut().load_font_data(RUNES.to_vec());
-    font_system.db_mut().load_font_data(TWEMOJI_COLR.to_vec());
-    font_system.db_mut().load_font_data(NOTO_COLRV1.to_vec());
+    // Isolated database: only the embedded fonts plus the explicit disk fonts
+    // below. Loading system fonts made the demo non-deterministic - a system
+    // CBDT-bitmap "Noto Color Emoji" shared its family name with our embedded
+    // COLRv1 font and won the match, silently routing both emoji lines
+    // through the raster fallback instead of the COLR vector paths.
+    let mut db = cosmic_text::fontdb::Database::new();
+    db.load_font_data(INTER_VARIABLE.to_vec());
+    db.load_font_data(ROBOTO_REGULAR.to_vec());
+    db.load_font_data(ROBOTO_THIN.to_vec());
+    db.load_font_data(ROBOTO_BOLD.to_vec());
+    db.load_font_data(CASKAYDIA.to_vec());
+    db.load_font_data(RUNES.to_vec());
+    db.load_font_data(TWEMOJI_COLR.to_vec());
+    db.load_font_data(NOTO_COLRV1.to_vec());
 
     // Optional disk fonts
     for path in [
@@ -483,9 +492,10 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
         "/usr/share/fonts/opentype/urw-base35/Z003-MediumItalic.otf",
     ] {
         if let Some(data) = try_load_font(path) {
-            font_system.db_mut().load_font_data(data);
+            db.load_font_data(data);
         }
     }
+    let mut font_system = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
 
     // --- Library pipeline ---
     let cache = Cache::new(&device);
