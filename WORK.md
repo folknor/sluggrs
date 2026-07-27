@@ -148,3 +148,12 @@ Validation: 79 tests + 15 GPU tests pass, all four snapshots 0.0%.
 Resolves both the "second-level blob cache" and "unbounded retained
 memory" TODO items: compaction bounds buffer_data to the live set at
 every pressure trigger, and dormant retention is budget-capped (4 MiB).
+
+## Benchmark verdict (plantasjen, same-host A/B vs c5c2b5e)
+
+- No regressions on the existing targets: email +0.9%, email2 -0.7%,
+  render -4.2% - all inside the established +/-4% same-host noise band.
+  The cold-commit metadata registration costs nothing measurable.
+- atlas_repopulate stored as a new baseline (3.148 ms wall; the KVs
+  carry the signal: repopulate 215us vs cold 2.6-2.8ms, 322 hits,
+  934KB restored).
