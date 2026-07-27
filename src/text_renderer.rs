@@ -1,8 +1,5 @@
 use crate::GlyphInstance;
-use crate::glyph_cache::{
-    COLOR_V1_VECTOR_GLYPH, COLOR_VECTOR_GLYPH, ColorGlyphEntry, ColorGlyphLayer, GlyphKey,
-    NON_VECTOR_GLYPH,
-};
+use crate::glyph_cache::{COLOR_V1_VECTOR_GLYPH, COLOR_VECTOR_GLYPH, GlyphKey, NON_VECTOR_GLYPH};
 use crate::outline::{ColorGlyphInfo, extract_color_info, extract_outline};
 use crate::prep::{PrepScratch, prepare_mono};
 use crate::prepare::apply_italic_shear;
@@ -476,6 +473,9 @@ impl TextRenderer {
                                 let ppem = glyph.font_size * text_area.scale;
 
                                 for layer in &color_entry.layers {
+                                    if layer.entry.is_non_vector() {
+                                        continue;
+                                    }
                                     let [min_x, min_y, max_x, max_y] = layer.entry.bounds;
                                     let screen_x = glyph_x + min_x * scale;
                                     let screen_y = glyph_y - max_y * scale;
@@ -627,6 +627,9 @@ impl TextRenderer {
         atlas: &mut TextAtlas,
         key: GlyphKey,
     ) -> Result<crate::glyph_cache::GlyphEntry, PrepareError> {
+        if let Some(entry) = atlas.restore_cached_glyph(key)? {
+            return Ok(entry);
+        }
         let font_weight = cosmic_text::Weight(key.font_weight);
         let cache_key = (key.font_id, font_weight);
         if let std::collections::hash_map::Entry::Vacant(slot) = self.font_cache.entry(cache_key) {
@@ -709,7 +712,7 @@ impl TextRenderer {
                 }
             }
             Some(ColorGlyphInfo::V1(mut v1_data)) => {
-                match atlas.upload_color_v1(&mut v1_data, units_per_em) {
+                match atlas.upload_color_v1(key, &mut v1_data, units_per_em) {
                     Ok(v1_entry) => {
                         atlas.color_v1_glyphs.insert(key, v1_entry);
                         COLOR_V1_VECTOR_GLYPH
@@ -735,7 +738,7 @@ impl TextRenderer {
                             units_per_em,
                             &mut self.prep_scratch,
                         ) {
-                            Some(prepared) => atlas.commit_mono(&prepared)?,
+                            Some(prepared) => atlas.commit_mono(key, &prepared)?,
                             None => NON_VECTOR_GLYPH,
                         }
                     }
@@ -761,7 +764,7 @@ impl TextRenderer {
         fake_italic: bool,
         key: GlyphKey,
     ) -> Result<crate::glyph_cache::GlyphEntry, PrepareError> {
-        let mut entries = Vec::with_capacity(layers.len());
+        let mut prepared_layers = Vec::with_capacity(layers.len());
 
         for layer in layers {
             let outline = extract_outline(font_data, face_index, layer.glyph_id, location);
@@ -775,34 +778,22 @@ impl TextRenderer {
             }
 
             let band_count = band_count_for_curves(outline.curves.len());
-            let entry = match prepare_mono(
+            let prepared = prepare_mono(
                 &outline,
                 band_count,
                 band_count,
                 units_per_em,
                 &mut self.prep_scratch,
-            ) {
-                Some(prepared) => atlas.commit_mono(&prepared)?,
-                None => NON_VECTOR_GLYPH,
-            };
-            entries.push(ColorGlyphLayer {
-                entry,
-                color: layer.color,
-                use_foreground: layer.use_foreground,
-            });
+            );
+            prepared_layers.push((prepared, layer.color, layer.use_foreground));
         }
 
-        if entries.is_empty() {
+        if prepared_layers.is_empty() {
             return Ok(NON_VECTOR_GLYPH);
         }
 
-        atlas.color_glyphs.insert(
-            key,
-            ColorGlyphEntry {
-                layers: entries,
-                units_per_em,
-            },
-        );
+        let entry = atlas.commit_color_v0(key, &prepared_layers, units_per_em)?;
+        atlas.color_glyphs.insert(key, entry);
 
         Ok(COLOR_VECTOR_GLYPH)
     }
@@ -896,7 +887,7 @@ impl TextRenderer {
         viewport: &Viewport,
         pass: &mut RenderPass<'_>,
     ) -> Result<(), RenderError> {
-        // Detect trim(reset) between prepare() and render(): the atlas was
+        // Detect trim(compaction) between prepare() and render(): the atlas was
         // recreated so our instance buffer references stale glyph offsets.
         if atlas.generation() != self.prepared_atlas_generation {
             return Err(RenderError::RemovedFromAtlas);

@@ -105,13 +105,6 @@ dominated by compositor/surface, not text math.
   parallel iteration was reverted. Worth revisiting if individual glyphs
   get more expensive (analytical AA prep, larger bands).
 
-- [ ] **Second-level blob cache** - cache encoded glyph blobs independent of
-  atlas residency. Atlas reset drops GPU residency only, re-upload is
-  memcpy. Huge for mixed/trim workloads. Large effort.
-
-- [ ] **Unbounded retained memory** - buffer_data grows with each uploaded
-  glyph, never compacted. Intentional (needed for growth re-upload). Fix:
-  GPU buffer-to-buffer copy on growth, or LRU eviction with compaction.
 
 ### Harfbuzz divergences remaining
 

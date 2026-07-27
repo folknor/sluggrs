@@ -1,5 +1,11 @@
 use crate::band::{BandScratch, CurveLocation};
-use crate::glyph_cache::{ColorGlyphEntry, ColorV1GlyphEntry, GlyphEntry, GlyphKey, GlyphMap};
+use crate::blob_cache::{
+    BlobCacheStats, BlobKind, CachedBlob, CachedColorLayer, GlyphBlobCache, ResidentBlob,
+};
+use crate::glyph_cache::{
+    COLOR_V1_VECTOR_GLYPH, COLOR_VECTOR_GLYPH, ColorGlyphEntry, ColorGlyphLayer, ColorV1GlyphEntry,
+    GlyphEntry, GlyphKey, GlyphMap,
+};
 use crate::gpu_cache::Cache;
 use crate::raster_text::{NonVectorGlyph, RasterState, RasterVertex};
 use crate::types::ColorMode;
@@ -18,6 +24,7 @@ const INITIAL_BUFFER_CAPACITY: u32 = 131_072;
 /// initial allocation.
 const TRIM_GROWTH_FACTOR: u32 = 4;
 const GLYPH_HEADER_TEXELS: u32 = 5;
+const BLOB_CACHE_BUDGET: usize = 4 * 1024 * 1024;
 
 pub struct TextAtlas {
     pub(crate) cache: Cache,
@@ -47,7 +54,9 @@ pub struct TextAtlas {
     pub(crate) color_glyphs: FxHashMap<GlyphKey, ColorGlyphEntry>,
     /// COLRv1 color glyph command sequences.
     pub(crate) color_v1_glyphs: FxHashMap<GlyphKey, ColorV1GlyphEntry>,
-    /// Monotonic counter incremented on atlas reset. Used by TextRenderer's
+    resident_blobs: FxHashMap<GlyphKey, ResidentBlob>,
+    blob_cache: GlyphBlobCache,
+    /// Monotonic counter incremented on atlas compaction. Used by TextRenderer's
     /// retained cache to detect when cached glyph offsets are invalidated.
     generation: u32,
 
@@ -114,6 +123,8 @@ impl TextAtlas {
             glyphs: GlyphMap::new(),
             color_glyphs: FxHashMap::default(),
             color_v1_glyphs: FxHashMap::default(),
+            resident_blobs: FxHashMap::default(),
+            blob_cache: GlyphBlobCache::new(BLOB_CACHE_BUDGET),
             raster: None,
             swash_cache: cosmic_text::SwashCache::new(),
         }
@@ -138,16 +149,20 @@ impl TextAtlas {
         self.buffer_cursor
     }
 
+    #[doc(hidden)]
+    pub fn blob_cache_stats(&self) -> BlobCacheStats {
+        self.blob_cache.stats()
+    }
+
     /// End-of-frame cache management.
     ///
     /// Clears per-frame usage tracking. When the buffer reaches four times
     /// its initial size AND fewer than a quarter of cached glyphs are in use,
-    /// performs a full reset: recreates buffer at initial size (reclaiming
-    /// GPU memory immediately), clears the glyph cache. The next prepare()
-    /// re-extracts only the visible glyphs.
+    /// compacts current glyphs and moves inactive vector groups to the
+    /// bounded CPU blob cache.
     ///
-    /// With the default 1 MiB initial allocation, reset eligibility begins at
-    /// 4 MiB and a reset returns the atlas to 1 MiB. This is pressure-based:
+    /// With the default 1 MiB initial allocation, compaction eligibility begins at
+    /// 4 MiB. This is pressure-based:
     /// a stable document with many glyphs will not trigger reset as long as
     /// the buffer has not substantially grown. Only when GPU memory has
     /// expanded AND the working set
@@ -164,7 +179,7 @@ impl TextAtlas {
             let in_use = self.glyphs.in_use_count();
 
             if cached > 0 && in_use < cached / 4 {
-                self.reset_atlas();
+                self.compact_atlas();
             } else {
                 log::trace!(
                     "trim: retained ({in_use}/{cached} glyphs in use, \
@@ -232,30 +247,198 @@ impl TextAtlas {
         }
     }
 
-    /// Full atlas reset: recreate buffer at initial size, clear all caches.
-    /// GPU memory is reclaimed immediately (old buffer is dropped).
-    fn reset_atlas(&mut self) {
+    fn compact_atlas(&mut self) {
         log::debug!(
-            "trim: resetting atlas ({}/{} glyphs in use, buffer={}/{})",
+            "trim: compacting atlas ({}/{} glyphs in use, buffer={}/{})",
             self.glyphs.in_use_count(),
             self.glyphs.len(),
             self.buffer_cursor,
             self.buffer_capacity,
         );
 
-        self.glyphs.clear();
-        self.color_glyphs.clear();
-        self.color_v1_glyphs.clear();
-        self.buffer_cursor = 0;
-        self.buffer_data = Vec::new(); // reclaim CPU memory (clear() keeps capacity)
+        let old_data = std::mem::take(&mut self.buffer_data);
+        let mut residents: Vec<_> = self.resident_blobs.drain().collect();
+        residents.sort_unstable_by_key(|(_, blob)| blob.start_texel);
+
+        // Pass 1: keep current-frame blobs resident (copy into the compact
+        // buffer); collect inactive blobs as lightweight candidates - spans
+        // only, no payload copies until the budget selection has run.
+        enum Source {
+            Slice {
+                start: usize,
+                end: usize,
+                kind: BlobKind,
+            },
+            Ready(CachedBlob),
+        }
+        let mut cand_keys: Vec<GlyphKey> = Vec::new();
+        let mut cand_meta: Vec<(u64, usize)> = Vec::new();
+        let mut cand_src: Vec<Source> = Vec::new();
+
+        let mut compact = Vec::new();
+        for (key, blob) in residents {
+            let epoch = self.glyphs.last_used_epoch(&key).unwrap_or(0);
+            let start = usize::try_from(blob.start_texel).expect("atlas offset") * 2;
+            let end = start + usize::try_from(blob.texel_len).expect("atlas size") * 2;
+            if self.glyphs.is_current_frame(&key) {
+                let new_start = u32::try_from(compact.len() / 2).expect("atlas size");
+                compact.extend_from_slice(&old_data[start..end]);
+                self.install_offsets(key, new_start, &blob.kind);
+                self.resident_blobs.insert(
+                    key,
+                    ResidentBlob {
+                        start_texel: new_start,
+                        texel_len: blob.texel_len,
+                        kind: blob.kind,
+                    },
+                );
+            } else {
+                self.remove_glyph_group(&key);
+                cand_keys.push(key);
+                cand_meta.push((epoch, (end - start) * std::mem::size_of::<i32>()));
+                cand_src.push(Source::Slice {
+                    start,
+                    end,
+                    kind: blob.kind,
+                });
+            }
+        }
+        for (key, blob) in self.blob_cache.drain() {
+            cand_keys.push(key);
+            cand_meta.push((
+                blob.last_used_epoch,
+                blob.data.len() * std::mem::size_of::<i32>(),
+            ));
+            cand_src.push(Source::Ready(blob));
+        }
+        for key in self.glyphs.keys() {
+            if !self.resident_blobs.contains_key(&key) && !self.glyphs.is_current_frame(&key) {
+                self.remove_glyph_group(&key);
+            }
+        }
+
+        // Pass 2: batch-select newest-first within the byte budget, then
+        // materialize only the winners (losers are never copied).
+        let (selected, budget_evictions, oversized_drops) =
+            crate::blob_cache::select_within_budget(&cand_meta, self.blob_cache.budget());
+        let mut kept = Vec::with_capacity(selected.len());
+        let mut sources: Vec<Option<Source>> = cand_src.into_iter().map(Some).collect();
+        for idx in selected {
+            let source = sources[idx].take().expect("selection indices are unique");
+            let (epoch, _) = cand_meta[idx];
+            let blob = match source {
+                Source::Ready(blob) => blob,
+                Source::Slice { start, end, kind } => CachedBlob {
+                    data: old_data[start..end].to_vec().into_boxed_slice(),
+                    kind,
+                    last_used_epoch: epoch,
+                },
+            };
+            kept.push((cand_keys[idx], blob));
+        }
+        self.blob_cache
+            .replace_entries(kept, budget_evictions, oversized_drops);
+        self.buffer_data = compact;
+        self.buffer_cursor = u32::try_from(self.buffer_data.len() / 2).expect("atlas size");
         self.gpu_flush_cursor = 0;
         self.generation = self.generation.wrapping_add(1);
 
-        self.buffer_capacity = self.initial_buffer_capacity;
+        self.buffer_capacity = planned_buffer_capacity(
+            self.initial_buffer_capacity,
+            self.buffer_cursor.max(self.initial_buffer_capacity),
+            self.max_buffer_capacity,
+        )
+        .expect("live atlas fits");
         self.glyph_buffer = create_glyph_buffer(&self.device, self.buffer_capacity);
         self.bind_group = self
             .cache
             .create_atlas_bind_group(&self.device, &self.glyph_buffer);
+    }
+
+    fn remove_glyph_group(&mut self, key: &GlyphKey) {
+        self.glyphs.remove(key);
+        self.color_glyphs.remove(key);
+        self.color_v1_glyphs.remove(key);
+    }
+
+    fn install_offsets(&mut self, key: GlyphKey, start: u32, kind: &BlobKind) {
+        match kind {
+            BlobKind::Mono { .. } => self.glyphs.replace_offset(&key, start),
+            BlobKind::ColorV1 {
+                cmd_texel_count,
+                bounds,
+                units_per_em,
+            } => {
+                self.color_v1_glyphs.insert(
+                    key,
+                    ColorV1GlyphEntry {
+                        glyph_offset: start,
+                        cmd_texel_count: *cmd_texel_count,
+                        bounds: *bounds,
+                        units_per_em: *units_per_em,
+                    },
+                );
+            }
+            BlobKind::ColorV0 {
+                units_per_em,
+                layers,
+            } => {
+                let layers = layers
+                    .iter()
+                    .map(|layer| ColorGlyphLayer {
+                        entry: layer
+                            .offset
+                            .map_or(crate::glyph_cache::NON_VECTOR_GLYPH, |offset| {
+                                GlyphEntry::new(start + offset, layer.bounds, *units_per_em)
+                            }),
+                        color: layer.color,
+                        use_foreground: layer.use_foreground,
+                    })
+                    .collect();
+                self.color_glyphs.insert(
+                    key,
+                    ColorGlyphEntry {
+                        layers,
+                        units_per_em: *units_per_em,
+                    },
+                );
+            }
+        }
+    }
+
+    pub(crate) fn restore_cached_glyph(
+        &mut self,
+        key: GlyphKey,
+    ) -> Result<Option<GlyphEntry>, crate::types::PrepareError> {
+        let Some(texel_len) = self.blob_cache.texel_len(&key) else {
+            return Ok(None);
+        };
+        let new_end = self.checked_buffer_end(texel_len)?;
+        let blob = self.blob_cache.take(&key).expect("cache entry checked");
+        let start = self.buffer_cursor;
+        self.buffer_data.extend_from_slice(&blob.data);
+        self.buffer_cursor = new_end;
+        let entry = match &blob.kind {
+            BlobKind::Mono {
+                bounds,
+                units_per_em,
+            } => GlyphEntry::new(start, *bounds, *units_per_em),
+            BlobKind::ColorV0 { .. } => COLOR_VECTOR_GLYPH,
+            BlobKind::ColorV1 { .. } => COLOR_V1_VECTOR_GLYPH,
+        };
+        self.install_offsets(key, start, &blob.kind);
+        self.resident_blobs.insert(
+            key,
+            ResidentBlob {
+                start_texel: start,
+                texel_len,
+                kind: blob.kind,
+            },
+        );
+        let entry = self.glyphs.insert_and_mark_used(key, entry);
+        self.blob_cache
+            .add_repopulated_bytes(u64::from(texel_len) * BYTES_PER_TEXEL);
+        Ok(Some(entry))
     }
 
     /// Flush all pending glyph uploads to the GPU in a single write_buffer call.
@@ -284,6 +467,7 @@ impl TextAtlas {
     #[hotpath::measure]
     pub(crate) fn commit_mono(
         &mut self,
+        key: GlyphKey,
         prepared: &crate::prep::PreparedMono,
     ) -> Result<GlyphEntry, crate::types::PrepareError> {
         if prepared.blob_size > 65535 {
@@ -305,12 +489,24 @@ impl TextAtlas {
         self.buffer_data.extend_from_slice(&prepared.blob_data);
         self.buffer_cursor = new_end;
 
-        Ok(GlyphEntry {
+        let entry = GlyphEntry {
             glyph_offset,
             bounds: prepared.bounds,
             units_per_em: prepared.units_per_em,
             last_used_epoch: 0,
-        })
+        };
+        self.resident_blobs.insert(
+            key,
+            ResidentBlob {
+                start_texel: glyph_offset,
+                texel_len: total_size,
+                kind: BlobKind::Mono {
+                    bounds: prepared.bounds,
+                    units_per_em: prepared.units_per_em,
+                },
+            },
+        );
+        Ok(entry)
     }
 
     /// Upload a COLRv1 color glyph command blob.
@@ -326,6 +522,7 @@ impl TextAtlas {
     /// Band and curve data within sub-glyphs are i16-packed as usual.
     pub(crate) fn upload_color_v1(
         &mut self,
+        key: GlyphKey,
         v1: &mut crate::outline::ColorV1Data,
         units_per_em: f32,
     ) -> Result<ColorV1GlyphEntry, crate::types::PrepareError> {
@@ -495,10 +692,119 @@ impl TextAtlas {
 
         self.buffer_cursor = new_end;
 
-        Ok(ColorV1GlyphEntry {
+        let entry = ColorV1GlyphEntry {
             glyph_offset,
             cmd_texel_count,
             bounds: union_bounds,
+            units_per_em,
+        };
+        self.resident_blobs.insert(
+            key,
+            ResidentBlob {
+                start_texel: glyph_offset,
+                texel_len: total_size,
+                kind: BlobKind::ColorV1 {
+                    bounds: union_bounds,
+                    units_per_em,
+                    cmd_texel_count,
+                },
+            },
+        );
+        Ok(entry)
+    }
+
+    pub(crate) fn commit_color_v0(
+        &mut self,
+        key: GlyphKey,
+        layers: &[(Option<crate::prep::PreparedMono>, [f32; 4], bool)],
+        units_per_em: f32,
+    ) -> Result<ColorGlyphEntry, crate::types::PrepareError> {
+        if layers.iter().any(|(prepared, _, _)| {
+            prepared
+                .as_ref()
+                .is_some_and(|prepared| prepared.blob_size > 65535)
+        }) {
+            return Err(crate::types::PrepareError::AtlasFull);
+        }
+        let total = layers
+            .iter()
+            .try_fold(0_u32, |size, (prepared, _, _)| {
+                prepared.as_ref().map_or(Some(size), |prepared| {
+                    GLYPH_HEADER_TEXELS
+                        .checked_add(prepared.blob_size)
+                        .and_then(|part| size.checked_add(part))
+                })
+            })
+            .ok_or(crate::types::PrepareError::AtlasFull)?;
+        if total == 0 {
+            let layers = layers
+                .iter()
+                .map(|(_, color, use_foreground)| ColorGlyphLayer {
+                    entry: crate::glyph_cache::NON_VECTOR_GLYPH,
+                    color: *color,
+                    use_foreground: *use_foreground,
+                })
+                .collect();
+            return Ok(ColorGlyphEntry {
+                layers,
+                units_per_em,
+            });
+        }
+        let new_end = self.checked_buffer_end(total)?;
+        let start = self.buffer_cursor;
+        let mut cached_layers = Vec::with_capacity(layers.len());
+        let mut installed_layers = Vec::with_capacity(layers.len());
+        for (prepared, color, use_foreground) in layers {
+            if let Some(prepared) = prepared {
+                let relative = self.buffer_cursor - start;
+                self.buffer_data.extend_from_slice(&encode_glyph_header(
+                    prepared.bounds,
+                    prepared.band_transform,
+                    prepared.band_count_x.saturating_sub(1),
+                    prepared.band_count_y.saturating_sub(1),
+                ));
+                self.buffer_data.extend_from_slice(&prepared.blob_data);
+                self.buffer_cursor += GLYPH_HEADER_TEXELS + prepared.blob_size;
+                cached_layers.push(CachedColorLayer {
+                    offset: Some(relative),
+                    bounds: prepared.bounds,
+                    color: *color,
+                    use_foreground: *use_foreground,
+                });
+                installed_layers.push(ColorGlyphLayer {
+                    entry: GlyphEntry::new(start + relative, prepared.bounds, units_per_em),
+                    color: *color,
+                    use_foreground: *use_foreground,
+                });
+            } else {
+                cached_layers.push(CachedColorLayer {
+                    offset: None,
+                    bounds: [0.0; 4],
+                    color: *color,
+                    use_foreground: *use_foreground,
+                });
+                installed_layers.push(ColorGlyphLayer {
+                    entry: crate::glyph_cache::NON_VECTOR_GLYPH,
+                    color: *color,
+                    use_foreground: *use_foreground,
+                });
+            }
+        }
+        self.buffer_cursor = new_end;
+        let kind = BlobKind::ColorV0 {
+            units_per_em,
+            layers: cached_layers.into_boxed_slice(),
+        };
+        self.resident_blobs.insert(
+            key,
+            ResidentBlob {
+                start_texel: start,
+                texel_len: total,
+                kind,
+            },
+        );
+        Ok(ColorGlyphEntry {
+            layers: installed_layers,
             units_per_em,
         })
     }

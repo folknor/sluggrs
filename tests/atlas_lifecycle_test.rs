@@ -46,6 +46,19 @@ impl TestHarness {
         Self::with_initial_buffer_capacity(131_072)
     }
 
+    /// Harness with a deterministic FontSystem built only from bundled fonts
+    /// (no host font discovery), for tests whose glyph routing must not
+    /// depend on the machine (e.g. COLRv0 emoji restoration).
+    fn with_bundled_fonts(initial_buffer_capacity: u32, fonts: &[&[u8]]) -> Self {
+        let mut harness = Self::with_initial_buffer_capacity(initial_buffer_capacity);
+        let mut db = cosmic_text::fontdb::Database::new();
+        for data in fonts {
+            db.load_font_data(data.to_vec());
+        }
+        harness.font_system = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
+        harness
+    }
+
     fn with_initial_buffer_capacity(initial_buffer_capacity: u32) -> Self {
         let (device, queue) = create_test_device();
         let cache = Cache::new(&device);
@@ -315,12 +328,12 @@ fn trim_does_not_reset_without_buffer_growth() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 7: trim() resets when the buffer grew and working set shifted
+// Test 7: trim() compacts when the buffer grew and working set shifted
 // ---------------------------------------------------------------------------
 
 #[test]
 #[ignore = "Requires GPU or software renderer (wgpu adapter)"]
-fn trim_resets_when_buffer_grew_and_working_set_shifted() {
+fn trim_compacts_when_buffer_grew_and_working_set_shifted() {
     let mut h = TestHarness::with_initial_buffer_capacity(256);
 
     // Upload enough distinct glyphs to force storage-buffer growth.
@@ -357,24 +370,21 @@ fn trim_resets_when_buffer_grew_and_working_set_shifted() {
     // This marks only a few glyphs as in-use.
     h.prepare_text("AB").expect("Small prepare should succeed");
 
-    // Trim: buffer reached its growth threshold + in_use < cached / 4 → reset.
+    // Trim: buffer reached its growth threshold + in_use < cached / 4 → compact.
     h.atlas.trim();
 
-    // After reset, the glyph cache should be empty (all evicted).
-    assert_eq!(
-        h.atlas.glyph_count(),
-        0,
-        "trim() should reset when the buffer grew and working set shifted"
+    // The current working set remains resident while inactive blobs move to
+    // the side cache.
+    assert!(
+        h.atlas.glyph_count() > 0,
+        "current-frame glyphs survive compaction"
+    );
+    assert!(
+        h.atlas.buffer_elements_used() > 0,
+        "live glyph data remains in the atlas"
     );
 
-    // Buffer should be back at initial size
-    assert_eq!(
-        h.atlas.buffer_elements_used(),
-        0,
-        "buffer cursor should be reset"
-    );
-
-    // The atlas should still be usable - next prepare re-extracts
+    // The atlas remains usable after generation invalidation.
     h.prepare_text("AB")
         .expect("Prepare after reset should succeed");
     assert!(
@@ -421,5 +431,53 @@ fn trim_does_not_reset_when_working_set_stable() {
         h.atlas.glyph_count(),
         cached_after_growth,
         "trim() should not evict when working set is stable (all glyphs in use)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: COLRv0 color glyphs survive compaction via the blob cache
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn colr_v0_glyphs_restore_from_blob_cache_after_compaction() {
+    // Bundled fonts only, so emoji route to Twemoji COLRv0 deterministically.
+    let mut h = TestHarness::with_bundled_fonts(
+        256,
+        &[
+            include_bytes!("../examples/fonts/InterVariable.ttf"),
+            include_bytes!("../examples/fonts/TwemojiCOLRv0.ttf"),
+        ],
+    );
+
+    // Set A: color emoji plus enough letters that set B is under a quarter
+    // of the cached population at compaction time. Emoji as escapes:
+    // grinning face, party popper, pizza, red heart, fire.
+    let set_a = concat!(
+        "\u{1F600}\u{1F389}\u{1F355}\u{2764}\u{1F525} ",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz",
+    );
+    h.prepare_text(set_a).expect("prepare A should succeed");
+    h.atlas.trim(); // epoch advance; A fully in use, no compaction
+
+    h.prepare_text("42").expect("prepare B should succeed");
+    let generation = h.atlas.generation();
+    h.atlas.trim(); // A inactive now: compaction moves it to the blob cache
+    assert_ne!(
+        h.atlas.generation(),
+        generation,
+        "compaction should have fired (grown atlas, tiny working set)"
+    );
+    let hits_before = h.atlas.blob_cache_stats().hits;
+
+    // Re-preparing A must restore emoji (COLRv0 groups) and letters from
+    // the blob cache instead of re-extracting outlines.
+    h.prepare_text(set_a).expect("repopulate A should succeed");
+    let stats = h.atlas.blob_cache_stats();
+    assert!(
+        stats.hits > hits_before,
+        "repopulating A should hit the blob cache (hits {} -> {})",
+        hits_before,
+        stats.hits,
     );
 }

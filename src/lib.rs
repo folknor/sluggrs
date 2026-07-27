@@ -9,6 +9,7 @@ pub mod viewport;
 // not part of the stable iced integration API. Internal representations
 // may change.
 pub mod band;
+pub(crate) mod blob_cache;
 pub mod glyph_cache;
 pub mod outline;
 pub mod prep;
@@ -16,6 +17,8 @@ pub mod prepare;
 pub(crate) mod raster_text;
 
 // Public API - matches cryoglyph's interface for iced integration
+#[doc(hidden)]
+pub use blob_cache::BlobCacheStats;
 pub use glyph_cache::GlyphKey;
 pub use gpu_cache::Cache;
 pub use text_atlas::TextAtlas;

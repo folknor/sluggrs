@@ -44,7 +44,7 @@ pub struct GlyphEntry {
     /// Font units per em - avoids per-glyph font re-parse on warm path.
     pub units_per_em: f32,
     /// Frame epoch when this glyph was last used (for trim heuristic).
-    pub(crate) last_used_epoch: u32,
+    pub(crate) last_used_epoch: u64,
 }
 
 /// Sentinel for glyphs that have no vector outline (emoji, bitmap fonts).
@@ -124,7 +124,7 @@ impl GlyphEntry {
 /// via epoch counter (no HashSet).
 pub struct GlyphMap {
     map: FxHashMap<GlyphKey, GlyphEntry>,
-    current_epoch: u32,
+    current_epoch: u64,
     frame_used: usize,
 }
 
@@ -182,6 +182,29 @@ impl GlyphMap {
 
     pub fn contains_key(&self, key: &GlyphKey) -> bool {
         self.map.contains_key(key)
+    }
+
+    pub(crate) fn last_used_epoch(&self, key: &GlyphKey) -> Option<u64> {
+        self.map.get(key).map(|entry| entry.last_used_epoch)
+    }
+
+    pub(crate) fn is_current_frame(&self, key: &GlyphKey) -> bool {
+        self.last_used_epoch(key) == Some(self.current_epoch)
+    }
+
+    pub(crate) fn remove(&mut self, key: &GlyphKey) -> Option<GlyphEntry> {
+        self.map.remove(key)
+    }
+
+    /// Change an offset without affecting frame usage accounting.
+    pub(crate) fn replace_offset(&mut self, key: &GlyphKey, glyph_offset: u32) {
+        if let Some(entry) = self.map.get_mut(key) {
+            entry.glyph_offset = glyph_offset;
+        }
+    }
+
+    pub(crate) fn keys(&self) -> Vec<GlyphKey> {
+        self.map.keys().copied().collect()
     }
 
     /// Advance to the next frame. Resets per-frame usage counter.
