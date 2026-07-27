@@ -164,9 +164,25 @@ to track which reviewer caught what.
 
 ## Tech stack
 
-- Rust (edition 2024, MSRV 1.92)
-- cosmic-text 0.18 (shaping, layout, font system)
+- Rust (edition 2024, MSRV 1.97)
+- cosmic-text 0.19 (shaping, layout, font system)
 - skrifa 0.40 (glyph outline extraction)
-- wgpu 28 (GPU textures, render pipeline)
-- hotpath 0.14 (function-level profiling, brokkr integration)
+- wgpu 29 (GPU textures, render pipeline)
+- hotpath 0.22 (function-level profiling, brokkr integration)
 - WGSL shaders (translated from Slug HLSL reference, MIT licensed)
+
+### Deliberate version pins
+
+`ccu` will report skrifa and wgpu as outdated. Both are pinned on purpose:
+
+- **skrifa tracks cosmic-text, not latest.** cosmic-text 0.19 depends on
+  skrifa 0.40 directly *and* on skrifa 0.42 via swash. Our 0.40 pin dedups
+  with cosmic-text's copy; bumping to 0.45 would put a third skrifa in every
+  downstream build for no gain, since skrifa is internal to sluggrs (not
+  re-exported, no types cross the iced boundary). Bump only when cosmic-text
+  does.
+- **wgpu must match iced.** wgpu types (`Device`, `RenderPass`, `TextureFormat`)
+  cross the sluggrs↔iced API boundary, so wgpu 30 has to wait for upstream
+  iced. See [iced integration](#iced-integration).
+
+hotpath has no downstream coupling and can be bumped freely.
