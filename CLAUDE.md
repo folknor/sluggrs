@@ -1,73 +1,55 @@
-# sluggrs
+@AGENTS.md
 
-GPU-based vector text rendering using the Slug algorithm. Drop-in replacement for cryoglyph in iced's wgpu text rendering pipeline. Evaluates quadratic bezier curves per-pixel in fragment shaders - resolution-independent, no texture atlas needed.
+# Claude-side process
 
-## Project structure
-
-### Library (`src/`)
-- `lib.rs` - Public API, re-exports, cosmic_text re-exports, shader constants
-- `outline.rs` - Glyph outline extraction via `skrifa`, cubic→quadratic subdivision
-- `prepare.rs` - GPU preparation: line segment perturbation, FAKE_ITALIC shear
-- `band.rs` - Band acceleration structure (spatial index for shader curve lookup)
-- `glyph_cache.rs` - GlyphKey, GlyphEntry, GlyphMap for resolution-independent caching
-- `gpu_cache.rs` - Shared GPU state (shader, bind group layouts, pipeline cache)
-- `text_atlas.rs` - Curve + band texture management, glyph upload, texture growth
-- `text_renderer.rs` - prepare() + render() pipeline matching cryoglyph's interface
-- `viewport.rs` - Screen resolution uniform buffer
-- `types.rs` - Resolution, TextBounds, TextArea, ColorMode, error types
-- `simple_shader.wgsl` - Simplified Slug shader (no dilation)
-- `shader.wgsl` - Full Slug shader (with dilation, not yet wired up)
-
-### Other
-- `examples/demo.rs` - Standalone wgpu/winit demo
-- `examples/hotpath.rs` - Profiling binary for brokkr (`brokkr sluggrs hotpath`)
-- `tests/` - Spike tests and unit tests (62 passing, 8 ignored GPU-only)
-- `docs/` - Design docs, investigation log, integration spec
-- `repos/` - gitignored checkouts of iced, cosmic-text, cryoglyph for reference
+Project knowledge - what sluggrs is, code structure, brokkr, lints, tech
+stack and version pins - lives in `AGENTS.md`: imported above for Claude,
+picked up natively by codex. This file holds what codex sessions never
+touch: orchestration (the review tool, the fix loop), git, bash rules,
+profiling, the iced repo setup, and Claude-harness specifics.
 
 ## Bash rules
-- Never use sed, find, awk, or complex bash commands
-- Never chain commands with &&
-- Never chain commands with ;
-- Never pipe commands with |
-- Never read or write from /tmp. All data lives in the project.
-- Never run raw cargo, curl, pkill. Use `brokkr`. Exception: non-sluggrs projects (iced, etc.).
 
-## brokkr commands
+- Each Bash invocation runs exactly one command. To run several, send
+  multiple Bash calls (in parallel when independent). This subsumes `&&`,
+  `;`, `|`, and multi-line scripts in one Bash call.
+- Never use `sed`, `find`, `awk`, `head`, `tail`, or complex bash commands.
+- Never chain commands with `&&`.
+- Never chain commands with `;`.
+- Never chain/pipe commands with `|`. Exception: piping into `review` is
+  allowed (writing scratch prompt files is wasteful).
+- Never capture stdout into env vars (`UUID=$(...)`).
+- Never read or write from `/tmp`. All data lives in the project.
+- Never run raw `cargo`, `curl`, `pkill`. Use `brokkr`. Exception:
+  non-sluggrs projects (iced, etc.).
+- Never run `git` with `-C <path>`. Run `git` from the current working
+  directory.
 
-If brokkr reports a lock (`already locked by PID`), another project is using it.
-Wait and retry - the lock exists to prevent concurrent benchmark interference.
+## Git commit rules
 
-### Available in sluggrs
-```sh
-brokkr check                                  # clippy + tests
-brokkr check -- --test glyph_pipeline_test    # run one test file
-brokkr check -- -- --ignored                  # run ignored (GPU-only) tests
-brokkr hotpath                                # timing profile (1 run, stored in results.db)
-brokkr hotpath -n 3                           # 3 runs
-brokkr hotpath --alloc                        # allocation profile
-brokkr hotpath --alloc -n 5                   # 5 alloc runs
-brokkr hotpath --target email                 # email-client-scale benchmark (8k+ glyphs)
-brokkr hotpath --target email2                # mixed-locale inbox (CJK/Arabic/Hindi, 200 messages)
-brokkr hotpath --target email --alloc         # email benchmark with allocation tracking
-brokkr test [snapshot] [--all]                # run visual snapshot tests
-brokkr list                                   # list snapshots and approval state
-brokkr approve <snapshot>                     # record current output as accepted baseline
-brokkr report <run_id>                        # show detailed results for a past run
-brokkr visual-status                          # dashboard: all snapshots vs approved baselines
-brokkr results                                # last 20 results
-brokkr results <uuid>                         # look up by UUID prefix
-brokkr results --compare-last --mode hotpath    # compare two most recent hotpath runs
-brokkr results --commit abc1                  # filter by commit prefix
-brokkr env                                    # show environment info
-brokkr clean                                  # clean build artifacts and scratch data
-brokkr history                                # browse command history
-```
+- Always run `brokkr fmt` before a commit.
+- Never commit markdown changes and/or `.brokkr/results.db` alone. Bundle
+  them with upcoming code commits.
+- When committing other changes: always tag along markdown files and
+  `.brokkr/results.db` if dirty. (`sidecar.db` stays out of git - way too
+  large - which is why `.gitignore` un-ignores only `results.db` from
+  `.brokkr/`.)
+- Write substantive engineering-focused commit messages.
+- Has `Cargo.lock` changed? Commit it.
+- Never `git push` unless the user explicitly asks. Stop after the commit.
 
-The `--target` flag is a free-form string. `brokkr hotpath --target foo` builds
-`examples/foo_bench.rs` and stores results with variant "foo". To add a new
-benchmark target, create `examples/{name}_bench.rs` and a `[[example]]` entry
-in `Cargo.toml`.
+## Memory rules
+
+Do not use your Memory functionality. Do not read, write, or update
+memories. Do not suggest saving things to memory. Durable context belongs in
+CLAUDE.md or the relevant docs, not in per-session memory files - this
+project is developed across several hosts and users, and memory does not
+transfer between them; CLAUDE.md does.
+
+## General rules
+
+- Don't remind the user of CLAUDE.md rules. They wrote them, so they know
+  them.
 
 ## Profiling
 
@@ -98,10 +80,6 @@ Both CPU and GPU profiling run headless - no user interaction needed.
 
 Baseline (RTX 3080, 92 glyphs): CPU prepare 753us, GPU render 11us
 (headless offscreen) / 71us (windowed with compositor).
-
-## Lints
-
-Cargo.toml has 27 clippy deny-level rules covering style, error handling, async safety, and no-debug-code. Performance-constraining lints (`cast_*`, `float_cmp`, `indexing_slicing`) are intentionally excluded - speed at all costs.
 
 ## iced integration
 
@@ -148,41 +126,86 @@ the fork after a rebase; reset to `fork/sluggrs` instead.
 
 ## Code review
 
-`.review.toml` defines 7 reviewer archetypes with persistent Claude + Codex sessions:
-- **sweep** = bugs, perf, slug, gpu (every change)
-- **design** = fonts, wgpu, arch (structural changes)
-- **everything** = all 7
+`.review.toml` defines three archetypes, codex-only by default:
 
-Usage: `echo "review prompt" | review <archetype|group|all>`
+- **bare** = empty priming prompt; the piped prompt is the whole
+  instruction. The fix loop uses this so no hidden persona shapes any
+  stage's output and every stage stays auditable after the fact.
+- **bugs** = correctness-bug hunter that inspects the current repo state.
+- **goal** = prefixes the prompt with `/goal `.
+
+Profiles are tiers, not roles - any archetype can take any profile:
+
+- `--profile deep` = gpt-5.6-sol, xhigh effort, read-only sandbox. Spec
+  critique and planning.
+- `--profile build` = gpt-5.6-terra, medium effort, workspace-write
+  sandbox. Implementation.
+
+Usage: `echo "prompt" | review bare --profile deep`. The session ID is
+printed above the response; follow up with `--session <ID>`.
 
 `research/` (gitignored) contains reference repos and docs for reviewer context:
 Slug reference shaders, fontations, cosmic-text, vello, mesa, wgpu-naga, gpuweb spec,
 Vulkan spec, NVIDIA shader guides, JCGT paper, and other Slug implementations.
 
-When adding TODO items from review findings, tag them with `**<archetype> review**`
-to track which reviewer caught what.
+TODO.md tags like `**hb review**` date from the previous 7-archetype setup;
+they record which reviewer caught what and stay as provenance.
 
-## Tech stack
+## Fix loop
 
-- Rust (edition 2024, MSRV 1.97)
-- cosmic-text 0.19 (shaping, layout, font system)
-- skrifa 0.40 (glyph outline extraction)
-- wgpu 29 (GPU textures, render pipeline)
-- hotpath 0.22 (function-level profiling, brokkr integration)
-- WGSL shaders (translated from Slug HLSL reference, MIT licensed)
+The process driving `WORK.md` against the backlog in `TODO.md`. `WORK.md`
+holds only the current loop's problem statement and plan - codex sessions
+read it and should see the problem, not the process. Loop history lives in
+git, not in `WORK.md`.
 
-### Deliberate version pins
+One loop:
 
-`ccu` will report skrifa and wgpu as outdated. Both are pinned on purpose:
+1. Pick the next target(s) from `TODO.md`.
+2. Shallow-verify the target(s) are real by reading the cited code.
+3. Write the problem statement into `WORK.md`.
+4. Launch `review bare --profile deep` pointed at `WORK.md`: verify the
+   targets independently, produce an implementation plan. Runs in the
+   background so step 5 overlaps it; everything else is synchronous.
+5. While 4 runs: read the target code in depth and produce an independent
+   plan. Read-only work only - no edits while a reviewer is running.
+6. Consolidate. Argue with the reviewer until the plans agree. Write the
+   agreed plan into `WORK.md`.
+7. Launch `review bare --profile build` to implement.
+8. Review the diff twice: once directly, once by resuming the deep session
+   from step 4 with `--session <ID>`.
+9. Actionable findings get fixed - by a build session (findings written
+   into `WORK.md`) or by hand.
+10. Delete the shipped entry from `TODO.md`, run `brokkr fmt` +
+    `brokkr check`, commit. For changes that can alter rendered output,
+    also run `brokkr visual --all` against the approved baselines. For
+    performance work, profile with `brokkr hotpath` and commit
+    `.brokkr/results.db` alongside the code.
 
-- **skrifa tracks cosmic-text, not latest.** cosmic-text 0.19 depends on
-  skrifa 0.40 directly *and* on skrifa 0.42 via swash. Our 0.40 pin dedups
-  with cosmic-text's copy; bumping to 0.45 would put a third skrifa in every
-  downstream build for no gain, since skrifa is internal to sluggrs (not
-  re-exported, no types cross the iced boundary). Bump only when cosmic-text
-  does.
-- **wgpu must match iced.** wgpu types (`Device`, `RenderPass`, `TextureFormat`)
-  cross the sluggrs↔iced API boundary, so wgpu 30 has to wait for upstream
-  iced. See [iced integration](#iced-integration).
+Notes:
 
-hotpath has no downstream coupling and can be bumped freely.
+- **Point sessions at `WORK.md` and nothing else.** Never tell a review or
+  build session to read `CLAUDE.md` or `AGENTS.md`. codex picks up
+  `AGENTS.md` by convention, and `CLAUDE.md` is Claude-side process that
+  only pollutes a codex session's context. Standing project constraints
+  reach codex through `AGENTS.md`; `WORK.md` must carry everything
+  loop-specific the session needs, restated inline - above all "do not run
+  cargo/brokkr" (the orchestrator runs all checks). If a session needed to
+  know something and did not, that is a gap in `WORK.md`, not a missing
+  reading assignment.
+- **Codex refusal fallback.** If codex refuses or errors out on an item,
+  redo that item with the `Agent` tool, then go back to codex for the next
+  item. Do not water down the prompt, and do not treat a refusal as a
+  finding about the work. Reviewing/planning (steps 4, 8):
+  `model: "fable"`. Implementing (step 7): `model: "opus"`. Either way the
+  agent reads and writes only; the orchestrator runs `brokkr fmt` /
+  `brokkr check` in the main conversation, so parallel agents never
+  contend over a build.
+- **Never mutate the working tree while a review session is running.** A
+  `review` session starts fresh and fetches code itself: it runs
+  `git diff` and opens files in the live tree. A `git stash`,
+  `git checkout`, or any edit during that window silently changes what it
+  reviews, and the verdict that comes back cannot be placed. Concretely:
+  baseline profiling (`brokkr hotpath`) happens before launching the
+  reviewer or after it returns, never alongside it. The step-5 overlap is
+  read-only work only.
+
