@@ -3,6 +3,24 @@
 Retained-cache rework: give each TextArea occurrence its own cache
 entry so shared-buffer areas stop ping-ponging.
 
+## Benchmark verdict (plantasjen, same-host A/B vs 69e077d)
+
+- shared_buffer (new target, stored as baseline): 32 areas on one
+  buffer, warm frames all-direct (32/0/0 asserted), warm prepare
+  14 us/frame, cold 688 us, wall 1.478 ms. This is the scenario the
+  rework exists for; no pre-change equivalent exists to compare
+  against (the old code cannot express it as all-direct).
+- email2: 14.987 ms (5-run) vs 15.021 ms at 69e077d, -0.2%. An
+  initial single-run 15.726 ms (+4.7%) was an outlier; comparisons
+  against yesterday's 5fc1a85 numbers carry large host-state deltas
+  and are not like-for-like.
+- render: 30.745 ms vs 30.241 ms, +1.7% (noise). Instrumented
+  prepare_with_depth +2.9% on the all-miss render workload, inside
+  the noise floor shown by untouched functions (extract_outline
+  +5.9%).
+- email: 27.396 ms vs 26.485 ms at 5fc1a85, +3.4% cross-day within
+  the noise band.
+
 ## Implementation summary
 
 Shipped per the agreed plan. The resumed deep session found no defect
