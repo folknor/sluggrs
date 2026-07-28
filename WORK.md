@@ -166,6 +166,20 @@ occurrence count, append test-only fragment entry points that call
 - gpu_text_render_us same or better on the render target; build_bands
   shows no material CPU regression.
 
+## Benchmark verdict (plantasjen, same-host A/B vs 4914a28)
+
+- Identical storage: buffer 22787 texels / 182296 bytes on both
+  commits - the three spare curve-ref lanes carry the new data at
+  zero size cost.
+- gpu_text_render_us 7 vs 7: unchanged on the 92-glyph headless
+  scene, which is already at the measurement floor. The skip targets
+  small-ppem MSAA (5x render_single) and dense glyphs; this scene
+  exercises neither.
+- Walls inside the +/-4% noise band: render -1.5%, email2 +0.2%.
+- build_bands 298 -> 324 us total across 91 glyphs (+0.28 us/glyph):
+  the expected cost of six per-curve quantizations, 0.3% of cold
+  prepare.
+
 ## Implementation summary
 
 Shipped per the agreed plan; the deep review of the diff found no
