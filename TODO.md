@@ -82,15 +82,6 @@ dominated by compositor/surface, not text math.
   `Viewport::set_scroll_offset`, but the iced wrapper never calls it, so iced
   rendering always uses `[0,0]`. **wgpu, arch review**
 
-- [ ] **TextRenderer/TextAtlas coupling** - renderer reaches into atlas via
-  pub(crate). Policy, cache state, and upload orchestration spread across
-  both. Any change to classification, eviction, or fallback routing cuts
-  across both. **arch review**
-
-- [ ] **API doesn't encode TextRenderer↔TextAtlas lifetime** - render()
-  accepts any &TextAtlas but pipeline was baked from a specific atlas.
-  Mispairing is type-correct but wrong rendering. **arch review**
-
 ## Future / Long-term
 
 - [x] ~~**Parallel cold glyph processing (rayon)**~~ - tried, doesn't pay

@@ -8,8 +8,8 @@
 
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
 use sluggrs::{
-    Cache, ColorMode, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
-    Viewport,
+    Cache, ColorMode, RenderError, Resolution, SwashCache, TextArea, TextAtlas, TextBounds,
+    TextRenderer, Viewport,
 };
 
 // ---------------------------------------------------------------------------
@@ -34,6 +34,7 @@ fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
 struct TestHarness {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    cache: Cache,
     atlas: TextAtlas,
     renderer: TextRenderer,
     viewport: Viewport,
@@ -86,6 +87,7 @@ impl TestHarness {
         Self {
             device,
             queue,
+            cache,
             atlas,
             renderer,
             viewport,
@@ -132,6 +134,160 @@ impl TestHarness {
             &mut self.swash_cache,
         )
     }
+
+    fn render(&self, atlas: &TextAtlas) -> Result<(), RenderError> {
+        let target = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("atlas lifecycle render target"),
+            size: wgpu::Extent3d {
+                width: 800,
+                height: 600,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("atlas lifecycle render encoder"),
+            });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("atlas lifecycle render pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            ..Default::default()
+        });
+        self.renderer.render(atlas, &self.viewport, &mut pass)
+    }
+}
+
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn render_rejects_different_atlas_and_accepts_constructor_atlas() {
+    let mut h = TestHarness::with_bundled_fonts(
+        131_072,
+        &[include_bytes!("../examples/fonts/InterVariable.ttf")],
+    );
+    h.prepare_text("paired vector text")
+        .expect("prepare with atlas A should succeed");
+    assert!(
+        !h.renderer.prepared_instances().is_empty(),
+        "pairing test needs at least one prepared vector instance"
+    );
+    let atlas_b = TextAtlas::with_initial_buffer_capacity(
+        &h.device,
+        &h.cache,
+        wgpu::TextureFormat::Bgra8UnormSrgb,
+        ColorMode::Accurate,
+        131_072,
+    );
+
+    assert_eq!(h.render(&atlas_b), Err(RenderError::RemovedFromAtlas));
+    assert_eq!(h.render(&h.atlas), Ok(()));
+}
+
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn prepare_rejects_different_atlas_than_constructor() {
+    let mut h = TestHarness::with_bundled_fonts(
+        131_072,
+        &[include_bytes!("../examples/fonts/InterVariable.ttf")],
+    );
+    let mut atlas_b = TextAtlas::with_initial_buffer_capacity(
+        &h.device,
+        &h.cache,
+        wgpu::TextureFormat::Bgra8UnormSrgb,
+        ColorMode::Accurate,
+        131_072,
+    );
+    let mut buffer = Buffer::new(&mut h.font_system, Metrics::new(24.0, 30.0));
+    buffer.set_text("paired vector text", &Attrs::new(), Shaping::Advanced, None);
+    buffer.shape_until_scroll(&mut h.font_system, false);
+    let encoder = h
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    let text_area = TextArea {
+        buffer: &buffer,
+        left: 0.0,
+        top: 0.0,
+        scale: 1.0,
+        bounds: TextBounds {
+            left: 0,
+            top: 0,
+            right: 800,
+            bottom: 600,
+        },
+        default_color: cosmic_text::Color::rgb(0, 0, 0),
+    };
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        h.renderer.prepare(
+            &h.device,
+            &h.queue,
+            &encoder,
+            &mut h.font_system,
+            &mut atlas_b,
+            &h.viewport,
+            [text_area],
+            &mut h.swash_cache,
+        )
+    }));
+    let payload = result.expect_err("prepare with atlas B must panic");
+    let message = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        message.contains("TextAtlas used to construct"),
+        "unexpected panic message: {message}"
+    );
+
+    // The assertion fires before any state mutation, so the renderer must
+    // remain fully usable with its constructor atlas.
+    h.prepare_text("paired vector text")
+        .expect("prepare with the constructor atlas must still succeed");
+    assert!(
+        !h.renderer.prepared_instances().is_empty(),
+        "recovery prepare should emit vector instances"
+    );
+}
+
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn render_rejects_compacted_generation_until_reprepared() {
+    let mut h = TestHarness::with_initial_buffer_capacity(256);
+    h.prepare_text(concat!(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+        "!@#$%^&*()_+-=[]{}|;':\",./<>?",
+        "\u{00C0}\u{00C1}\u{00C2}\u{00C3}\u{00C4}\u{00C5}\u{00C6}\u{00C7}",
+        "\u{00C8}\u{00C9}\u{00CA}\u{00CB}\u{00CC}\u{00CD}\u{00CE}\u{00CF}",
+    ))
+    .expect("prepare set A should succeed");
+    h.atlas.trim();
+    h.prepare_text("42").expect("prepare set B should succeed");
+    let generation = h.atlas.generation();
+    h.atlas.trim();
+    assert_ne!(
+        h.atlas.generation(),
+        generation,
+        "compaction should change generation"
+    );
+    assert_eq!(h.render(&h.atlas), Err(RenderError::RemovedFromAtlas));
+    h.prepare_text("42").expect("re-prepare should succeed");
+    assert_eq!(h.render(&h.atlas), Ok(()));
 }
 
 // ---------------------------------------------------------------------------

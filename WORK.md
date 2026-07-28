@@ -1,214 +1,255 @@
 # WORK
 
-Retained-cache rework: give each TextArea occurrence its own cache
-entry so shared-buffer areas stop ping-ponging.
+Architecture: consolidate glyph resolution inside TextAtlas and verify
+renderer/atlas pairing at render time. Two TODO items in one loop:
 
-## Benchmark verdict (plantasjen, same-host A/B vs 69e077d)
+1. "TextRenderer/TextAtlas coupling" - the renderer reaches into the
+   atlas via pub(crate) fields and methods; policy, cache state, and
+   upload orchestration are spread across both files.
+2. "API doesn't encode TextRenderer-TextAtlas lifetime" - render()
+   accepts any &TextAtlas but the instance buffer was prepared against
+   a specific atlas's offsets; mispairing is type-correct but renders
+   garbage.
 
-- shared_buffer (new target, stored as baseline): 32 areas on one
-  buffer, warm frames all-direct (32/0/0 asserted), warm prepare
-  14 us/frame, cold 688 us, wall 1.478 ms. This is the scenario the
-  rework exists for; no pre-change equivalent exists to compare
-  against (the old code cannot express it as all-direct).
-- email2: 14.987 ms (5-run) vs 15.021 ms at 69e077d, -0.2%. An
-  initial single-run 15.726 ms (+4.7%) was an outlier; comparisons
-  against yesterday's 5fc1a85 numbers carry large host-state deltas
-  and are not like-for-like.
-- render: 30.745 ms vs 30.241 ms, +1.7% (noise). Instrumented
-  prepare_with_depth +2.9% on the all-miss render workload, inside
-  the noise floor shown by untouched functions (extract_outline
-  +5.9%).
-- email: 27.396 ms vs 26.485 ms at 5fc1a85, +3.4% cross-day within
-  the noise band.
+## Problem detail (verified earlier this session)
+
+`src/text_renderer.rs` currently:
+
+- reads/writes `atlas.glyphs` directly (get_and_mark_used in pass 1,
+  get in pass 3, insert_and_mark_used in resolve_glyph_miss),
+- reads `atlas.color_glyphs` / `atlas.color_v1_glyphs` in pass 3 and
+  inserts into them in the resolve path,
+- drives the whole cold-glyph pipeline itself (`resolve_glyph_miss`,
+  `upload_colr_v0_layers`): restore_cached_glyph, font lookup +
+  FontRef parse (its own `font_cache`), extract_outline/COLR checks,
+  prepare_mono with its own `prep_scratch`, then atlas.commit_mono /
+  upload_color_v1 / commit_color_v0,
+- uses `atlas.bind_group` in render(), plus flush_uploads,
+  rasterize_glyphs, render_raster_pass, generation(),
+  get_or_create_pipeline, init_raster.
+
+`src/text_atlas.rs` exposes pub(crate) fields: cache, glyph_buffer,
+bind_group, format, glyphs, color_glyphs, color_v1_glyphs.
+
+Pairing: `TextRenderer::new(atlas, ...)` bakes the pipeline from that
+atlas's Cache+format; `prepare*(atlas)` builds instances referencing
+that atlas's buffer offsets; `render(atlas)` binds whatever atlas it
+is handed. The only guard is the generation counter, and two distinct
+atlases both start at generation 0, so cross-atlas mispairing passes
+the check and renders garbage. types.rs also carries a stale doc
+comment claiming render() never returns errors (the generation guard
+has returned RemovedFromAtlas for a while) - fix it in this loop.
 
 ## Implementation summary
 
-Shipped per the agreed plan. The resumed deep session found no defect
-in the renderer implementation; five test/bench findings were fixed by
-the orchestrator:
+Shipped per the agreed plan. The resumed deep session verified the
+seam list is exact (no extra atlas reaches), all seven fields and
+four resolution helpers private, source-level behavior preserved
+across every resolution path (error routing, NON_VECTOR fallbacks,
+font-cache population, COLR v0/v1, fake italic, weight variation),
+and both pairing checks placed correctly. It found no production
+defects; two low test-quality findings were fixed by the
+orchestrator:
 
-- (high) The Cargo example was named `shared_buffer`, but brokkr's
-  `--target shared_buffer` resolves to `shared_buffer_bench`; renamed.
-- (medium) The bench lacked the HotpathGuard and counting-allocator
-  declarations, so --hotpath/--alloc modes would silently measure
-  nothing; added, following hotpath.rs.
-- (medium) The color-variant test compared cold vs warm frames but
-  never asserted the two areas keep DIFFERENT colors; it now asserts
-  red for the first emission group and green for the second.
-- (low) The order-swap test now pins group identity against the cold
-  frame (swapped halves equal the cold halves shifted +/-100 within
-  re-cull rounding tolerance) instead of only checking a 100px delta.
-- (low) The bench's per-frame assertion moved out of the timed loop
-  (direct-hit counts accumulate; validated after timing).
+- The cross-atlas render test now uses bundled InterVariable and
+  asserts at least one prepared vector instance (it could previously
+  pass with zero instances on a font-less host).
+- The prepare-pairing test now checks the panic message and proves
+  recovery: after the rejected prepare, preparing with the
+  constructor atlas succeeds and emits instances (pinning the
+  "assert before any state mutation" property).
 
-Validation: 82 tests + 22 GPU-gated tests pass; all four snapshots
-0.0%. The 22 include six new shared-buffer tests covering the miss ->
-all-direct transition, order-swap convergence, shrink/grow retention,
-and color/scale/bounds validity separation - all asserted through the
-new hidden PrepareStats accessor. Raster shared-buffer coverage was
-skipped: no deterministic non-vector fixture exists in the repo.
+Validation: 82 unit + 25 GPU tests pass; all four snapshots 0.0%
+(emoji-colr exercises mono + COLRv0 + COLRv1 through the moved
+resolution path). Resolves both arch TODO items.
 
-## Problem (verified)
+## Agreed plan (implemented exactly as written)
 
-`TextRenderer`'s retained cache (`src/text_renderer.rs:122`) is keyed
-by buffer pointer alone and holds ONE placement. iced deduplicates
-identical text, so N TextAreas can share one `cosmic_text::Buffer` at
-different placements or with different bounds/colors/scales. Verified
-behavior today for two vector-only occurrences at left=0 and left=100:
-cold frame both Miss (last writer caches left=100); next frame left=0
-ReCulls and left=100 is Direct, and the deferred update flips the
-retained placement; classifications alternate every frame. The cache
-ping-pongs, `all_direct_hits` stays false, and the vector vertex
-upload at line ~609 re-runs every frame. Occurrences with different
-scale/bounds/default_color miss validity and rebuild every frame
-(placement mismatches can also be Miss, not just ReCull, when the
-cached candidates are incomplete or contain raster glyphs). Fully
-identical duplicate areas DO all go Direct today - the pathology is
-specifically differing placement/validity fields. The whole
-`PendingCacheWrite` deferral (lines ~96-109, ~343, ~575-597) exists
-only to keep the shared-pointer aliasing sound.
+1. **Atlas identity.** `TextAtlas` gets a `u64` id from a static
+   `AtomicU64` (relaxed ordering), assigned only in
+   `with_initial_buffer_capacity()`. pub(crate) `id()` accessor. The
+   id is instance identity and survives compaction (generation covers
+   layout changes).
 
-## Agreed plan (implement exactly this)
+2. **Move resolution into TextAtlas.** Move `CachedFont`,
+   `font_cache`, `prep_scratch`, `resolve_glyph_miss`,
+   `upload_colr_v0_layers`, and `band_count_for_curves` from
+   text_renderer.rs into text_atlas.rs. Rename the entry point to
+   `resolve_glyph(&mut self, font_system, key) -> Result<GlyphEntry,
+   PrepareError>`. Make it defensively check the resident glyph map
+   first, then blob restoration, then extraction+commit - correct
+   independent of the pass-1 precondition, no warm-frame cost (misses
+   only). After the move, make `restore_cached_glyph`, `commit_mono`,
+   `upload_color_v1`, and `commit_color_v0` PRIVATE.
 
-All in `src/text_renderer.rs` unless stated.
+3. **Narrow seam + privacy.** Add pub(crate) accessors:
+   `glyph_mark_used(&mut self, &GlyphKey) -> Option<GlyphEntry>`,
+   `glyph(&self, &GlyphKey) -> Option<GlyphEntry>`,
+   `color_glyph(&self, &GlyphKey) -> Option<&ColorGlyphEntry>`,
+   `color_v1_glyph(&self, &GlyphKey) -> Option<&ColorV1GlyphEntry>`,
+   `bind_group(&self) -> &BindGroup`. Then make all seven fields
+   (cache, glyph_buffer, bind_group, format, glyphs, color_glyphs,
+   color_v1_glyphs) private. Verified: no source outside
+   text_renderer.rs touches them; examples/tests use public methods
+   only. The complete post-move seam is: constructor id()/
+   get_or_create_pipeline()/init_raster(); prepare id()/generation()/
+   glyph_mark_used()/resolve_glyph()/glyph()/color_glyph()/
+   color_v1_glyph()/flush_uploads()/rasterize_glyphs(); render id()/
+   generation()/bind_group()/render_raster_pass(). Any other atlas
+   access remaining in text_renderer.rs is a plan violation.
 
-### 1. Key types and fields
+4. **Pairing enforcement.** `TextRenderer` stores `atlas_id` from the
+   constructor atlas. At the very start of `prepare_with_depth()`
+   (before any state mutation): unconditional
+   `assert_eq!(atlas.id(), self.atlas_id, ...)` with a clear message -
+   this is a programmer invariant, `PrepareError` has no suitable
+   variant, and a debug-only check would let release builds populate
+   retained state from the wrong atlas (the retained cache validates
+   only generation, so a second atlas with the same glyph keys could
+   reuse wrong offsets silently). In `render()`: check id FIRST and
+   return `RenderError::RemovedFromAtlas` on mismatch, then the
+   existing generation check. Do NOT add an enum variant (public
+   non-#[non_exhaustive] enum; cryoglyph drop-in compatibility) and do
+   NOT use debug_assert in render.
 
-    type BufferPtr = *const cosmic_text::Buffer;
+5. **types.rs.** Rewrite the stale RenderError doc comment (render()
+   does return RemovedFromAtlas: on identity mismatch and on atlas
+   generation change) and broaden the Display wording for
+   RemovedFromAtlas to "prepared atlas data is invalid or unavailable"
+   -style phrasing covering both cases.
 
-    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    struct TextAreaCacheKey {
-        buffer_ptr: BufferPtr,
-        occurrence: usize,
-    }
+## Tests (tests/atlas_lifecycle_test.rs or a new pairing test file)
 
-Renderer fields:
+There is currently NO test that calls render() after a generation
+change - atlas_lifecycle_test.rs:180 only compares generation values.
+Add real render-path tests (GPU, ignored, existing harness patterns):
 
-    text_area_cache: FxHashMap<TextAreaCacheKey, CachedTextArea>,
-    text_area_occurrences: FxHashMap<BufferPtr, usize>,
-    last_prepare_stats: PrepareStats,
+- Two atlases A and B from the same Cache/device/format (both
+  generation 0). Renderer constructed+prepared with A using
+  deterministic non-empty vector text; inside a valid render pass:
+  `render(B)` returns Err(RemovedFromAtlas); `render(A)` returns
+  Ok(()).
+- Constructor pairing: renderer `new(A)`, then `prepare(B)` panics
+  (use `std::panic::catch_unwind` or `#[should_panic]` as fits the
+  harness; the wgpu resources must not be poisoned - a dedicated
+  small test is fine).
+- Real generation test: prepare with A, force compaction (small
+  initial capacity constructor + disjoint glyph sets across trims, as
+  atlas_lifecycle_test already does) until generation changes, then
+  assert `render(A)` returns Err(RemovedFromAtlas) BEFORE
+  re-preparing, and Ok after re-preparing.
 
-The occurrence map lives on the renderer for capacity reuse; clear it
-at the start of every prepare.
+Existing suites must pass unchanged: 82 unit + 22 GPU tests, four
+snapshots at 0.0% (pure refactor for correctly paired usage;
+emoji-colr exercises mono + COLRv0 + COLRv1 through the moved
+resolution path).
 
-### 2. Stats (public, hidden)
+## Superseded proposal (for context only)
 
-    #[doc(hidden)]
-    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-    pub struct PrepareStats {
-        pub direct_hits: usize,
-        pub reculls: usize,
-        pub misses: usize,
-    }
+### A. Move glyph resolution into TextAtlas
 
-    #[doc(hidden)]
-    pub fn last_prepare_stats(&self) -> PrepareStats
+Move `resolve_glyph_miss` and `upload_colr_v0_layers` - together with
+the `font_cache: FxHashMap<(fontdb::ID, Weight), CachedFont>` and
+`prep_scratch: PrepScratch` fields they use - from TextRenderer into
+TextAtlas. Public-ish seam (pub(crate)):
 
-Count at the exact branch where each plan is finalized; commit the
-field only on successful prepare (both return points), so it always
-means "last successful prepare".
+    atlas.resolve_glyph(font_system, key) -> Result<GlyphEntry, PrepareError>
 
-### 3. Key assignment (pass 1, before any classification)
+The renderer's pass 2 becomes a loop over distinct misses calling
+that. Rationale: everything the resolve path touches (blob-cache
+restore, font tables, outline extraction policy, NON_VECTOR fallback
+routing, commit) is atlas policy and atlas state; the renderer only
+needs the resulting entry. This makes classification/eviction/fallback
+changes single-file. The "one scratch while serial, one per worker
+under future rayon" note moves along with prep_scratch.
 
-    let buffer_ptr = text_area.buffer as BufferPtr;
-    let count = self.text_area_occurrences.entry(buffer_ptr).or_default();
-    let cache_key = TextAreaCacheKey { buffer_ptr, occurrence: *count };
-    *count += 1;
+### B. Narrow the crate-internal surface
 
-Use `cache_key` for the cache lookup and store it in whichever plan is
-created. EVERY plan variant carries it - including `MissArea`, which
-gains a `cache_key` field (the occurrence index is not recomputable in
-pass 3).
+Make `glyphs`, `color_glyphs`, `color_v1_glyphs`, `bind_group`,
+`cache`, `glyph_buffer`, `format` private to text_atlas.rs. Add the
+minimal pub(crate) accessors the renderer actually needs:
 
-### 4. Immediate pass-3 writes
+- pass 1: `glyph_mark_used(&mut self, key) -> Option<GlyphEntry>`
+  (wraps glyphs.get_and_mark_used)
+- pass 3: `glyph(&self, key) -> Option<GlyphEntry>`,
+  `color_glyph(&self, key) -> Option<&ColorGlyphEntry>`,
+  `color_v1_glyph(&self, key) -> Option<&ColorV1GlyphEntry>`
+- render: `bind_group(&self) -> &BindGroup`
 
-Keys are unique within a frame, so no two plans touch the same entry:
+Existing pub(crate) methods (flush_uploads, rasterize_glyphs,
+render_raster_pass, init_raster, get_or_create_pipeline) stay. The
+public `glyph_map()` accessor stays (external tests use it).
 
-- HitDirect: look up by key, append cached vectors.
-- ReCull: one `get_mut(&cache_key)`; read `instances`/`complete`,
-  produce the owned re-culled vector, append it to the frame output,
-  then immediately update that entry's left/top/scroll/instances/
-  complete.
-- Miss: build exactly as today, then immediately
-  `insert(area.cache_key, CachedTextArea { ... })`.
+### C. Runtime pairing verification
 
-Delete `PendingCacheWrite`, `pending_cache_writes`, and the post-pass
-application loop entirely.
+- TextAtlas gets a unique instance id: `id: u64` from a static
+  `AtomicU64` counter, assigned in the constructor, surviving
+  compaction (compaction already bumps generation; the id is the
+  instance identity, not the layout identity). pub(crate) or
+  #[doc(hidden)] accessor.
+- TextRenderer records `prepared_atlas_id` alongside
+  `prepared_atlas_generation` in prepare_with_depth.
+- render() verifies id first, then generation. On id mismatch return
+  `RenderError::RemovedFromAtlas`? OPEN QUESTION below.
 
-### 5. Retention
+Public API signatures stay identical (cryoglyph drop-in; iced is out
+of scope). No behavior change for correctly paired usage.
 
-    let occurrences = &self.text_area_occurrences;
-    self.text_area_cache.retain(|key, _| {
-        occurrences
-            .get(&key.buffer_ptr)
-            .is_some_and(|count| key.occurrence < *count)
-    });
+### D. types.rs doc fix
 
-Replaces `used_ptrs` (delete it).
+Rewrite the stale RenderError doc comment: render() DOES return
+RemovedFromAtlas when the atlas generation (or now identity) does not
+match the prepared state.
 
-### 6. Untouched
+## Open questions for review
 
-Pass 2 miss resolution, `classify_placement`,
-`re_cull_vector_instances`, visibility helpers, atlas generation
-checks, raster collection/upload. The raster vertex buffer is uploaded
-even on the all-direct fast path; this change restores VECTOR buffer
-reuse for shared-buffer frames.
+1. Do font_cache and prep_scratch belong in TextAtlas, or should a
+   third internal type (e.g. a GlyphResolver owned by the atlas) hold
+   them to keep TextAtlas from growing into a god object? Judge
+   against the file as it exists (it already owns the blob cache,
+   raster state, swash cache, and compaction).
+2. Mispair error semantics: reuse RemovedFromAtlas (no API change,
+   slightly wrong name) vs a new RenderError variant (additive public
+   enum change - check whether repos/iced's text.rs matches on
+   RenderError exhaustively before recommending it) vs debug_assert +
+   RemovedFromAtlas in release. Recommend one.
+3. Should prepare() also verify (or record-and-warn) that the passed
+   atlas matches the constructor-time pipeline source? The pipeline
+   depends only on Cache identity + format, so a strict check may be
+   too strong; a debug_assert on Arc::ptr_eq(cache) + format equality
+   may be right. Or skip constructor pairing entirely and only pin
+   prepare-vs-render. Recommend.
+4. Is there any remaining reach-in this plan misses? Enumerate every
+   `atlas.` access in text_renderer.rs against the proposed seam.
+5. Anything in examples/ or tests/ that relies on the fields going
+   private? (External crates can only see public items already, but
+   confirm nothing in src/ outside the two files uses them.)
+6. Test plan critique (below).
 
-### 7. New benchmark: `examples/shared_buffer_bench.rs`
+## Planned tests
 
-Plus an `[[example]]` entry in Cargo.toml (target name
-`shared_buffer`, pattern: existing email benches). Headless device
-like the other benches. One shaped buffer of distinct Latin
-codepoints; 32 TextAreas at distinct (left, top) placements, full
-screen bounds; `set_redraw(false)` after the cold frame. One cold
-prepare, then 50 warm frames. Assert (in the bench) that warm frames
-report 32 direct hits via `last_prepare_stats()`. Emit KVs:
-`elapsed_ms` (mandatory), `cold_prepare_us`, `warm_prepare_avg_us`,
-`direct_hits`, `reculls`, `misses`.
-
-No cross-commit A/B exists for a new target (the old commit lacks the
-example); the bench demonstrates the win on this commit and guards
-future regressions.
-
-## Tests (tests/prepare_behavior_test.rs)
-
-Keep `shared_buffer_areas_keep_distinct_placements` and
-`scrolled_content_reappears_after_cache_hit` green and UNCHANGED.
-
-New GPU tests (same harness):
-
-- Three-frame distinct-placement shared-buffer test asserting stats:
-  frame 1 = 2 misses, frames 2 and 3 = 2 direct hits; emitted
-  instances identical across frames (modulo nothing - placements are
-  stable).
-- Order-swap: frame 1 areas [A@0, B@100]; frame 2 [B@100, A@0]; frame
-  3 [B@100, A@0] again. Frame 2 instances must match the swapped input
-  order (correctness regardless of classification); frame 3 must be 2
-  direct hits (convergence after heuristic mismatch).
-- Shrink/grow retention: frame 1 two occurrences, frame 2 one, frame 3
-  two. Frame 3 = 1 direct hit + 1 miss (stale occurrence entry was
-  retained out).
-- Differing-validity variants, one test each asserting frame 2 = 2
-  direct hits with correct emitted output: (a) different default_color
-  per area, (b) different scale, (c) different bounds.
-- Raster shared-buffer coverage: ONLY if a deterministic non-vector
-  fixture exists in the repo (no system-font dependence); otherwise
-  skip and note it.
+- New GPU test (tests/prepare_behavior_test.rs or a new file): two
+  atlases, one renderer; prepare against atlas A, render into a pass
+  with atlas B; assert Err(...) instead of silent garbage; render with
+  A succeeds. Also cover: prepare(A), compact/trim A until generation
+  bumps... (existing generation test covers that; do not duplicate).
+- Existing suites must pass unchanged: 82 unit + 22 GPU tests, all
+  four snapshots at 0.0% (pure refactor, zero behavior change for
+  paired usage).
 
 ## Constraints
 
 - Do not run cargo or brokkr; the orchestrator runs all builds, tests,
   snapshots, and benchmarks.
-- Rust edition 2024. The warm path must gain no overhead beyond the
-  occurrence-counter hash per area.
-- No public API changes beyond the #[doc(hidden)] stats accessor.
+- Rust edition 2024. Perf-neutral refactor: no new per-frame work on
+  the warm path beyond the one id comparison in render().
+- Public API: signatures unchanged; additions limited to what question
+  2 decides plus #[doc(hidden)]/pub(crate) accessors.
 - No non-ASCII characters in code or comments.
-- Files: src/text_renderer.rs, tests/prepare_behavior_test.rs,
-  examples/shared_buffer_bench.rs, Cargo.toml only.
+- Files: src/text_renderer.rs, src/text_atlas.rs, src/types.rs, tests.
 
 ## Acceptance (run by the orchestrator)
 
 - brokkr check + ignored GPU tests pass; brokkr visual --all at 0.0%.
-- render/email/email2 benches: no regression vs stored results at
-  69e077d (email vs 5fc1a85).
-- shared_buffer bench: warm frames all-direct, stored as new baseline.
+- render/email2/shared_buffer benches: no regression vs stored results
+  at b7f0ca9 / edd0f7d.

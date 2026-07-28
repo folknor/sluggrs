@@ -63,9 +63,8 @@ impl std::error::Error for PrepareError {}
 
 /// An error that occurred while rendering text.
 ///
-/// Currently `render()` always returns `Ok(())` - these variants exist for
-/// cryoglyph API compatibility but are never produced. If trim/atlas-reset
-/// detection is added in the future, `RemovedFromAtlas` would be returned.
+/// `render()` returns `RemovedFromAtlas` when the prepared atlas identity or
+/// generation no longer matches the atlas passed to render.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RenderError {
     RemovedFromAtlas,
@@ -78,7 +77,7 @@ impl std::fmt::Display for RenderError {
             RenderError::RemovedFromAtlas => {
                 write!(
                     f,
-                    "Render error: glyph no longer exists within the texture atlas"
+                    "Render error: prepared atlas data is invalid or unavailable"
                 )
             }
             RenderError::ScreenResolutionChanged => {

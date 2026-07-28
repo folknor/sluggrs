@@ -7,10 +7,18 @@ use crate::glyph_cache::{
     GlyphEntry, GlyphKey, GlyphMap,
 };
 use crate::gpu_cache::Cache;
+use crate::outline::{ColorGlyphInfo, extract_color_info, extract_outline};
+use crate::prep::{PrepScratch, prepare_mono};
+use crate::prepare::apply_italic_shear;
 use crate::raster_text::{NonVectorGlyph, RasterState, RasterVertex};
 use crate::types::ColorMode;
 use crate::viewport::Viewport;
 use rustc_hash::FxHashMap;
+use skrifa::setting::VariationSetting;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 use wgpu::{
     BindGroup, Buffer, DepthStencilState, Device, MultisampleState, Queue, RenderPass,
@@ -25,13 +33,23 @@ const INITIAL_BUFFER_CAPACITY: u32 = 131_072;
 const TRIM_GROWTH_FACTOR: u32 = 4;
 const GLYPH_HEADER_TEXELS: u32 = 5;
 const BLOB_CACHE_BUDGET: usize = 4 * 1024 * 1024;
+static NEXT_ATLAS_ID: AtomicU64 = AtomicU64::new(0);
+
+/// Cached per-font data to avoid re-parsing font tables on every glyph miss.
+struct CachedFont {
+    font: Arc<cosmic_text::Font>,
+    face_index: u32,
+    units_per_em: f32,
+    has_colr: bool,
+}
 
 pub struct TextAtlas {
-    pub(crate) cache: Cache,
+    cache: Cache,
     device: Device,
-    pub(crate) glyph_buffer: wgpu::Buffer,
-    pub(crate) bind_group: BindGroup,
-    pub(crate) format: TextureFormat,
+    glyph_buffer: wgpu::Buffer,
+    bind_group: BindGroup,
+    format: TextureFormat,
+    id: u64,
 
     // Buffer state - packed layout: each logical texel (4 i16 values) is stored
     // as 2 i32 elements (each i32 packs a pair of i16 values). All capacity/
@@ -49,11 +67,11 @@ pub struct TextAtlas {
     gpu_flush_cursor: u32,
 
     // Glyph cache
-    pub(crate) glyphs: GlyphMap,
+    glyphs: GlyphMap,
     /// COLRv0 color glyph layers, keyed by the same GlyphKey as the main map.
-    pub(crate) color_glyphs: FxHashMap<GlyphKey, ColorGlyphEntry>,
+    color_glyphs: FxHashMap<GlyphKey, ColorGlyphEntry>,
     /// COLRv1 color glyph command sequences.
-    pub(crate) color_v1_glyphs: FxHashMap<GlyphKey, ColorV1GlyphEntry>,
+    color_v1_glyphs: FxHashMap<GlyphKey, ColorV1GlyphEntry>,
     resident_blobs: FxHashMap<GlyphKey, ResidentBlob>,
     blob_cache: GlyphBlobCache,
     /// Monotonic counter incremented on atlas compaction. Used by TextRenderer's
@@ -63,6 +81,9 @@ pub struct TextAtlas {
     // Raster fallback for non-vector glyphs (emoji, bitmap fonts)
     raster: Option<RasterState>,
     swash_cache: cosmic_text::SwashCache,
+    font_cache: FxHashMap<(cosmic_text::fontdb::ID, cosmic_text::Weight), CachedFont>,
+    /// One scratch set while resolution is serial; future rayon work uses one per worker.
+    prep_scratch: PrepScratch,
 }
 
 impl TextAtlas {
@@ -111,6 +132,7 @@ impl TextAtlas {
             glyph_buffer,
             bind_group,
             format,
+            id: NEXT_ATLAS_ID.fetch_add(1, Ordering::Relaxed),
             initial_buffer_capacity,
             max_buffer_capacity,
             buffer_capacity: initial_buffer_capacity,
@@ -127,6 +149,8 @@ impl TextAtlas {
             blob_cache: GlyphBlobCache::new(BLOB_CACHE_BUDGET),
             raster: None,
             swash_cache: cosmic_text::SwashCache::new(),
+            font_cache: FxHashMap::default(),
+            prep_scratch: PrepScratch::default(),
         }
     }
 
@@ -143,6 +167,30 @@ impl TextAtlas {
     /// Current atlas generation.
     pub fn generation(&self) -> u32 {
         self.generation
+    }
+
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub(crate) fn glyph_mark_used(&mut self, key: &GlyphKey) -> Option<GlyphEntry> {
+        self.glyphs.get_and_mark_used(key)
+    }
+
+    pub(crate) fn glyph(&self, key: &GlyphKey) -> Option<GlyphEntry> {
+        self.glyphs.get(key)
+    }
+
+    pub(crate) fn color_glyph(&self, key: &GlyphKey) -> Option<&ColorGlyphEntry> {
+        self.color_glyphs.get(key)
+    }
+
+    pub(crate) fn color_v1_glyph(&self, key: &GlyphKey) -> Option<&ColorV1GlyphEntry> {
+        self.color_v1_glyphs.get(key)
+    }
+
+    pub(crate) fn bind_group(&self) -> &BindGroup {
+        &self.bind_group
     }
 
     pub fn buffer_elements_used(&self) -> u32 {
@@ -406,7 +454,168 @@ impl TextAtlas {
         }
     }
 
-    pub(crate) fn restore_cached_glyph(
+    /// Resolve a glyph: return its resident entry or restore, extract, and upload it.
+    /// This is a cold path; the resident lookup keeps calls safe independent of pass 1.
+    pub(crate) fn resolve_glyph(
+        &mut self,
+        font_system: &mut cosmic_text::FontSystem,
+        key: GlyphKey,
+    ) -> Result<GlyphEntry, crate::types::PrepareError> {
+        if let Some(entry) = self.glyph_mark_used(&key) {
+            return Ok(entry);
+        }
+        if let Some(entry) = self.restore_cached_glyph(key)? {
+            return Ok(entry);
+        }
+
+        let font_weight = cosmic_text::Weight(key.font_weight);
+        let cache_key = (key.font_id, font_weight);
+        if let std::collections::hash_map::Entry::Vacant(slot) = self.font_cache.entry(cache_key) {
+            let face_index = font_system
+                .db()
+                .face(key.font_id)
+                .map(|info| info.index)
+                .unwrap_or(0);
+            let font = match font_system.get_font(key.font_id, font_weight) {
+                Some(font) => font,
+                None => {
+                    log::warn!("Font not found for glyph {key:?}");
+                    return Ok(self
+                        .glyphs
+                        .insert_and_mark_used(key, crate::glyph_cache::NON_VECTOR_GLYPH));
+                }
+            };
+            let skrifa_font = skrifa::FontRef::from_index(font.data(), face_index).ok();
+            let units_per_em = skrifa_font
+                .as_ref()
+                .and_then(|font| {
+                    use skrifa::raw::TableProvider;
+                    font.head().map(|head| head.units_per_em() as f32).ok()
+                })
+                .unwrap_or(1000.0);
+            let has_colr = skrifa_font
+                .as_ref()
+                .map(|font| {
+                    use skrifa::raw::TableProvider;
+                    font.colr().is_ok()
+                })
+                .unwrap_or(false);
+            slot.insert(CachedFont {
+                font,
+                face_index,
+                units_per_em,
+                has_colr,
+            });
+        }
+
+        let (font, face_index, units_per_em, has_colr) = {
+            let cached = &self.font_cache[&cache_key];
+            (
+                Arc::clone(&cached.font),
+                cached.face_index,
+                cached.units_per_em,
+                cached.has_colr,
+            )
+        };
+        let font_data = font.data();
+        let location = [VariationSetting::new(
+            skrifa::Tag::new(b"wght"),
+            key.font_weight as f32,
+        )];
+        let color_info = has_colr
+            .then(|| extract_color_info(font_data, face_index, key.glyph_id, &location))
+            .flatten();
+        let entry = match color_info {
+            Some(ColorGlyphInfo::V0Layers(layers)) => {
+                let fake_italic = key
+                    .cache_key_flags
+                    .contains(cosmic_text::CacheKeyFlags::FAKE_ITALIC);
+                self.upload_colr_v0_layers(
+                    font_data,
+                    face_index,
+                    units_per_em,
+                    &location,
+                    &layers,
+                    fake_italic,
+                    key,
+                )
+                .unwrap_or(crate::glyph_cache::NON_VECTOR_GLYPH)
+            }
+            Some(ColorGlyphInfo::V1(mut v1_data)) => {
+                match self.upload_color_v1(key, &mut v1_data, units_per_em) {
+                    Ok(entry) => {
+                        self.color_v1_glyphs.insert(key, entry);
+                        COLOR_V1_VECTOR_GLYPH
+                    }
+                    Err(_) => crate::glyph_cache::NON_VECTOR_GLYPH,
+                }
+            }
+            None => match extract_outline(font_data, face_index, key.glyph_id, &location) {
+                Some(mut outline) => {
+                    if key
+                        .cache_key_flags
+                        .contains(cosmic_text::CacheKeyFlags::FAKE_ITALIC)
+                    {
+                        apply_italic_shear(&mut outline);
+                    }
+                    let band_count = band_count_for_curves(outline.curves.len());
+                    match prepare_mono(
+                        &outline,
+                        band_count,
+                        band_count,
+                        units_per_em,
+                        &mut self.prep_scratch,
+                    ) {
+                        Some(prepared) => self.commit_mono(key, &prepared)?,
+                        None => crate::glyph_cache::NON_VECTOR_GLYPH,
+                    }
+                }
+                None => crate::glyph_cache::NON_VECTOR_GLYPH,
+            },
+        };
+        Ok(self.glyphs.insert_and_mark_used(key, entry))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn upload_colr_v0_layers(
+        &mut self,
+        font_data: &[u8],
+        face_index: u32,
+        units_per_em: f32,
+        location: &[VariationSetting],
+        layers: &[crate::outline::ColorLayer],
+        fake_italic: bool,
+        key: GlyphKey,
+    ) -> Result<GlyphEntry, crate::types::PrepareError> {
+        let mut prepared_layers = Vec::with_capacity(layers.len());
+        for layer in layers {
+            let Some(mut outline) =
+                extract_outline(font_data, face_index, layer.glyph_id, location)
+            else {
+                continue;
+            };
+            if fake_italic {
+                apply_italic_shear(&mut outline);
+            }
+            let band_count = band_count_for_curves(outline.curves.len());
+            let prepared = prepare_mono(
+                &outline,
+                band_count,
+                band_count,
+                units_per_em,
+                &mut self.prep_scratch,
+            );
+            prepared_layers.push((prepared, layer.color, layer.use_foreground));
+        }
+        if prepared_layers.is_empty() {
+            return Ok(crate::glyph_cache::NON_VECTOR_GLYPH);
+        }
+        let entry = self.commit_color_v0(key, &prepared_layers, units_per_em)?;
+        self.color_glyphs.insert(key, entry);
+        Ok(COLOR_VECTOR_GLYPH)
+    }
+
+    fn restore_cached_glyph(
         &mut self,
         key: GlyphKey,
     ) -> Result<Option<GlyphEntry>, crate::types::PrepareError> {
@@ -465,7 +674,7 @@ impl TextAtlas {
     /// Commit a CPU-prepared mono glyph blob to the atlas storage buffer.
     /// Pure write side: appends a universal header then `prepared.blob_data`.
     #[hotpath::measure]
-    pub(crate) fn commit_mono(
+    fn commit_mono(
         &mut self,
         key: GlyphKey,
         prepared: &crate::prep::PreparedMono,
@@ -520,7 +729,7 @@ impl TextAtlas {
     /// they contain bitcast f32 and packed color data that uses full i32 range.
     /// Each raw `[i32; 4]` occupies 2 packed texels (4 i32 slots).
     /// Band and curve data within sub-glyphs are i16-packed as usual.
-    pub(crate) fn upload_color_v1(
+    fn upload_color_v1(
         &mut self,
         key: GlyphKey,
         v1: &mut crate::outline::ColorV1Data,
@@ -713,7 +922,7 @@ impl TextAtlas {
         Ok(entry)
     }
 
-    pub(crate) fn commit_color_v0(
+    fn commit_color_v0(
         &mut self,
         key: GlyphKey,
         layers: &[(Option<crate::prep::PreparedMono>, [f32; 4], bool)],
@@ -845,6 +1054,12 @@ impl TextAtlas {
         self.cache
             .get_or_create_pipeline(device, self.format, multisample, depth_stencil)
     }
+}
+
+/// Determine the band count for a glyph based on its curve complexity.
+/// Matches harfbuzz: 1:1 up to a cap of 16 bands.
+fn band_count_for_curves(num_curves: usize) -> u32 {
+    (num_curves as u32).clamp(1, 16)
 }
 
 /// Encode a universal 5-texel glyph header. Float values retain their exact
