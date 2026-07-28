@@ -50,6 +50,10 @@ name = "email2_bench"
 path = "examples/email2_bench.rs"
 
 [[example]]
+name = "shared_buffer_bench"
+path = "examples/shared_buffer_bench.rs"
+
+[[example]]
 name = "atlas_repopulate_bench"
 path = "examples/atlas_repopulate_bench.rs"
 

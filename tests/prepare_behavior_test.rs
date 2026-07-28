@@ -412,3 +412,299 @@ fn scrolled_content_reappears_after_cache_hit() {
         "second line must reappear after scrolling it into view"
     );
 }
+
+fn assert_instances_equal(actual: &[sluggrs::GlyphInstance], expected: &[sluggrs::GlyphInstance]) {
+    assert_eq!(actual.len(), expected.len());
+    for (actual, expected) in actual.iter().zip(expected) {
+        assert_eq!(actual.screen_rect, expected.screen_rect);
+        assert_eq!(actual.color, expected.color);
+        assert_eq!(actual.glyph_offset, expected.glyph_offset);
+        assert_eq!(actual.cmd_texel_count, expected.cmd_texel_count);
+        assert_eq!(actual.depth, expected.depth);
+        assert_eq!(actual.ppem, expected.ppem);
+    }
+}
+
+fn prepare_areas<'a>(
+    h: &mut TestHarness,
+    areas: impl IntoIterator<Item = TextArea<'a>>,
+) -> Vec<sluggrs::GlyphInstance> {
+    let encoder = h
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    h.renderer
+        .prepare(
+            &h.device,
+            &h.queue,
+            &encoder,
+            &mut h.font_system,
+            &mut h.atlas,
+            &h.viewport,
+            areas,
+            &mut h.swash_cache,
+        )
+        .expect("prepare should succeed");
+    h.renderer.prepared_instances().to_vec()
+}
+
+fn full_bounds() -> TextBounds {
+    TextBounds {
+        left: 0,
+        top: 0,
+        right: 800,
+        bottom: 600,
+    }
+}
+
+// No deterministic non-vector fixture is available in this repository, so
+// shared-buffer raster coverage remains intentionally skipped.
+
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn shared_buffer_distinct_placements_become_direct_hits() {
+    let mut h = TestHarness::new();
+    let mut buffer = h.make_buffer("AB");
+    buffer.set_redraw(false);
+    let area = |left| TextArea {
+        buffer: &buffer,
+        left,
+        top: 0.0,
+        scale: 1.0,
+        bounds: full_bounds(),
+        default_color: Color::rgb(255, 255, 255),
+    };
+
+    let first = prepare_areas(&mut h, [area(0.0), area(100.0)]);
+    assert_eq!(
+        h.renderer.last_prepare_stats(),
+        sluggrs::text_renderer::PrepareStats {
+            direct_hits: 0,
+            reculls: 0,
+            misses: 2,
+        }
+    );
+    let second = prepare_areas(&mut h, [area(0.0), area(100.0)]);
+    assert_eq!(
+        h.renderer.last_prepare_stats(),
+        sluggrs::text_renderer::PrepareStats {
+            direct_hits: 2,
+            reculls: 0,
+            misses: 0,
+        }
+    );
+    let third = prepare_areas(&mut h, [area(0.0), area(100.0)]);
+    assert_eq!(
+        h.renderer.last_prepare_stats(),
+        sluggrs::text_renderer::PrepareStats {
+            direct_hits: 2,
+            reculls: 0,
+            misses: 0,
+        }
+    );
+    assert_instances_equal(&second, &first);
+    assert_instances_equal(&third, &first);
+}
+
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn shared_buffer_order_swap_converges_after_recull() {
+    let mut h = TestHarness::new();
+    let mut buffer = h.make_buffer("AB");
+    buffer.set_redraw(false);
+    let area = |left| TextArea {
+        buffer: &buffer,
+        left,
+        top: 0.0,
+        scale: 1.0,
+        bounds: full_bounds(),
+        default_color: Color::rgb(255, 255, 255),
+    };
+
+    let cold = prepare_areas(&mut h, [area(0.0), area(100.0)]);
+    assert!(!cold.is_empty());
+    assert_eq!(cold.len() % 2, 0, "two equal-sized area emissions expected");
+    let half = cold.len() / 2;
+
+    // Swapping the input order must swap the emitted groups: the first half
+    // of the swapped frame is the @100 area (cold first half shifted +100,
+    // via re-cull, so the x compare needs a rounding tolerance), the second
+    // half is the @0 area.
+    let swapped = prepare_areas(&mut h, [area(100.0), area(0.0)]);
+    assert_eq!(swapped.len(), cold.len());
+    assert_instances_shifted(&swapped[..half], &cold[..half], 100.0);
+    assert_instances_shifted(&swapped[half..], &cold[half..], -100.0);
+
+    prepare_areas(&mut h, [area(100.0), area(0.0)]);
+    assert_eq!(
+        h.renderer.last_prepare_stats(),
+        sluggrs::text_renderer::PrepareStats {
+            direct_hits: 2,
+            reculls: 0,
+            misses: 0,
+        }
+    );
+}
+
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn shared_buffer_shrink_grow_discards_stale_occurrences() {
+    let mut h = TestHarness::new();
+    let mut buffer = h.make_buffer("AB");
+    buffer.set_redraw(false);
+    let area = |left| TextArea {
+        buffer: &buffer,
+        left,
+        top: 0.0,
+        scale: 1.0,
+        bounds: full_bounds(),
+        default_color: Color::rgb(255, 255, 255),
+    };
+
+    prepare_areas(&mut h, [area(0.0), area(100.0)]);
+    prepare_areas(&mut h, [area(0.0)]);
+    prepare_areas(&mut h, [area(0.0), area(100.0)]);
+    assert_eq!(
+        h.renderer.last_prepare_stats(),
+        sluggrs::text_renderer::PrepareStats {
+            direct_hits: 1,
+            reculls: 0,
+            misses: 1,
+        }
+    );
+}
+
+/// Like `assert_instances_equal`, but expects `actual` to be `expected`
+/// shifted by `dx` along x. The shift can come through the re-cull path,
+/// whose addition order differs from a fresh build, so x compares with a
+/// rounding tolerance; everything else must be exact.
+fn assert_instances_shifted(
+    actual: &[sluggrs::GlyphInstance],
+    expected: &[sluggrs::GlyphInstance],
+    dx: f32,
+) {
+    assert_eq!(actual.len(), expected.len());
+    for (actual, expected) in actual.iter().zip(expected) {
+        assert!((actual.screen_rect[0] - expected.screen_rect[0] - dx).abs() < 0.01);
+        assert_eq!(actual.screen_rect[1], expected.screen_rect[1]);
+        assert_eq!(actual.screen_rect[2], expected.screen_rect[2]);
+        assert_eq!(actual.screen_rect[3], expected.screen_rect[3]);
+        assert_eq!(actual.color, expected.color);
+        assert_eq!(actual.glyph_offset, expected.glyph_offset);
+        assert_eq!(actual.cmd_texel_count, expected.cmd_texel_count);
+        assert_eq!(actual.depth, expected.depth);
+        assert_eq!(actual.ppem, expected.ppem);
+    }
+}
+
+/// Returns the warm-frame instances so callers can add variant-specific
+/// assertions (e.g. that per-area colors actually differ).
+fn assert_validity_variants_become_direct_hits(
+    mut make_areas: impl FnMut(&cosmic_text::Buffer) -> [TextArea<'_>; 2],
+) -> Vec<sluggrs::GlyphInstance> {
+    let mut h = TestHarness::new();
+    let mut buffer = h.make_buffer("AB");
+    buffer.set_redraw(false);
+    let first = prepare_areas(&mut h, make_areas(&buffer));
+    let second = prepare_areas(&mut h, make_areas(&buffer));
+    assert_eq!(
+        h.renderer.last_prepare_stats(),
+        sluggrs::text_renderer::PrepareStats {
+            direct_hits: 2,
+            reculls: 0,
+            misses: 0,
+        }
+    );
+    assert_instances_equal(&second, &first);
+    second
+}
+
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn shared_buffer_default_color_variants_become_direct_hits() {
+    let warm = assert_validity_variants_become_direct_hits(|buffer| {
+        [
+            TextArea {
+                buffer,
+                left: 0.0,
+                top: 0.0,
+                scale: 1.0,
+                bounds: full_bounds(),
+                default_color: Color::rgb(255, 0, 0),
+            },
+            TextArea {
+                buffer,
+                left: 100.0,
+                top: 0.0,
+                scale: 1.0,
+                bounds: full_bounds(),
+                default_color: Color::rgb(0, 255, 0),
+            },
+        ]
+    });
+
+    // The two areas must keep their own colors: red first, green second.
+    assert!(!warm.is_empty());
+    assert_eq!(warm.len() % 2, 0, "two equal-sized area emissions expected");
+    let half = warm.len() / 2;
+    for instance in &warm[..half] {
+        assert_eq!(instance.color, [1.0, 0.0, 0.0, 1.0]);
+    }
+    for instance in &warm[half..] {
+        assert_eq!(instance.color, [0.0, 1.0, 0.0, 1.0]);
+    }
+}
+
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn shared_buffer_scale_variants_become_direct_hits() {
+    assert_validity_variants_become_direct_hits(|buffer| {
+        [
+            TextArea {
+                buffer,
+                left: 0.0,
+                top: 0.0,
+                scale: 1.0,
+                bounds: full_bounds(),
+                default_color: Color::rgb(255, 255, 255),
+            },
+            TextArea {
+                buffer,
+                left: 100.0,
+                top: 0.0,
+                scale: 1.5,
+                bounds: full_bounds(),
+                default_color: Color::rgb(255, 255, 255),
+            },
+        ]
+    });
+}
+
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn shared_buffer_bounds_variants_become_direct_hits() {
+    assert_validity_variants_become_direct_hits(|buffer| {
+        [
+            TextArea {
+                buffer,
+                left: 0.0,
+                top: 0.0,
+                scale: 1.0,
+                bounds: full_bounds(),
+                default_color: Color::rgb(255, 255, 255),
+            },
+            TextArea {
+                buffer,
+                left: 100.0,
+                top: 0.0,
+                scale: 1.0,
+                bounds: TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: 700,
+                    bottom: 600,
+                },
+                default_color: Color::rgb(255, 255, 255),
+            },
+        ]
+    });
+}

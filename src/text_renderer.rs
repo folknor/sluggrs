@@ -19,6 +19,22 @@ use wgpu::{
 
 use crate::types::TextBounds;
 
+type BufferPtr = *const cosmic_text::Buffer;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct TextAreaCacheKey {
+    buffer_ptr: BufferPtr,
+    occurrence: usize,
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PrepareStats {
+    pub direct_hits: usize,
+    pub reculls: usize,
+    pub misses: usize,
+}
+
 /// Cached per-font data to avoid re-parsing font tables on every glyph miss.
 struct CachedFont {
     font: Arc<cosmic_text::Font>,
@@ -54,6 +70,7 @@ struct WorkItem<'a> {
 
 /// Per-area context for a cache-miss area. Built in pass 1, consumed in pass 3.
 struct MissArea<'a> {
+    cache_key: TextAreaCacheKey,
     text_area: TextArea<'a>,
     work_start: usize,
     work_end: usize,
@@ -68,10 +85,10 @@ struct MissArea<'a> {
 /// Plan record per text area produced by pass 1 and consumed by pass 3 in input order.
 enum AreaPlan<'a> {
     HitDirect {
-        buffer_ptr: *const cosmic_text::Buffer,
+        cache_key: TextAreaCacheKey,
     },
     ReCull {
-        buffer_ptr: *const cosmic_text::Buffer,
+        cache_key: TextAreaCacheKey,
         dx: f32,
         dy: f32,
         left: f32,
@@ -90,24 +107,6 @@ enum PlacementClass {
     Miss,
 }
 
-/// A cache write produced during pass 3 emission, applied only after every
-/// plan has emitted so that plans for a shared buffer pointer all see the
-/// pre-frame cache state they were classified against.
-enum PendingCacheWrite {
-    Insert {
-        buffer_ptr: *const cosmic_text::Buffer,
-        area: CachedTextArea,
-    },
-    Update {
-        buffer_ptr: *const cosmic_text::Buffer,
-        left: f32,
-        top: f32,
-        scroll: [f32; 2],
-        instances: Vec<GlyphInstance>,
-        complete: bool,
-    },
-}
-
 /// A text renderer that uses the Slug algorithm to render text into an
 /// existing render pass.
 pub struct TextRenderer {
@@ -118,8 +117,11 @@ pub struct TextRenderer {
     glyphs_to_render: u32,
     /// Per-font cache: avoids db().face(), get_font(), and FontRef parsing per miss.
     font_cache: FxHashMap<(cosmic_text::fontdb::ID, cosmic_text::Weight), CachedFont>,
-    /// Per-TextArea retained cache, keyed by buffer pointer.
-    text_area_cache: FxHashMap<*const cosmic_text::Buffer, CachedTextArea>,
+    /// Per-TextArea retained cache, keyed by buffer pointer and occurrence.
+    text_area_cache: FxHashMap<TextAreaCacheKey, CachedTextArea>,
+    /// Per-frame occurrence counters for shared buffers.
+    text_area_occurrences: FxHashMap<BufferPtr, usize>,
+    last_prepare_stats: PrepareStats,
     /// Resolution from last frame, for cache invalidation.
     cached_resolution: crate::types::Resolution,
     /// Atlas generation at last prepare() - detects trim(reset) between prepare and render.
@@ -169,6 +171,8 @@ impl TextRenderer {
             glyphs_to_render: 0,
             font_cache: FxHashMap::default(),
             text_area_cache: FxHashMap::default(),
+            text_area_occurrences: FxHashMap::default(),
+            last_prepare_stats: PrepareStats::default(),
             cached_resolution: crate::types::Resolution {
                 width: 0,
                 height: 0,
@@ -208,6 +212,7 @@ impl TextRenderer {
         mut metadata_to_depth: impl FnMut(usize) -> f32,
     ) -> Result<(), PrepareError> {
         self.instances.clear();
+        self.text_area_occurrences.clear();
         let mut non_vector_collector: Vec<NonVectorGlyph> = Vec::new();
 
         let resolution = viewport.resolution();
@@ -221,7 +226,7 @@ impl TextRenderer {
 
         // Only an all-direct-hit frame may reuse the vector vertex buffer.
         let mut all_direct_hits = true;
-        let mut used_ptrs: Vec<*const cosmic_text::Buffer> = Vec::new();
+        let mut prepare_stats = PrepareStats::default();
 
         let mut plans: Vec<AreaPlan<'a>> = Vec::new();
         let mut work: Vec<WorkItem<'a>> = Vec::new();
@@ -229,10 +234,15 @@ impl TextRenderer {
 
         // ===== Pass 1: classify areas, collect work items =====
         for text_area in text_areas {
-            let buffer_ptr: *const cosmic_text::Buffer = text_area.buffer;
-            used_ptrs.push(buffer_ptr);
+            let buffer_ptr = text_area.buffer as BufferPtr;
+            let count = self.text_area_occurrences.entry(buffer_ptr).or_default();
+            let cache_key = TextAreaCacheKey {
+                buffer_ptr,
+                occurrence: *count,
+            };
+            *count += 1;
 
-            if let Some(cached) = self.text_area_cache.get(&buffer_ptr)
+            if let Some(cached) = self.text_area_cache.get(&cache_key)
                 && !text_area.buffer.redraw()
                 && cached.scale == text_area.scale
                 && cached.bounds == text_area.bounds
@@ -255,13 +265,15 @@ impl TextRenderer {
                         !cached.non_vector_glyphs.is_empty(),
                     ) {
                         PlacementClass::Direct => {
-                            plans.push(AreaPlan::HitDirect { buffer_ptr });
+                            prepare_stats.direct_hits += 1;
+                            plans.push(AreaPlan::HitDirect { cache_key });
                             continue;
                         }
                         PlacementClass::ReCull => {
                             all_direct_hits = false;
+                            prepare_stats.reculls += 1;
                             plans.push(AreaPlan::ReCull {
-                                buffer_ptr,
+                                cache_key,
                                 dx,
                                 dy,
                                 left: text_area.left,
@@ -278,6 +290,7 @@ impl TextRenderer {
             }
 
             all_direct_hits = false;
+            prepare_stats.misses += 1;
             let [bounds_min_x, bounds_min_y, bounds_max_x, bounds_max_y] =
                 clipped_bounds(text_area.bounds, resolution);
 
@@ -314,6 +327,7 @@ impl TextRenderer {
             let work_end = work.len();
 
             plans.push(AreaPlan::Miss(MissArea {
+                cache_key,
                 text_area,
                 work_start,
                 work_end,
@@ -337,19 +351,15 @@ impl TextRenderer {
         }
 
         // ===== Pass 3: emit instances per area in input order =====
-        // Cache writes are deferred so every plan emits from the pre-frame
-        // cache state it was classified against, even when several TextAreas
-        // share one buffer pointer (iced deduplicates identical text).
-        let mut pending_cache_writes: Vec<PendingCacheWrite> = Vec::new();
         for plan in &plans {
             match plan {
-                AreaPlan::HitDirect { buffer_ptr } => {
-                    let cached = &self.text_area_cache[buffer_ptr];
+                AreaPlan::HitDirect { cache_key } => {
+                    let cached = &self.text_area_cache[cache_key];
                     self.instances.extend_from_slice(&cached.instances);
                     non_vector_collector.extend_from_slice(&cached.non_vector_glyphs);
                 }
                 AreaPlan::ReCull {
-                    buffer_ptr,
+                    cache_key,
                     dx,
                     dy,
                     left,
@@ -357,7 +367,10 @@ impl TextRenderer {
                     bounds,
                     scroll,
                 } => {
-                    let cached = &self.text_area_cache[buffer_ptr];
+                    let cached = self
+                        .text_area_cache
+                        .get_mut(cache_key)
+                        .expect("re-cull cache entry exists");
                     let (instances, complete) = re_cull_vector_instances(
                         &cached.instances,
                         cached.complete,
@@ -368,17 +381,11 @@ impl TextRenderer {
                     );
                     non_vector_collector.extend_from_slice(&cached.non_vector_glyphs);
                     self.instances.extend_from_slice(&instances);
-                    // Deferred: multiple TextAreas can share one buffer, and
-                    // later plans for this pointer were classified against
-                    // (and must emit from) the pre-frame cache state.
-                    pending_cache_writes.push(PendingCacheWrite::Update {
-                        buffer_ptr: *buffer_ptr,
-                        left: *left,
-                        top: *top,
-                        scroll: *scroll,
-                        instances,
-                        complete,
-                    });
+                    cached.left = *left;
+                    cached.top = *top;
+                    cached.scroll = *scroll;
+                    cached.instances = instances;
+                    cached.complete = complete;
                 }
                 AreaPlan::Miss(area) => {
                     let mut area_instances: Vec<GlyphInstance> = Vec::new();
@@ -548,11 +555,9 @@ impl TextRenderer {
                     self.instances.extend_from_slice(&area_instances);
                     non_vector_collector.extend_from_slice(&area_non_vector);
 
-                    let buffer_ptr: *const cosmic_text::Buffer = text_area.buffer;
-                    // Deferred for the same shared-buffer reason as ReCull.
-                    pending_cache_writes.push(PendingCacheWrite::Insert {
-                        buffer_ptr,
-                        area: CachedTextArea {
+                    self.text_area_cache.insert(
+                        area.cache_key,
+                        CachedTextArea {
                             left: text_area.left,
                             top: text_area.top,
                             scale: text_area.scale,
@@ -565,39 +570,17 @@ impl TextRenderer {
                             scroll,
                             complete,
                         },
-                    });
+                    );
                 }
             }
         }
 
-        // Apply cache writes in plan order (last occurrence of a shared
-        // buffer pointer determines the retained state).
-        for write in pending_cache_writes {
-            match write {
-                PendingCacheWrite::Insert { buffer_ptr, area } => {
-                    self.text_area_cache.insert(buffer_ptr, area);
-                }
-                PendingCacheWrite::Update {
-                    buffer_ptr,
-                    left,
-                    top,
-                    scroll,
-                    instances,
-                    complete,
-                } => {
-                    if let Some(cached) = self.text_area_cache.get_mut(&buffer_ptr) {
-                        cached.left = left;
-                        cached.top = top;
-                        cached.scroll = scroll;
-                        cached.instances = instances;
-                        cached.complete = complete;
-                    }
-                }
-            }
-        }
-
-        self.text_area_cache
-            .retain(|ptr, _| used_ptrs.contains(ptr));
+        let occurrences = &self.text_area_occurrences;
+        self.text_area_cache.retain(|key, _| {
+            occurrences
+                .get(&key.buffer_ptr)
+                .is_some_and(|count| key.occurrence < *count)
+        });
 
         atlas.flush_uploads(queue);
 
@@ -609,12 +592,14 @@ impl TextRenderer {
         if all_direct_hits && self.instances.len() == self.glyphs_to_render as usize {
             self.upload_raster_vertices(device, queue);
             self.prepared_atlas_generation = atlas_gen;
+            self.last_prepare_stats = prepare_stats;
             return Ok(());
         }
 
         self.upload_vertices(device, queue);
         self.upload_raster_vertices(device, queue);
         self.prepared_atlas_generation = atlas_gen;
+        self.last_prepare_stats = prepare_stats;
         Ok(())
     }
 
@@ -925,6 +910,11 @@ impl TextRenderer {
     #[doc(hidden)]
     pub fn prepared_instances(&self) -> &[GlyphInstance] {
         &self.instances
+    }
+
+    #[doc(hidden)]
+    pub fn last_prepare_stats(&self) -> PrepareStats {
+        self.last_prepare_stats
     }
 }
 

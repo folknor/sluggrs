@@ -10,6 +10,12 @@ Cleanup opportunities in `wgpu/src/text.rs` - cryoglyph heritage and dual-pipeli
 - [ ] **Inline prepare() free function** - thin wrapper that just calls renderer.prepare(). Existed for the old raster.prepare() call. Inline at its two call sites (State::prepare, Storage::prepare).
 - [ ] **Shared shift-or-invalidate** - vector and raster cache-hit paths both do integer-delta adjustments, duplicated. Vector adjusts screen_rect[0..1], raster adjusts physical.x/y. Unify.
 - [ ] **Remove unused `_encoder` and `_cache` params** - thread through 4 functions, never used. Cryoglyph API compat.
+- [ ] **Verify the buffer redraw lifecycle** - sluggrs' retained TextArea
+  cache requires `buffer.redraw() == false` to hit, but iced's cached
+  buffers (`graphics/src/text/cache.rs:45`) are never `set_redraw(false)`
+  after shaping, so retained reuse may never engage in production iced.
+  Verify and fix in the fork; the sluggrs-side occurrence-keyed cache
+  (shipped) only pays off once this is enabled. **deep review**
 
 
 ## CPU - Cold path
@@ -75,13 +81,6 @@ dominated by compositor/surface, not text math.
 - [ ] **iced wrapper does not expose scroll offset** - sluggrs exposes
   `Viewport::set_scroll_offset`, but the iced wrapper never calls it, so iced
   rendering always uses `[0,0]`. **wgpu, arch review**
-
-- [ ] **Shared-buffer areas ping-pong the retained cache** - the cache is
-  keyed by buffer pointer and holds one placement, so N TextAreas sharing a
-  buffer at different placements get at most one HitDirect per frame; the
-  rest ReCull every frame (cheap but nonzero). Keying by (pointer,
-  placement) or a per-area identity would let all of them go direct. Low
-  priority. **deep review**
 
 - [ ] **TextRenderer/TextAtlas coupling** - renderer reaches into atlas via
   pub(crate). Policy, cache state, and upload orchestration spread across
