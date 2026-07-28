@@ -40,6 +40,15 @@ the check and renders garbage. types.rs also carries a stale doc
 comment claiming render() never returns errors (the generation guard
 has returned RemovedFromAtlas for a while) - fix it in this loop.
 
+## Benchmark verdict (plantasjen, same-host, vs stored b7f0ca9 results)
+
+Perf-neutral as required, using stored baselines only (no worktree
+reruns): email2 15.102 ms vs 14.987 ms 5-run baseline (+0.8%), render
+29.869 ms vs 30.745 ms (-2.8%), shared_buffer 1.322 ms vs 1.478 ms
+(-10.6% on a 1.5 ms target - noise, right direction). The one
+per-frame addition is a u64 compare in render() and the assert in
+prepare().
+
 ## Implementation summary
 
 Shipped per the agreed plan. The resumed deep session verified the
