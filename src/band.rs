@@ -16,6 +16,10 @@ struct CurveMeta {
     vband_max: usize,
     is_horizontal: bool,
     is_vertical: bool,
+    min_x_q: i16,
+    max_x_q: i16,
+    min_y_q: i16,
+    max_y_q: i16,
 }
 
 #[derive(Default)]
@@ -61,6 +65,11 @@ pub struct CurveLocation {
 /// The shader recovers the original value with a mask: `u32(v) & 0xFFFF`.
 fn encode_offset(offset: u32) -> i16 {
     offset as u16 as i16
+}
+
+/// Quantize coordinates exactly as the curve packing pipeline does.
+fn quantize_i16(v: f32) -> i16 {
+    ((v * 4.0).round() as i32) as i16
 }
 
 /// Find the optimal split coordinate for a band's dual sorted lists.
@@ -161,6 +170,17 @@ pub fn build_bands(
         let curve_min_x = curve.p1[0].min(curve.p2[0]).min(curve.p3[0]);
         let curve_max_x = curve.p1[0].max(curve.p2[0]).max(curve.p3[0]);
 
+        let x1_q = quantize_i16(curve.p1[0]);
+        let x2_q = quantize_i16(curve.p2[0]);
+        let x3_q = quantize_i16(curve.p3[0]);
+        let y1_q = quantize_i16(curve.p1[1]);
+        let y2_q = quantize_i16(curve.p2[1]);
+        let y3_q = quantize_i16(curve.p3[1]);
+        let min_x_q = x1_q.min(x2_q).min(x3_q);
+        let max_x_q = x1_q.max(x2_q).max(x3_q);
+        let min_y_q = y1_q.min(y2_q).min(y3_q);
+        let max_y_q = y1_q.max(y2_q).max(y3_q);
+
         scratch.max_x_keys.push(curve_max_x);
         scratch.max_y_keys.push(curve_max_y);
         scratch.min_x_keys.push(curve_min_x);
@@ -205,6 +225,10 @@ pub fn build_bands(
             vband_max,
             is_horizontal,
             is_vertical,
+            min_x_q,
+            max_x_q,
+            min_y_q,
+            max_y_q,
         });
     }
 
@@ -318,6 +342,10 @@ pub fn build_bands(
     // Build GPU texture data.
     // Layout: [headers...] [band0_desc, band0_asc, band1_desc, band1_asc, ...]
     // Header: (count, desc_offset, asc_offset, split_bits)
+    // Curve ref lanes: .x = offset, .y/.z = perpendicular min/max bounds,
+    // .w = ray-axis break key (max for descending lists, min for ascending lists).
+    // Horizontal refs use y bounds and x break keys; vertical refs use x bounds
+    // and y break keys.
     let num_headers = band_count_y + band_count_x;
     let curve_lists_start = num_headers;
     // Pre-compute band_element_count so curve refs can be written with final offsets
@@ -353,17 +381,19 @@ pub fn build_bands(
         let end = start + scratch.hband_counts[b] as usize;
         for &curve_idx in &scratch.desc_indices[start..end] {
             let loc = curve_locations[curve_idx];
+            let meta = scratch.curve_meta[curve_idx];
             scratch_entries.push(encode_offset(loc.offset + band_element_count));
-            scratch_entries.push(0);
-            scratch_entries.push(0);
-            scratch_entries.push(0);
+            scratch_entries.push(meta.min_y_q);
+            scratch_entries.push(meta.max_y_q);
+            scratch_entries.push(meta.max_x_q);
         }
         for &curve_idx in &scratch.asc_indices[start..end] {
             let loc = curve_locations[curve_idx];
+            let meta = scratch.curve_meta[curve_idx];
             scratch_entries.push(encode_offset(loc.offset + band_element_count));
-            scratch_entries.push(0);
-            scratch_entries.push(0);
-            scratch_entries.push(0);
+            scratch_entries.push(meta.min_y_q);
+            scratch_entries.push(meta.max_y_q);
+            scratch_entries.push(meta.min_x_q);
         }
     }
     for b in 0..vcount {
@@ -371,17 +401,19 @@ pub fn build_bands(
         let end = start + scratch.vband_counts[b] as usize;
         for &curve_idx in &scratch.desc_indices[start..end] {
             let loc = curve_locations[curve_idx];
+            let meta = scratch.curve_meta[curve_idx];
             scratch_entries.push(encode_offset(loc.offset + band_element_count));
-            scratch_entries.push(0);
-            scratch_entries.push(0);
-            scratch_entries.push(0);
+            scratch_entries.push(meta.min_x_q);
+            scratch_entries.push(meta.max_x_q);
+            scratch_entries.push(meta.max_y_q);
         }
         for &curve_idx in &scratch.asc_indices[start..end] {
             let loc = curve_locations[curve_idx];
+            let meta = scratch.curve_meta[curve_idx];
             scratch_entries.push(encode_offset(loc.offset + band_element_count));
-            scratch_entries.push(0);
-            scratch_entries.push(0);
-            scratch_entries.push(0);
+            scratch_entries.push(meta.min_x_q);
+            scratch_entries.push(meta.max_x_q);
+            scratch_entries.push(meta.min_y_q);
         }
     }
 
@@ -396,7 +428,10 @@ pub fn build_bands(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::outline::{GlyphOutline, QuadCurve};
+    use crate::{
+        outline::{GlyphOutline, QuadCurve},
+        prep::{PrepScratch, prepare_mono},
+    };
 
     fn make_outline(curves: Vec<QuadCurve>) -> GlyphOutline {
         let mut min = [f32::MAX; 2];
@@ -603,5 +638,118 @@ mod tests {
             &mut BandScratch::default(),
         );
         assert_eq!(data.entries.len() % 4, 0, "entries must be uint4-aligned");
+    }
+
+    #[test]
+    fn curve_refs_encode_quantized_bounds_and_break_keys() {
+        let outline = make_outline(vec![QuadCurve {
+            p1: [0.13, 1.11],
+            p2: [2.37, 3.62],
+            p3: [-1.26, 2.88],
+        }]);
+        let data = build_bands(
+            &outline,
+            &sequential_locations(1),
+            1,
+            1,
+            Vec::new(),
+            &mut BandScratch::default(),
+        );
+
+        // Two headers occupy eight lanes; the four refs follow in h-desc,
+        // h-asc, v-desc, v-asc order. The curve data begins at texel 6.
+        assert_eq!(&data.entries[8..12], &[6, 4, 14, 9]);
+        assert_eq!(&data.entries[12..16], &[6, 4, 14, -5]);
+        assert_eq!(&data.entries[16..20], &[6, -5, 9, 14]);
+        assert_eq!(&data.entries[20..24], &[6, -5, 9, 4]);
+    }
+
+    #[test]
+    fn continuation_curve_refs_include_shared_point_in_bounds() {
+        let outline = make_outline(vec![
+            QuadCurve {
+                p1: [-1.2, 2.4],
+                p2: [0.3, 3.7],
+                p3: [1.1, 4.6],
+            },
+            QuadCurve {
+                p1: [1.1, 4.6],
+                p2: [2.2, 5.5],
+                p3: [3.3, 6.6],
+            },
+        ]);
+        let mut scratch = PrepScratch::default();
+        let prepared = prepare_mono(&outline, 1, 1, 10.0, &mut scratch)
+            .expect("continuation outline must fit the packed representation");
+
+        let unpack = |packed: i32| {
+            let packed = packed as u32;
+            [(packed as u16) as i16, ((packed >> 16) as u16) as i16]
+        };
+        let read_texel = |texel: usize| {
+            let lo = unpack(prepared.blob_data[texel * 2]);
+            let hi = unpack(prepared.blob_data[texel * 2 + 1]);
+            [lo[0], lo[1], hi[0], hi[1]]
+        };
+
+        // A 1x1 glyph with two curves has two headers and eight refs. The
+        // remaining three texels are the deduplicated curve payload.
+        let band_element_count = prepared.blob_size as usize - 3;
+        assert_eq!(band_element_count, 10);
+        let refs: Vec<_> = (0..8).map(|index| read_texel(2 + index)).collect();
+        let mut offsets: Vec<_> = refs.iter().map(|entry| entry[0] as usize).collect();
+        offsets.sort_unstable();
+        offsets.dedup();
+        assert_eq!(offsets, vec![band_element_count, band_element_count + 1]);
+        assert_eq!(
+            offsets[0] + 1,
+            offsets[1],
+            "continuation must share a curve texel"
+        );
+
+        for (index, reference) in refs.iter().enumerate() {
+            let texel0 = read_texel(reference[0] as usize);
+            let texel1 = read_texel(reference[0] as usize + 1);
+            let points = [
+                [texel0[0], texel0[1]],
+                [texel0[2], texel0[3]],
+                [texel1[0], texel1[1]],
+            ];
+            let min_x = points[0][0].min(points[1][0]).min(points[2][0]);
+            let max_x = points[0][0].max(points[1][0]).max(points[2][0]);
+            let min_y = points[0][1].min(points[1][1]).min(points[2][1]);
+            let max_y = points[0][1].max(points[1][1]).max(points[2][1]);
+
+            match index / 2 {
+                0 => assert_eq!(reference[1..], [min_y, max_y, max_x]),
+                1 => assert_eq!(reference[1..], [min_y, max_y, min_x]),
+                2 => assert_eq!(reference[1..], [min_x, max_x, max_y]),
+                3 => assert_eq!(reference[1..], [min_x, max_x, min_y]),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn curve_ref_bounds_match_wrapped_curve_texels() {
+        let outline = make_outline(vec![QuadCurve {
+            p1: [8191.8, 0.1],
+            p2: [8192.2, 1.1],
+            p3: [-8192.2, 2.1],
+        }]);
+        let data = build_bands(
+            &outline,
+            &sequential_locations(1),
+            1,
+            1,
+            Vec::new(),
+            &mut BandScratch::default(),
+        );
+
+        // The x values quantize then wrap to (32767, -32767, 32767).
+        assert_eq!(&data.entries[8..12], &[6, 0, 8, 32767]);
+        assert_eq!(&data.entries[12..16], &[6, 0, 8, -32767]);
+        assert_eq!(&data.entries[16..20], &[6, -32767, 32767, 8]);
+        assert_eq!(&data.entries[20..24], &[6, -32767, 32767, 0]);
     }
 }

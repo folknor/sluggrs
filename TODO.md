@@ -47,8 +47,6 @@ dominated by compositor/surface, not text math.
 - [ ] Texture fetch audit - verify no redundant loads in curve inner loop
 - [ ] Branch divergence assessment - `abs(a.y) < 0.25` warp divergence
   between linear and quadratic paths. Confirm with Nsight/RGP if available.
-- [ ] Band bounding-box pre-check - skip band loop if y-range doesn't
-  intersect pixel (within half a pixel)
 
 ### Correctness / reference sync
 

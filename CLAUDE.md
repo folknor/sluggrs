@@ -194,9 +194,14 @@ One loop:
    into `WORK.md`) or by hand.
 10. Delete the shipped entry from `TODO.md`, run `brokkr fmt` +
     `brokkr check`, commit. For changes that can alter rendered output,
-    also run `brokkr visual --all` against the approved baselines. For
-    performance work, profile with `brokkr hotpath` and commit
-    `.brokkr/results.db` alongside the code.
+    also run `brokkr visual --all` against the approved baselines AND
+    the GPU-gated test suite (`brokkr check -- -- --ignored`) - it is
+    not part of a plain `brokkr check`, and it holds tests a snapshot
+    cannot catch (e.g. `tests/solver_regression_test.rs`, which pins
+    the solver cancellation fix at an exact subpixel witness no
+    snapshot scene hits). For performance work, profile with
+    `brokkr hotpath` and commit `.brokkr/results.db` alongside the
+    code.
 
 Notes:
 

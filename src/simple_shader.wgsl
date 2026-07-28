@@ -197,6 +197,7 @@ fn render_single(
     glyph_base: u32,
     band_max: vec2<i32>,
 ) -> f32 {
+    let render_coord_q = render_coord * 4.0;
     let band_index = clamp(
         vec2<i32>(render_coord * band_transform.xy + band_transform.zw),
         vec2<i32>(0, 0),
@@ -214,6 +215,13 @@ fn render_single(
 
     for (var ci = 0u; ci < u32(hband_data.x); ci++) {
         let curve_ref = read_texel(glyph_base + h_data_offset + ci);
+        let wq = (f32(curve_ref.w) * INV_UNITS - render_coord.x) * pixels_per_em.x;
+        if h_left_ray {
+            if wq > 0.5 { break; }
+        } else {
+            if wq < -0.5 { break; }
+        }
+        if f32(curve_ref.y) > render_coord_q.y || f32(curve_ref.z) < render_coord_q.y { continue; }
         let curve_offset = decode_offset(curve_ref.x);
         let raw12 = read_texel(glyph_base + curve_offset);
         let raw3 = read_texel(glyph_base + curve_offset + 1u);
@@ -221,12 +229,6 @@ fn render_single(
         let q3 = vec2<f32>(raw3.xy) * INV_UNITS;
         let p12 = q12 - vec4<f32>(render_coord, render_coord);
         let p3 = q3 - render_coord;
-
-        if h_left_ray {
-            if min(min(p12.x, p12.z), p3.x) * pixels_per_em.x > 0.5 { break; }
-        } else {
-            if max(max(p12.x, p12.z), p3.x) * pixels_per_em.x < -0.5 { break; }
-        }
 
         let code = calc_root_code(p12.y, p12.w, p3.y);
         if code != 0u {
@@ -258,6 +260,13 @@ fn render_single(
 
     for (var ci = 0u; ci < u32(vband_data.x); ci++) {
         let curve_ref = read_texel(glyph_base + v_data_offset + ci);
+        let wq = (f32(curve_ref.w) * INV_UNITS - render_coord.y) * pixels_per_em.y;
+        if v_left_ray {
+            if wq > 0.5 { break; }
+        } else {
+            if wq < -0.5 { break; }
+        }
+        if f32(curve_ref.y) > render_coord_q.x || f32(curve_ref.z) < render_coord_q.x { continue; }
         let curve_offset = decode_offset(curve_ref.x);
         let raw12 = read_texel(glyph_base + curve_offset);
         let raw3 = read_texel(glyph_base + curve_offset + 1u);
@@ -265,12 +274,6 @@ fn render_single(
         let q3 = vec2<f32>(raw3.xy) * INV_UNITS;
         let p12 = q12 - vec4<f32>(render_coord, render_coord);
         let p3 = q3 - render_coord;
-
-        if v_left_ray {
-            if min(min(p12.y, p12.w), p3.y) * pixels_per_em.y > 0.5 { break; }
-        } else {
-            if max(max(p12.y, p12.w), p3.y) * pixels_per_em.y < -0.5 { break; }
-        }
 
         let code = calc_root_code(p12.x, p12.z, p3.x);
         if code != 0u {
