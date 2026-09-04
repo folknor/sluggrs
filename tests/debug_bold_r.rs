@@ -13,9 +13,10 @@ fn dump_bold_r_geometry() {
     let location = [VariationSetting::new(wght, 700.0)];
     let outline = extract_outline(&font_data, 0, glyph_id, &location).expect("should have outline");
 
+    let last = 5.min(outline.curves.len() - 1);
+
     println!("=== ORIGINAL curves 2..5 ===");
-    for i in 2..=5.min(outline.curves.len() - 1) {
-        let c = &outline.curves[i];
+    for (i, c) in outline.curves.iter().enumerate().take(last + 1).skip(2) {
         println!(
             "  orig {:2}: p1=({:9.4},{:9.4}) p2=({:9.4},{:9.4}) p3=({:9.4},{:9.4})",
             i, c.p1[0], c.p1[1], c.p2[0], c.p2[1], c.p3[0], c.p3[1]
@@ -23,8 +24,7 @@ fn dump_bold_r_geometry() {
     }
 
     println!("\n=== GPU-PREPARED curves 2..5 ===");
-    for i in 2..=5.min(outline.curves.len() - 1) {
-        let c = &outline.curves[i];
+    for (i, c) in outline.curves.iter().enumerate().take(last + 1).skip(2) {
         let a_x = c.p1[0] - 2.0 * c.p2[0] + c.p3[0];
         let a_y = c.p1[1] - 2.0 * c.p2[1] + c.p3[1];
         println!(

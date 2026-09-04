@@ -1,3 +1,8 @@
+// wgpu's backend type graph (Global -> Hub -> Registry -> RwLock -> Storage ->
+// ...) nests deeper than the default limit of 128, so auto-trait resolution for
+// anything holding a wgpu resource (e.g. `gpu_cache::Inner: Send`) overflows.
+#![recursion_limit = "256"]
+
 // Public API modules - stable interface matching cryoglyph
 pub mod gpu_cache;
 pub mod text_atlas;

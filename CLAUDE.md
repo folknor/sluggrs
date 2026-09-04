@@ -126,20 +126,34 @@ of the local sluggrs checkout. No push or rev bump needed to test a change.
 
 ### Catching up with upstream
 
-The fork is kept at exactly **one commit** ahead of upstream ("Replace
-cryoglyph with sluggrs..."), which makes catch-ups mechanical:
+The fork is kept at exactly **one commit** ahead of
+`origin/arboard-full-patch` ("Replace cryoglyph with sluggrs..."), which
+makes catch-ups mechanical:
 
 ```sh
-git fetch origin arboard-full-patch
+git fetch origin
 git rebase --onto origin/arboard-full-patch <our-commit>^ sluggrs
 cargo check --workspace
 git push --force-with-lease fork sluggrs
 ```
 
+**Before analyzing, confirm the tracking ref is live.** The clone was once
+single-branch: `remote.origin.fetch` covered only `master`, so
+`git fetch origin arboard-full-patch` updated `FETCH_HEAD` but left
+`origin/arboard-full-patch` frozen for months - which once led a whole
+catch-up astray (a spurious merge of squidowl master plus a redundant
+re-port of the arboard patches, force-pushed away in ad1e240a). The refspec
+is fixed now (`+refs/heads/*:refs/remotes/origin/*`), but cheap insurance:
+`git ls-remote origin arboard-full-patch` and check the SHA matches the
+local tracking ref after fetching.
+
 Upstream **rebases and rewords** its branch, so our older copies of upstream
 commits will not match by patch-id - `git cherry` reports them as new. Verify
-by commit subject instead, and drop the duplicates. Never `git pull` (merge)
-the fork after a rebase; reset to `fork/sluggrs` instead.
+by commit subject instead, and drop the duplicates. squidowl adapts the
+arboard patches to upstream refactors themselves (e.g. the unified
+`core::text` editing) - their versions are canonical; never keep our own
+port of the same behavior alongside theirs. Never `git pull` (merge) the
+fork after a rebase; reset to `fork/sluggrs` instead.
 
 ## Code review
 
