@@ -1,4 +1,4 @@
-# sluggrs
+# sluggrs_skylines
 
 GPU vector text rendering using the [Slug algorithm](https://terathon.com/blog/decade-slug.html). Evaluates quadratic bezier curves per-pixel in fragment shaders - resolution-independent, no texture atlas needed.
 

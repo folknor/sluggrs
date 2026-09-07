@@ -26,6 +26,7 @@ fn main() {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
         force_fallback_adapter: false,
+        apply_limit_buckets: false,
     }))
     .expect("No suitable GPU adapter found");
 
@@ -309,7 +310,7 @@ fn read_timestamp_us(
     });
     rx.recv().unwrap().ok()?;
 
-    let data = slice.get_mapped_range();
+    let Ok(data) = slice.get_mapped_range() else { return  None };
     let timestamps: &[u64] = bytemuck::cast_slice(&data);
     let begin = timestamps[0];
     let end = timestamps[1];

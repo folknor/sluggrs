@@ -8,6 +8,7 @@ use sluggrs::{
 use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
 
 use std::sync::Arc;
+use wgpu::hal::DynQueue;
 use winit::{
     application::ApplicationHandler, event::WindowEvent, event_loop::EventLoop, window::Window,
 };
@@ -426,7 +427,8 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
+                    force_fallback_adapter: false,
+        apply_limit_buckets: false,
         })
         .await
         .expect("failed to find adapter");
@@ -677,7 +679,7 @@ fn render(state: &mut RenderState) {
         }
     }
 
-    frame.present();
+    state.queue.present(frame);
     state.atlas.trim();
 }
 

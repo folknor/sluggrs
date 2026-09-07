@@ -124,7 +124,8 @@ fn create_device() -> (wgpu::Device, wgpu::Queue) {
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
-        force_fallback_adapter: false,
+                force_fallback_adapter: false,
+        apply_limit_buckets: false,
     }))
     .expect("No suitable GPU adapter found");
 

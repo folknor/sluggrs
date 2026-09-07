@@ -6,6 +6,7 @@ use sluggrs::outline::{
 };
 
 use std::sync::Arc;
+use wgpu::hal::DynQueue;
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler, event::WindowEvent, event_loop::EventLoop, window::Window,
@@ -608,7 +609,8 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
+                    force_fallback_adapter: false,
+        apply_limit_buckets: false,
         })
         .await
         .expect("failed to find adapter");
@@ -1194,7 +1196,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
-            buffers: &[wgpu::VertexBufferLayout {
+            buffers: &[Some(wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<GlyphInstance>() as u64,
                 step_mode: wgpu::VertexStepMode::Instance,
                 attributes: &[
@@ -1219,7 +1221,7 @@ async fn init_render_state(window: Arc<Window>) -> RenderState {
                         shader_location: 3,
                     },
                 ],
-            }],
+            })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -1359,7 +1361,7 @@ fn render(state: &mut RenderState) {
         }
     }
 
-    frame.present();
+    state.queue.present(frame);
 }
 
 fn main() {

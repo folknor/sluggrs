@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::fmt::format;
 use sluggrs::GlyphInstance;
 use wgpu::util::DeviceExt;
 
@@ -18,6 +19,7 @@ pub fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
         power_preference: wgpu::PowerPreference::LowPower,
         compatible_surface: None,
         force_fallback_adapter: true,
+        apply_limit_buckets: false
     }))
     .expect("Failed to find adapter - this test requires a GPU or software renderer");
 
@@ -73,7 +75,7 @@ pub fn render_coverage(
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
-            buffers: &[wgpu::VertexBufferLayout {
+            buffers: &[Some(wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<GlyphInstance>() as u64,
                 step_mode: wgpu::VertexStepMode::Instance,
                 attributes: &[
@@ -98,8 +100,8 @@ pub fn render_coverage(
                         shader_location: 3,
                     },
                 ],
-            }],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default()
         },
         fragment: Some(wgpu::FragmentState {
             module: &shader,
@@ -244,7 +246,7 @@ pub fn render_coverage(
     rx.recv()
         .expect("readback sender dropped")
         .expect("readback map failed");
-    let mapped = readback.slice(..).get_mapped_range();
+    let mapped = readback.slice(..).get_mapped_range().unwrap();
     let coverage = f32::from(mapped[3]) / 255.0;
     drop(mapped);
     readback.unmap();

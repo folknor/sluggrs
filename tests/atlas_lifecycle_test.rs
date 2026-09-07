@@ -22,6 +22,7 @@ fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
         power_preference: wgpu::PowerPreference::LowPower,
         compatible_surface: None,
         force_fallback_adapter: true,
+        apply_limit_buckets: false,
     }))
     .expect("Failed to find adapter - this test requires a GPU or software renderer");
 

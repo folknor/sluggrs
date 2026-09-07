@@ -215,7 +215,8 @@ fn main() {
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
-        force_fallback_adapter: false,
+                force_fallback_adapter: false,
+        apply_limit_buckets: false,
     }))
     .expect("No suitable GPU adapter found");
     let info = adapter.get_info();
@@ -374,7 +375,7 @@ fn main() {
 
     // BGRA (padded rows) to RGBA. Alpha forced opaque: the comparison is
     // about color, and leftover blend alpha varies across drivers.
-    let mapped = readback.slice(..).get_mapped_range();
+    let mapped = readback.slice(..).get_mapped_range().unwrap();
     let mut rgba = Vec::with_capacity((args.width * args.height * 4) as usize);
     for row in 0..args.height {
         let start = (row * padded_bytes_per_row) as usize;

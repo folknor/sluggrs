@@ -24,7 +24,7 @@ pub struct Cache(Arc<Inner>);
 #[derive(Debug)]
 struct Inner {
     shader: ShaderModule,
-    vertex_buffers: [wgpu::VertexBufferLayout<'static>; 1],
+    vertex_buffers: [Option<wgpu::VertexBufferLayout<'static>>; 1],
     pub(crate) atlas_layout: BindGroupLayout,
     pub(crate) uniforms_layout: BindGroupLayout,
     pipeline_layout: PipelineLayout,
@@ -119,11 +119,11 @@ impl Cache {
 
         Self(Arc::new(Inner {
             shader,
-            vertex_buffers: [vertex_buffer_layout],
+            vertex_buffers: [Some(vertex_buffer_layout)],
             atlas_layout,
             uniforms_layout,
             pipeline_layout,
-            pipelines: Mutex::new(Vec::new()),
+            pipelines: Mutex::new(Vec::new())
         }))
     }
 

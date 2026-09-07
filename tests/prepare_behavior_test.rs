@@ -22,6 +22,7 @@ fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
         power_preference: wgpu::PowerPreference::LowPower,
         compatible_surface: None,
         force_fallback_adapter: true,
+        apply_limit_buckets: false,
     }))
     .expect("Failed to find adapter - this test requires a GPU or software renderer");
 
@@ -299,7 +300,7 @@ fn clipping_bounds_do_not_cause_errors() {
 /// different horizontal placements. Returns the emitted vector instances.
 fn prepare_shared_buffer_frame(
     h: &mut TestHarness,
-    buffer: &cosmic_text::Buffer,
+    buffer: &Buffer,
     left_a: f32,
     left_b: f32,
 ) -> Vec<sluggrs::GlyphInstance> {
