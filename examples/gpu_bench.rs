@@ -134,18 +134,14 @@ fn main() {
             },
             default_color: cosmic_text::Color::rgb(255, 255, 255),
         };
-        let encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        renderer
-            .prepare(
+        let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        renderer.prepare(
                 &device,
                 &queue,
-                &encoder,
                 &mut font_system,
                 &mut atlas,
                 &viewport,
-                [text_area],
-                &mut swash_cache,
+                [text_area]
             )
             .expect("prepare failed");
     }

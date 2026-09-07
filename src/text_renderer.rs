@@ -7,7 +7,7 @@ use crate::viewport::Viewport;
 
 use rustc_hash::FxHashMap;
 use wgpu::{
-    Buffer, BufferDescriptor, BufferUsages, COPY_BUFFER_ALIGNMENT, CommandEncoder,
+    Buffer, BufferDescriptor, BufferUsages, COPY_BUFFER_ALIGNMENT,
     DepthStencilState, Device, MultisampleState, Queue, RenderPass, RenderPipeline,
 };
 
@@ -185,13 +185,11 @@ impl TextRenderer {
         &mut self,
         device: &Device,
         queue: &Queue,
-        _encoder: &CommandEncoder,
         font_system: &mut cosmic_text::FontSystem,
         atlas: &mut TextAtlas,
         viewport: &Viewport,
         text_areas: impl IntoIterator<Item = TextArea<'a>>,
-        _cache: &mut cosmic_text::SwashCache,
-        mut metadata_to_depth: impl FnMut(usize) -> f32,
+        mut metadata_to_depth: impl FnMut(usize) -> f32
     ) -> Result<(), PrepareError> {
         assert_eq!(
             atlas.id(),
@@ -643,28 +641,24 @@ impl TextRenderer {
     }
 
     /// Prepares all of the provided text areas for rendering.
-    #[allow(clippy::too_many_arguments)] // matches cryoglyph's API
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare<'a>(
         &mut self,
         device: &Device,
         queue: &Queue,
-        encoder: &CommandEncoder,
         font_system: &mut cosmic_text::FontSystem,
         atlas: &mut TextAtlas,
         viewport: &Viewport,
-        text_areas: impl IntoIterator<Item = TextArea<'a>>,
-        cache: &mut cosmic_text::SwashCache,
+        text_areas: impl IntoIterator<Item = TextArea<'a>>
     ) -> Result<(), PrepareError> {
         self.prepare_with_depth(
             device,
             queue,
-            encoder,
             font_system,
             atlas,
             viewport,
             text_areas,
-            cache,
-            zero_depth,
+            zero_depth
         )
     }
 

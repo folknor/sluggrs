@@ -300,16 +300,13 @@ fn main() {
 
     let mut swash_cache = SwashCache::new();
     let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-    renderer
-        .prepare(
+    renderer.prepare(
             &device,
             &queue,
-            &encoder,
             &mut font_system,
             &mut atlas,
             &viewport,
-            areas,
-            &mut swash_cache,
+            areas
         )
         .expect("prepare failed");
 

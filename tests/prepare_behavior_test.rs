@@ -104,12 +104,10 @@ impl TestHarness {
         self.renderer.prepare(
             &self.device,
             &self.queue,
-            &encoder,
             &mut self.font_system,
             &mut self.atlas,
             &self.viewport,
-            [text_area],
-            &mut self.swash_cache,
+            [text_area]
         )
     }
 
@@ -155,12 +153,10 @@ impl TestHarness {
         self.renderer.prepare_with_depth(
             &self.device,
             &self.queue,
-            &encoder,
             &mut self.font_system,
             &mut self.atlas,
             &self.viewport,
             [text_area],
-            &mut self.swash_cache,
             metadata_to_depth,
         )
     }
@@ -321,16 +317,13 @@ fn prepare_shared_buffer_frame(
         bounds,
         default_color: Color::rgb(255, 255, 255),
     };
-    h.renderer
-        .prepare(
+    h.renderer.prepare(
             &h.device,
             &h.queue,
-            &encoder,
             &mut h.font_system,
             &mut h.atlas,
             &h.viewport,
-            [area(left_a), area(left_b)],
-            &mut h.swash_cache,
+            [area(left_a), area(left_b)]
         )
         .expect("prepare should succeed");
     h.renderer.prepared_instances().to_vec()
@@ -430,19 +423,15 @@ fn prepare_areas<'a>(
     h: &mut TestHarness,
     areas: impl IntoIterator<Item = TextArea<'a>>,
 ) -> Vec<sluggrs::GlyphInstance> {
-    let encoder = h
-        .device
+    let encoder = h.device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-    h.renderer
-        .prepare(
+    h.renderer.prepare(
             &h.device,
             &h.queue,
-            &encoder,
             &mut h.font_system,
             &mut h.atlas,
             &h.viewport,
-            areas,
-            &mut h.swash_cache,
+            areas
         )
         .expect("prepare should succeed");
     h.renderer.prepared_instances().to_vec()

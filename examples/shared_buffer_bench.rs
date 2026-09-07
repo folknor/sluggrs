@@ -138,12 +138,10 @@ fn prepare(
         .prepare(
             device,
             queue,
-            &encoder,
             font_system,
             atlas,
             viewport,
-            areas.iter().copied(),
-            swash_cache,
+            areas.iter().copied()
         )
         .expect("prepare should succeed");
 }

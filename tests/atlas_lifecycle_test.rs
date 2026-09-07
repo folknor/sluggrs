@@ -22,7 +22,7 @@ fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
         power_preference: wgpu::PowerPreference::LowPower,
         compatible_surface: None,
         force_fallback_adapter: true,
-        apply_limit_buckets: false,
+        apply_limit_buckets: false
     }))
     .expect("Failed to find adapter - this test requires a GPU or software renderer");
 
@@ -127,12 +127,10 @@ impl TestHarness {
         self.renderer.prepare(
             &self.device,
             &self.queue,
-            &encoder,
             &mut self.font_system,
             &mut self.atlas,
             &self.viewport,
-            [text_area],
-            &mut self.swash_cache,
+            [text_area]
         )
     }
 
@@ -237,12 +235,10 @@ fn prepare_rejects_different_atlas_than_constructor() {
         h.renderer.prepare(
             &h.device,
             &h.queue,
-            &encoder,
             &mut h.font_system,
             &mut atlas_b,
             &h.viewport,
             [text_area],
-            &mut h.swash_cache,
         )
     }));
     let payload = result.expect_err("prepare with atlas B must panic");

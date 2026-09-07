@@ -139,7 +139,6 @@ fn prepare(
     renderer.prepare(
         device,
         queue,
-        &encoder,
         font_system,
         atlas,
         viewport,
@@ -155,8 +154,7 @@ fn prepare(
                 bottom: 1080,
             },
             default_color: cosmic_text::Color::rgb(255, 255, 255),
-        }],
-        swash_cache,
+        }]
     )
 }
 

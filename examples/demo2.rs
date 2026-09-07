@@ -603,17 +603,13 @@ fn render(state: &mut RenderState) {
             label: Some("render encoder"),
         });
 
-    state
-        .text_renderer
-        .prepare(
+    state.text_renderer.prepare(
             &state.device,
             &state.queue,
-            &encoder,
             &mut state.font_system,
             &mut state.atlas,
             &state.viewport,
-            text_areas,
-            &mut state.swash_cache,
+            text_areas
         )
         .expect("prepare failed");
 

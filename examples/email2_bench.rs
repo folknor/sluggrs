@@ -577,12 +577,10 @@ impl RenderHarness {
         self.renderer.prepare(
             &self.device,
             &self.queue,
-            &encoder,
             &mut self.font_system,
             &mut self.atlas,
             &self.viewport,
-            areas.iter().copied(),
-            &mut self.swash_cache,
+            areas.iter().copied()
         )
     }
 
