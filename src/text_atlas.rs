@@ -1246,9 +1246,15 @@ impl TextAtlas {
         device: &Device,
         multisample: MultisampleState,
         depth_stencil: Option<DepthStencilState>,
+        fill_owning: bool,
     ) -> crate::gpu_cache::BorderPipelineState {
-        self.cache
-            .get_or_create_border_pipeline(device, self.format, multisample, depth_stencil)
+        self.cache.get_or_create_border_pipeline(
+            device,
+            self.format,
+            multisample,
+            depth_stencil,
+            fill_owning,
+        )
     }
 }
 

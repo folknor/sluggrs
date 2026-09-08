@@ -63,7 +63,7 @@ struct ShadowUniform {
     uv_rect: [f32; 4],
     screen_size: [f32; 2],
     flags: u32,
-    _pad: f32,
+    depth: f32,
 }
 
 /// Pipelines, layouts and the sampler shared by every blur job.
@@ -504,6 +504,7 @@ pub(crate) fn finish_job(
     color: [f32; 4],
     screen_size: [f32; 2],
     flags: u32,
+    depth: f32,
 ) -> BlurJob {
     let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("sluggrs shadow uniform"),
@@ -513,7 +514,7 @@ pub(crate) fn finish_job(
             uv_rect: geometry.uv_rect(),
             screen_size,
             flags,
-            _pad: 0.0,
+            depth,
         }),
         usage: BufferUsages::UNIFORM,
     });

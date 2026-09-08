@@ -746,6 +746,39 @@ fn border_color_change_is_a_direct_hit_and_preserves_instances() {
     assert_eq!(h.renderer.last_prepare_stats().direct_hits, 1);
 }
 
+/// Removing decorations from a cached area must not leave its decoration
+/// stream behind. A stale stream keeps the frame on the ordered-draw path
+/// while nothing orders the fills, and the text vanishes.
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn removing_decorations_on_a_cache_hit_still_draws_the_text() {
+    let mut h = TestHarness::new();
+    let mut buffer = h.make_buffer("Decorated");
+    buffer.set_redraw(false);
+    let area = |decorations: &'static [TextDecoration]| TextArea {
+        buffer: &buffer,
+        left: 20.0,
+        top: 20.0,
+        scale: 1.0,
+        bounds: full_bounds(),
+        default_color: Color::rgb(255, 255, 255),
+        decorations,
+    };
+    let outlined: &'static [TextDecoration] = Box::leak(Box::new([TextDecoration::outline(
+        Color::rgb(0, 0, 0),
+        2.0,
+    )]));
+    let decorated = prepare_areas(&mut h, [area(outlined)]);
+    assert!(!decorated.is_empty(), "the decorated frame drew something");
+
+    let bare = prepare_areas(&mut h, [area(&[])]);
+    assert_eq!(
+        bare.len(),
+        decorated.len(),
+        "the same glyphs are still emitted once the decorations are gone"
+    );
+}
+
 /// Offsetting a shadow is geometry, not paint: it moves the culling
 /// envelope, so the cached candidate set must be re-selected.
 #[test]

@@ -17,7 +17,12 @@ struct ShadowParams {
     screen_size: vec2<f32>,
     // Bit 1 matches the main shader's Params.flags: Web colour mode.
     flags: u32,
-    _pad: f32,
+    // NDC depth for this composite, taken from the glyphs whose mask it is.
+    // Analytic decorations use each instance's own depth, so a shadow fixed
+    // at zero would be occluded differently from the hard shadow beside it.
+    // One quad can only carry one depth, so masks are partitioned by depth
+    // on the CPU and each partition composites at its own.
+    depth: f32,
 }
 
 @group(0) @binding(0) var<uniform> shadow: ShadowParams;
@@ -40,7 +45,7 @@ fn vs_shadow(@builtin(vertex_index) vid: u32) -> ShadowVertexOutput {
     output.position = vec4<f32>(
         screen_pos.x / shadow.screen_size.x * 2.0 - 1.0,
         -(screen_pos.y / shadow.screen_size.y * 2.0 - 1.0),
-        0.0,
+        shadow.depth,
         1.0,
     );
     return output;

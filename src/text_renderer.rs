@@ -108,7 +108,12 @@ enum DrawStream {
 #[derive(Clone, Copy)]
 enum DrawMode {
     Fill,
+    /// Painted beneath a fill that another draw supplies; writes no depth or
+    /// stencil.
     Underlay,
+    /// A Ring run, whose fragment emits the fill itself and therefore keeps
+    /// the caller's depth and stencil behaviour.
+    RingFill,
 }
 
 struct OrderedDraw {
@@ -140,6 +145,7 @@ fn encode_blur_job(
     resolution: crate::types::Resolution,
     scroll: [f32; 2],
     flags: u32,
+    depth: f32,
 ) -> crate::blur::BlurJob {
     let cache = atlas.cache();
     let (width, height) = geometry.source_size();
@@ -210,10 +216,17 @@ fn encode_blur_job(
         }],
     });
 
-    let raw = bytemuck::cast_slice::<_, u8>(instances);
+    // Only the instances at this job's depth: the composite draws one quad at
+    // one depth, so a mask holding glyphs from another depth would place them
+    // at the wrong one.
+    let at_depth: Vec<GlyphInstance> = instances
+        .iter()
+        .filter(|instance| instance.depth.to_bits() == depth.to_bits())
+        .copied()
+        .collect();
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("sluggrs shadow mask vertices"),
-        contents: raw,
+        contents: bytemuck::cast_slice(&at_depth),
         usage: BufferUsages::VERTEX,
     });
 
@@ -239,7 +252,7 @@ fn encode_blur_job(
         pass.set_bind_group(1, atlas.bind_group(), &[]);
         pass.set_bind_group(2, &decoration_group, &[0]);
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-        pass.draw(0..4, 0..instances.len() as u32);
+        pass.draw(0..4, 0..at_depth.len() as u32);
     }
 
     let (_horizontal, vertical) =
@@ -254,6 +267,7 @@ fn encode_blur_job(
         color,
         [resolution.width as f32, resolution.height as f32],
         flags,
+        depth,
     )
 }
 
@@ -263,6 +277,9 @@ struct PendingBlur {
     instances: std::ops::Range<u32>,
     geometry: crate::blur::BlurGeometry,
     color: [f32; 4],
+    /// The mask is built from only the instances at this depth, and the
+    /// composite is drawn at it.
+    depth: f32,
 }
 
 /// The area's clip rect in physical pixels, for clipping a shadow.
@@ -284,11 +301,36 @@ fn plan_bounds(plan: &AreaPlan<'_>) -> [f32; 4] {
     ]
 }
 
-/// Union of the instance rects, in scrolled screen space, or `None` when
-/// there is nothing to shadow.
-fn instance_bounds(instances: &[GlyphInstance], scroll: [f32; 2]) -> Option<[f32; 4]> {
+/// The distinct depths present among these instances, in first-seen order.
+///
+/// A composite quad has one depth, so a blurred shadow is built per depth.
+/// Compared by bit pattern: these are copied verbatim from the values the
+/// caller's `metadata_to_depth` produced, never arithmetic results.
+fn distinct_depths(instances: &[GlyphInstance]) -> Vec<f32> {
+    let mut depths: Vec<f32> = Vec::new();
+    for instance in instances {
+        if !depths
+            .iter()
+            .any(|seen| seen.to_bits() == instance.depth.to_bits())
+        {
+            depths.push(instance.depth);
+        }
+    }
+    depths
+}
+
+/// Union of the rects of the instances at one depth, in scrolled screen
+/// space, or `None` when none of them is at that depth.
+fn instance_bounds_at_depth(
+    instances: &[GlyphInstance],
+    scroll: [f32; 2],
+    depth: f32,
+) -> Option<[f32; 4]> {
     let mut bounds: Option<[f32; 4]> = None;
     for instance in instances {
+        if instance.depth.to_bits() != depth.to_bits() {
+            continue;
+        }
         let [x, y, w, h] = instance.screen_rect;
         let rect = [
             x + scroll[0],
@@ -483,6 +525,9 @@ pub struct TextRenderer {
     border_uniform_bind_group: Option<BindGroup>,
     border_uniform_stride: u64,
     border_pipeline: Option<RenderPipeline>,
+    /// The fill-owning variant, used for a Ring run. Keeps the caller's depth
+    /// and stencil state, because that draw supplies the glyph's fill.
+    ring_pipeline: Option<RenderPipeline>,
     /// Blur pipelines and sampler, created on first filtered decoration so a
     /// caller that never blurs pays nothing.
     blur: Option<crate::blur::BlurResources>,
@@ -554,6 +599,7 @@ impl TextRenderer {
             border_uniform_bind_group: None,
             border_uniform_stride: 0,
             border_pipeline: None,
+            ring_pipeline: None,
             blur: None,
             shadow_pipeline: None,
             blur_jobs: Vec::new(),
@@ -883,7 +929,14 @@ impl TextRenderer {
                         .get_mut(cache_key)
                         .expect("direct-hit cache entry exists");
                     self.instances.extend_from_slice(&cached.instances);
-                    if !decorations.is_empty() {
+                    // Rebuilt when decorated and CLEARED when not. Leaving a
+                    // previous frame's stream behind would keep the frame on
+                    // the ordered-draw path with nothing ordered to draw,
+                    // and the area's text would vanish the frame its
+                    // decorations were removed.
+                    if decorations.is_empty() {
+                        cached.border_instances.clear();
+                    } else {
                         let mut refreshed = Vec::new();
                         for instance in &cached.instances {
                             if let Some((key, _)) = bordered_key_for(
@@ -1224,33 +1277,44 @@ impl TextRenderer {
                     if decoration.is_filtered() {
                         let instances =
                             &self.border_instances[border_start as usize..border_end as usize];
-                        let Some(glyph_bounds) = instance_bounds(instances, scroll) else {
-                            continue;
-                        };
                         let support = crate::types::blur_support(decoration.blur);
-                        let Some(geometry) = crate::blur::BlurGeometry::new(
-                            glyph_bounds,
-                            area_bounds,
-                            decoration.offset,
-                            decoration.blur,
-                            support,
-                        ) else {
-                            continue;
-                        };
-                        // Queued rather than encoded here: the atlas storage
-                        // buffer is not flushed until after this pass, and the
-                        // mask pass reads glyph data out of it.
-                        self.draws.push(OrderedDraw {
-                            stream: DrawStream::Shadow,
-                            range: pending_blurs.len() as u32..pending_blurs.len() as u32 + 1,
-                            mode: DrawMode::Underlay,
-                            uniform_offset: 0,
-                        });
-                        pending_blurs.push(PendingBlur {
-                            instances: border_start..border_end,
-                            geometry,
-                            color: decoration.color,
-                        });
+                        // One composite quad carries one depth, so a mask
+                        // spanning glyphs at different depths would have to
+                        // pick one and be occluded wrongly for the rest.
+                        // Partition instead: one job per distinct depth,
+                        // which is a single job for the usual case where an
+                        // area's glyphs share a depth.
+                        for depth in distinct_depths(instances) {
+                            let Some(glyph_bounds) =
+                                instance_bounds_at_depth(instances, scroll, depth)
+                            else {
+                                continue;
+                            };
+                            let Some(geometry) = crate::blur::BlurGeometry::new(
+                                glyph_bounds,
+                                area_bounds,
+                                decoration.offset,
+                                decoration.blur,
+                                support,
+                            ) else {
+                                continue;
+                            };
+                            // Queued rather than encoded here: the atlas
+                            // storage buffer is not flushed until after this
+                            // pass, and the mask reads glyph data out of it.
+                            self.draws.push(OrderedDraw {
+                                stream: DrawStream::Shadow,
+                                range: pending_blurs.len() as u32..pending_blurs.len() as u32 + 1,
+                                mode: DrawMode::Underlay,
+                                uniform_offset: 0,
+                            });
+                            pending_blurs.push(PendingBlur {
+                                instances: border_start..border_end,
+                                geometry,
+                                color: decoration.color,
+                                depth,
+                            });
+                        }
                     } else {
                         let uniform_offset = border_uniforms.len() as u32;
                         border_uniforms.push(BorderUniform::of(decoration));
@@ -1291,7 +1355,10 @@ impl TextRenderer {
                                 stream: DrawStream::Border,
                                 range: border_start + ring_range.start
                                     ..border_start + ring_range.end,
-                                mode: DrawMode::Underlay,
+                                // This run supplies the fill, so it uses the
+                                // fill-owning pipeline and keeps the caller's
+                                // depth and stencil behaviour.
+                                mode: DrawMode::RingFill,
                                 uniform_offset,
                             });
                         } else {
@@ -1335,6 +1402,7 @@ impl TextRenderer {
                 resolution,
                 scroll,
                 viewport.flags(),
+                pending.depth,
             ));
         }
 
@@ -1444,12 +1512,26 @@ impl TextRenderer {
             );
         }
 
+        // Two variants of the same shader. An underlay must not write depth
+        // or stencil - the fill above it owns those - while a Ring's fragment
+        // IS the fill and must keep the caller's state verbatim.
         let state = atlas.get_or_create_border_pipeline(
             device,
             self.multisample,
             self.depth_stencil.clone(),
+            false,
         );
         self.border_pipeline = Some(state.pipeline);
+        self.ring_pipeline = Some(
+            atlas
+                .get_or_create_border_pipeline(
+                    device,
+                    self.multisample,
+                    self.depth_stencil.clone(),
+                    true,
+                )
+                .pipeline,
+        );
         let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment);
         self.border_uniform_stride = 32u64.next_multiple_of(alignment.max(1));
         let required = self.border_uniform_stride * uniforms.len() as u64;
@@ -1570,8 +1652,14 @@ impl TextRenderer {
             pass.set_bind_group(1, atlas.bind_group(), &[]);
             for draw in &self.draws {
                 match (draw.stream, draw.mode) {
-                    (DrawStream::Border, DrawMode::Underlay) => {
-                        pass.set_pipeline(self.border_pipeline.as_ref().expect("border pipeline"));
+                    (DrawStream::Border, mode @ (DrawMode::Underlay | DrawMode::RingFill)) => {
+                        let pipeline = match mode {
+                            DrawMode::RingFill => {
+                                self.ring_pipeline.as_ref().expect("ring pipeline")
+                            }
+                            _ => self.border_pipeline.as_ref().expect("border pipeline"),
+                        };
+                        pass.set_pipeline(pipeline);
                         let offset =
                             (u64::from(draw.uniform_offset) * self.border_uniform_stride) as u32;
                         pass.set_bind_group(
@@ -2023,6 +2111,41 @@ mod tests {
                 (false, 4, 6, 3, 3),
             ]
         );
+    }
+
+    /// One composite quad carries one depth, so a mask spanning depths must
+    /// be split rather than picking one and occluding the rest wrongly.
+    #[test]
+    fn masks_are_partitioned_by_depth() {
+        let at = |depth: f32, x: f32| GlyphInstance {
+            screen_rect: [x, 0.0, 4.0, 4.0],
+            color: [1.0; 4],
+            glyph_offset: 0,
+            cmd_texel_count: 0,
+            depth,
+            ppem: 16.0,
+        };
+        let instances = [at(0.25, 0.0), at(0.75, 10.0), at(0.25, 20.0)];
+        assert_eq!(distinct_depths(&instances), vec![0.25, 0.75]);
+
+        // Each partition's bounds cover only its own glyphs.
+        let near = instance_bounds_at_depth(&instances, [0.0, 0.0], 0.25).expect("has glyphs");
+        assert_eq!(near, [0.0, 0.0, 24.0, 4.0]);
+        let far = instance_bounds_at_depth(&instances, [0.0, 0.0], 0.75).expect("has glyphs");
+        assert_eq!(far, [10.0, 0.0, 14.0, 4.0]);
+    }
+
+    #[test]
+    fn a_depth_with_no_glyphs_has_no_bounds() {
+        let instance = GlyphInstance {
+            screen_rect: [0.0, 0.0, 4.0, 4.0],
+            color: [1.0; 4],
+            glyph_offset: 0,
+            cmd_texel_count: 0,
+            depth: 0.5,
+            ppem: 16.0,
+        };
+        assert!(instance_bounds_at_depth(&[instance], [0.0, 0.0], 0.9).is_none());
     }
 
     #[test]

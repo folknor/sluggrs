@@ -43,6 +43,9 @@ struct Inner {
             TextureFormat,
             MultisampleState,
             Option<DepthStencilState>,
+            // Whether this variant's fragment supplies the fill (a Ring) or
+            // only an underlay. They need different depth/stencil state.
+            bool,
             BorderPipelineState,
         )>,
     >,
@@ -234,18 +237,31 @@ impl Cache {
             })
     }
 
+    /// The border-shader pipeline.
+    ///
+    /// `fill_owning` selects between the two roles this shader has, which need
+    /// DIFFERENT depth and stencil behaviour and therefore cannot share one
+    /// pipeline:
+    ///
+    /// - `false` - an analytic underlay drawn beneath a fill that some other
+    ///   draw will supply. Depth-tested, but writes neither depth nor stencil,
+    ///   because the fill above it is what owns those.
+    /// - `true` - a Ring, whose fragment emits the fill itself. It must keep
+    ///   the caller's original state unchanged, or a glyph's fill would stop
+    ///   writing depth and stencil purely because it was decorated, while the
+    ///   COLR glyphs beside it still did.
     pub(crate) fn get_or_create_border_pipeline(
         &self,
         device: &Device,
         format: TextureFormat,
         multisample: MultisampleState,
         depth_stencil: Option<DepthStencilState>,
+        fill_owning: bool,
     ) -> BorderPipelineState {
         let mut cached = self.0.border.lock().expect("Write border pipeline cache");
-        if let Some((_, _, _, state)) = cached
-            .iter()
-            .find(|(fmt, ms, ds, _)| fmt == &format && ms == &multisample && ds == &depth_stencil)
-        {
+        if let Some((_, _, _, _, state)) = cached.iter().find(|(fmt, ms, ds, owning, _)| {
+            fmt == &format && ms == &multisample && ds == &depth_stencil && *owning == fill_owning
+        }) {
             return state.clone();
         }
         let border_uniforms_layout =
@@ -275,8 +291,10 @@ impl Cache {
             label: Some("sluggrs border shader"),
             source: ShaderSource::Wgsl(std::borrow::Cow::Borrowed(crate::BORDER_SHADER_WGSL)),
         });
+        // A fill-owning Ring keeps the caller's state verbatim; only an
+        // underlay strips writes.
         let mut underlay_depth = depth_stencil.clone();
-        if let Some(state) = underlay_depth.as_mut() {
+        if let Some(state) = underlay_depth.as_mut().filter(|_| !fill_owning) {
             state.depth_write_enabled = Some(false);
             state.stencil.front.fail_op = wgpu::StencilOperation::Keep;
             state.stencil.front.depth_fail_op = wgpu::StencilOperation::Keep;
@@ -318,7 +336,13 @@ impl Cache {
             pipeline,
             uniforms_layout: border_uniforms_layout,
         };
-        cached.push((format, multisample, depth_stencil, state.clone()));
+        cached.push((
+            format,
+            multisample,
+            depth_stencil,
+            fill_owning,
+            state.clone(),
+        ));
         state
     }
 }
