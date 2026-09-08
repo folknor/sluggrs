@@ -11,7 +11,8 @@ Generalize text borders into ordered text decorations: outline-only
   `decorations: &[TextDecoration { color, spread, offset }]`; all of an
   area's decorations share one instance range with a per-draw uniform;
   order is back-to-front like CSS; culling uses directional extents.
-- TODO: outline-only (hollow) text - the combined ring+fill fragment.
+- IN PROGRESS: outline-only (hollow) text - the combined ring+fill
+  fragment. Design settled below.
 - TODO: blurred shadows - mask render plus separable blur, which needs
   `prepare` to take `&mut CommandEncoder`.
 - TODO: `repos/iced` constructs `TextArea` without the decorations field
@@ -177,6 +178,72 @@ fill rather than refusing it. Requirements:
   right; Ring is only required for zero-alpha or translucent fills.
 - A zero-alpha normal draw should be omitted rather than emitted, since
   zero color output does not disable depth or stencil side effects.
+
+### Ring mode: the settled execution model
+
+Ring is a per-decoration mode alongside Solid. A Ring decoration's draw
+emits BOTH the ring and the fill for the mono glyphs it covers, as the
+disjoint partition above, and those glyphs are then omitted from the
+ordinary fill draw.
+
+Three API constraints, each because the execution model cannot render
+the alternative correctly. Reject at validation, do not silently
+tolerate:
+
+- **At most one Ring per area.** Two Rings would each emit the fill, and
+  the fill would composite twice.
+- **Ring requires `offset == [0, 0]`.** One fragment cannot emit a ring
+  at one screen position and a fill at another. Supporting an offset
+  Ring would need a quad covering the union of fill and ring support,
+  separate fill and ring coordinates (or undoing the offset in em
+  units), and derivatives that still match `vs_main`.
+- **Ring must be the topmost decoration**, i.e. first in the
+  back-to-front list. If a lower Ring owned the fill, a later Solid
+  decoration would paint over that fill.
+
+**Ordering is by RUNS, not by category.** Partitioning an area into
+"all mono" then "all COLR" reorders glyphs, and that is observable:
+quads overlap through negative letter spacing, explicit glyph offsets,
+combining marks, fallback shaping, overhanging bounds, glyphs sharing
+coordinates, and simply through overlapping antialiasing fringes. It
+can also change depth/stencil results, since the normal pipeline
+inherits caller-provided depth/stencil state. So emit an
+order-preserving sequence of runs - COLR run, combined mono run, COLR
+run, ... - coalescing adjacent instances of the same execution kind.
+The cached instance list stays canonical and glyph-ordered; execution
+kind is metadata over it.
+
+**Suppression must be by draw selection, not by paint.** A zero-alpha
+fill does not make the normal draw a no-op: the pipeline still performs
+caller depth writes and stencil operations on covered fragments. For a
+partially transparent fill, drawing twice gives `x + x(1-x)` rather than
+`x`, and even an opaque fill is doubled along its antialiased fringe
+where coverage is fractional. Discarding inside `fs_main` has the same
+depth/stencil hazard. Select the pipeline instead.
+
+**Mode is draw topology, not geometry.** Solid -> Ring at equal spread
+and offset leaves the culling envelope, the distance-query radius, the
+boundary accuracy requirement and the border descriptor all unchanged,
+so it is not a geometry miss and forces no blob rebuild. But it is not
+paint either: it changes which pipeline supplies the fill, which normal
+instances are omitted, and which runs are emitted. Rebuild the ordered
+draw plan on a mode change; keep the cached instance list canonical so
+the two concepts do not get conflated.
+
+**What the combined fragment must reproduce**, so its `f` equals what
+the normal pipeline would have produced for the same fragment. From
+`vs_main`: the fill glyph header via the descriptor's `fill_offset`,
+`em_rect`, `band_transform`, `band_max`, the fill data base
+(`fill_offset + GLYPH_HEADER_TEXELS`), instance color, stable instance
+ppem, and the same `em_size / max(screen_rect.zw, vec2(1.0))` mapping.
+From `fs_main`: `ems_per_pixel = max(fwidth(render_coord), 1/65536)`;
+mask `band_max.y` with `0x00FF`; `render_single` for the center sample;
+below 16 ppem the four diagonal samples at `d = ems_per_pixel / 3`
+averaged and blended by `smoothstep(16, 8, ppem)`; below 48 ppem
+`darken(coverage, brightness, ppem)` with brightness from the
+UNCONVERTED fill RGB; and the Web-mode `pow(rgb, 2.2)` conversion,
+which the ring paint needs too. All of it is reachable - the border
+module concatenates the whole normal shader.
 
 ### Offset shadows
 

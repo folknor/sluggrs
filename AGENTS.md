@@ -39,8 +39,10 @@ resolution-independent, no texture atlas needed.
 
 ## brokkr
 
-All builds, tests, and profiling go through `brokkr`, the shared dev tool -
-never raw `cargo` (exception: non-sluggrs projects like iced). Whether a
+All builds, tests, and profiling go through `brokkr`, the shared dev tool.
+Never raw `cargo` - no exceptions, including for quick iteration while
+implementing and including the iced checkout. `brokkr check` is the
+default: it covers clippy and the test suite in one command. Whether a
 given session may run brokkr at all is stated per session; when in doubt,
 don't - the orchestrator runs the checks.
 

@@ -20,8 +20,8 @@ use std::io::BufWriter;
 
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Weight};
 use sluggrs::{
-    Cache, ColorMode, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextDecoration,
-    TextRenderer, Viewport,
+    Cache, ColorMode, DecorationMode, Resolution, SwashCache, TextArea, TextAtlas, TextBounds,
+    TextDecoration, TextRenderer, Viewport,
 };
 
 const MARGIN: f32 = 24.0;
@@ -211,6 +211,7 @@ fn scene(id: &str) -> Option<Vec<Block>> {
                         color: gold,
                         spread: 2.0,
                         offset: [3.0, 3.0],
+                        mode: DecorationMode::Solid,
                     }]),
                 // First entry paints on top, like CSS text-shadow: gold over
                 // cyan over the furthest crimson.

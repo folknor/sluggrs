@@ -20,8 +20,9 @@ profiling, the iced repo setup, and Claude-harness specifics.
   allowed (writing scratch prompt files is wasteful).
 - Never capture stdout into env vars (`UUID=$(...)`).
 - Never read or write from `/tmp`. All data lives in the project.
-- Never run raw `cargo`, `curl`, `pkill`. Use `brokkr`. Exception:
-  non-sluggrs projects (iced, etc.).
+- Never run raw `cargo`, `curl`, `pkill`. Use `brokkr` - `brokkr check`
+  unless something else is clearly called for. This holds everywhere,
+  including `repos/iced/` and including fast iteration mid-implementation.
 - Never run `git` with `-C <path>`. Run `git` from the current working
   directory.
 

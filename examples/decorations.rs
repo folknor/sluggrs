@@ -14,8 +14,8 @@
 //! plain path, E toggles MSAA + stem darkening.
 
 use sluggrs::{
-    Cache, ColorMode, Resolution, TextArea, TextAtlas, TextBounds, TextDecoration, TextRenderer,
-    Viewport,
+    Cache, ColorMode, DecorationMode, Resolution, TextArea, TextAtlas, TextBounds, TextDecoration,
+    TextRenderer, Viewport,
 };
 
 use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
@@ -266,6 +266,7 @@ fn build_lines(font_system: &mut FontSystem, sf: f32) -> Vec<TextLine> {
             color: navy,
             spread: 2.0,
             offset: [3.0, 3.0],
+            mode: DecorationMode::Solid,
         }]
     );
     y += 62.0;

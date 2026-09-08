@@ -41,15 +41,90 @@ pub struct TextDecoration {
     /// Translation in logical pixels, positive y downward. Does not enter the
     /// glyph's distance-query radius - it moves the quad, not the query.
     pub offset: [f32; 2],
+    pub mode: DecorationMode,
+}
+
+/// What a decoration paints.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DecorationMode {
+    /// The whole dilated glyph, painted under the fill. An outline when the
+    /// fill is opaque, since the fill hides the interior.
+    #[default]
+    Solid,
+    /// Only the band between the glyph edge and the dilated edge, with the
+    /// fill painted by the SAME draw as a disjoint region. This is what
+    /// outline-only (hollow) text needs: a `Solid` decoration under a
+    /// transparent fill is a solid fat glyph, not a hollow one.
+    ///
+    /// A ring subtracted from an outer coverage and then composited under a
+    /// separate fill draw does not reconstruct the union - source-over gives
+    /// `o - f(o-f)`, not `o` - so ring and fill must come from one fragment.
+    /// That is why the constraints in [`DecorationError`] exist.
+    Ring,
+}
+
+/// Why a decoration list cannot be rendered as written.
+///
+/// These are not stylistic limits. Each names a combination the one-fragment
+/// ring-plus-fill execution model cannot draw correctly, so they are refused
+/// rather than silently mis-rendered.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DecorationError {
+    /// Two `Ring` decorations would each emit the fill, compositing it twice.
+    MultipleRings,
+    /// One fragment cannot emit a ring at one screen position and the fill at
+    /// another, so a `Ring` must not be displaced from its glyph.
+    RingWithOffset,
+    /// The `Ring` owns the fill, and the fill paints above every decoration.
+    /// A decoration ordered above the ring would paint over that fill, so the
+    /// ring must be first in the back-to-front list.
+    RingNotTopmost,
+}
+
+impl std::fmt::Display for DecorationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::MultipleRings => write!(f, "at most one Ring decoration per text area"),
+            Self::RingWithOffset => write!(f, "a Ring decoration must have a zero offset"),
+            Self::RingNotTopmost => {
+                write!(f, "a Ring decoration must be first in the decoration list")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DecorationError {}
+
+/// Check the constraints the ring execution model imposes on a list.
+pub fn validate_decorations(decorations: &[TextDecoration]) -> Result<(), DecorationError> {
+    let mut seen_ring = false;
+    for (index, decoration) in decorations.iter().enumerate() {
+        if decoration.mode != DecorationMode::Ring {
+            continue;
+        }
+        if seen_ring {
+            return Err(DecorationError::MultipleRings);
+        }
+        seen_ring = true;
+        if decoration.offset != [0.0, 0.0] {
+            return Err(DecorationError::RingWithOffset);
+        }
+        if index != 0 {
+            return Err(DecorationError::RingNotTopmost);
+        }
+    }
+    Ok(())
 }
 
 impl TextDecoration {
     /// A plain outline: dilation with no offset, the shipped border shape.
+    /// Painted under the fill, so an opaque fill hides its interior.
     pub fn outline(color: cosmic_text::Color, width: f32) -> Self {
         Self {
             color,
             spread: width,
             offset: [0.0, 0.0],
+            mode: DecorationMode::Solid,
         }
     }
 
@@ -59,6 +134,20 @@ impl TextDecoration {
             color,
             spread: 0.0,
             offset: [dx, dy],
+            mode: DecorationMode::Solid,
+        }
+    }
+
+    /// An outline that does NOT paint under the fill: the ring and the fill
+    /// are emitted as disjoint regions by one draw. Pair with a transparent
+    /// fill color for hollow text, or a translucent one to see the backdrop
+    /// through the counter while the ring stays solid.
+    pub fn ring(color: cosmic_text::Color, width: f32) -> Self {
+        Self {
+            color,
+            spread: width,
+            offset: [0.0, 0.0],
+            mode: DecorationMode::Ring,
         }
     }
 }
@@ -69,6 +158,7 @@ pub(crate) struct PhysicalDecoration {
     pub color: [f32; 4],
     pub spread: f32,
     pub offset: [f32; 2],
+    pub mode: DecorationMode,
 }
 
 /// Resolve one decoration to physical pixels, or `None` if it cannot be
@@ -91,6 +181,7 @@ pub(crate) fn physical_decoration(
         color: crate::text_renderer::color_to_f32(decoration.color),
         spread,
         offset,
+        mode: decoration.mode,
     })
 }
 
@@ -304,6 +395,7 @@ mod tests {
             color: white(),
             spread: 2.0,
             offset: [3.0, -4.0],
+            mode: DecorationMode::Solid,
         };
         let physical = physical_decoration(decoration, 1.5).expect("valid");
         assert_eq!(physical.spread, 3.0);
@@ -327,6 +419,7 @@ mod tests {
             color: white(),
             spread,
             offset: [0.0, 0.0],
+            mode: DecorationMode::Solid,
         };
         for spread in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0] {
             assert_eq!(physical_decoration(with_spread(spread), 1.0), None);
@@ -338,6 +431,7 @@ mod tests {
             color: white(),
             spread: 1.0,
             offset,
+            mode: DecorationMode::Solid,
         };
         assert_eq!(physical_decoration(with_offset([f32::NAN, 0.0]), 1.0), None);
         assert_eq!(
@@ -363,6 +457,7 @@ mod tests {
             color: [1.0; 4],
             spread: 1.0,
             offset: [4.0, 0.0],
+            mode: DecorationMode::Solid,
         };
         let extents = DecorationExtents::of(&[decoration], 0.5);
         assert_eq!(extents.right, 5.5, "radius 1.5 plus offset 4 to the right");
@@ -379,10 +474,80 @@ mod tests {
             color: [1.0; 4],
             spread: 0.0,
             offset: [dx, 0.0],
+            mode: DecorationMode::Solid,
         };
         let extents = DecorationExtents::of(&[at(6.0), at(-3.0)], 0.5);
         assert_eq!(extents.right, 6.5);
         assert_eq!(extents.left, 3.5);
+    }
+
+    /// Each rule below exists because the one-fragment ring-plus-fill model
+    /// cannot draw the rejected combination correctly - not as a style
+    /// preference.
+    #[test]
+    fn ring_constraints_are_enforced() {
+        let ring = TextDecoration::ring(white(), 2.0);
+        let shadow = TextDecoration::shadow(white(), 2.0, 2.0);
+
+        assert_eq!(validate_decorations(&[]), Ok(()));
+        assert_eq!(validate_decorations(&[ring]), Ok(()));
+        assert_eq!(validate_decorations(&[shadow, shadow]), Ok(()));
+        assert_eq!(
+            validate_decorations(&[ring, shadow]),
+            Ok(()),
+            "a ring above other decorations is the supported arrangement"
+        );
+
+        // Two rings would each emit the fill.
+        assert_eq!(
+            validate_decorations(&[ring, ring]),
+            Err(DecorationError::MultipleRings)
+        );
+        // A decoration above the ring would paint over the fill the ring owns.
+        assert_eq!(
+            validate_decorations(&[shadow, ring]),
+            Err(DecorationError::RingNotTopmost)
+        );
+        // One fragment cannot emit the ring and the fill at different places.
+        let displaced = TextDecoration {
+            offset: [1.0, 0.0],
+            ..ring
+        };
+        assert_eq!(
+            validate_decorations(&[displaced]),
+            Err(DecorationError::RingWithOffset)
+        );
+    }
+
+    #[test]
+    fn constructors_carry_their_mode() {
+        assert_eq!(
+            TextDecoration::outline(white(), 1.0).mode,
+            DecorationMode::Solid
+        );
+        assert_eq!(
+            TextDecoration::shadow(white(), 1.0, 1.0).mode,
+            DecorationMode::Solid
+        );
+        assert_eq!(
+            TextDecoration::ring(white(), 1.0).mode,
+            DecorationMode::Ring
+        );
+    }
+
+    /// Mode must not disturb the culling envelope: Solid and Ring at equal
+    /// spread and offset occupy the same pixels, so a mode switch is draw
+    /// topology, never a geometry change.
+    #[test]
+    fn mode_does_not_change_extents() {
+        let solid =
+            physical_decoration(TextDecoration::outline(white(), 3.0), 1.0).expect("valid solid");
+        let ring =
+            physical_decoration(TextDecoration::ring(white(), 3.0), 1.0).expect("valid ring");
+        assert_eq!(
+            DecorationExtents::of(&[solid], 0.5),
+            DecorationExtents::of(&[ring], 0.5)
+        );
     }
 
     #[test]

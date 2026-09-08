@@ -30,7 +30,8 @@ pub use gpu_cache::Cache;
 pub use text_atlas::TextAtlas;
 pub use text_renderer::TextRenderer;
 pub use types::{
-    ColorMode, PrepareError, RenderError, Resolution, TextArea, TextBounds, TextDecoration,
+    ColorMode, DecorationError, DecorationMode, PrepareError, RenderError, Resolution, TextArea,
+    TextBounds, TextDecoration, validate_decorations,
 };
 pub use viewport::Viewport;
 
