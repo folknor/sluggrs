@@ -21,12 +21,22 @@ providers = ["codex"]
 # that can edit the tree is a bug.
 [plantasjen.codex.deep]
 model = "gpt-5.6-sol"
-effort = "xhigh"
+effort = "low"
 sandbox = "read-only"
 
 [plantasjen.codex.build]
-model = "gpt-5.6-terra"
-effort = "medium"
+model = "gpt-5.6-sol"
+effort = "low"
+sandbox = "workspace-write"
+
+[dm6.codex.deep]
+model = "gpt-5.6-sol"
+effort = "low"
+sandbox = "read-only"
+
+[dm6.codex.build]
+model = "gpt-5.6-sol"
+effort = "low"
 sandbox = "workspace-write"
 
 [_audit]

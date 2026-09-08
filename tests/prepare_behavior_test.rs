@@ -8,8 +8,8 @@
 
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
 use sluggrs::{
-    Cache, Color, ColorMode, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
-    Viewport,
+    Cache, Color, ColorMode, Resolution, SwashCache, TextArea, TextAtlas, TextBorder, TextBounds,
+    TextRenderer, Viewport,
 };
 
 // ---------------------------------------------------------------------------
@@ -98,6 +98,7 @@ impl TestHarness {
             scale: 1.0,
             bounds,
             default_color: Color::rgb(255, 255, 255),
+            border: None,
         };
 
         self.renderer.prepare(
@@ -149,6 +150,7 @@ impl TestHarness {
                 bottom: 600,
             },
             default_color: Color::rgb(255, 255, 255),
+            border: None,
         };
 
         self.renderer.prepare_with_depth(
@@ -319,6 +321,7 @@ fn prepare_shared_buffer_frame(
         scale: 1.0,
         bounds,
         default_color: Color::rgb(255, 255, 255),
+        border: None,
     };
     h.renderer
         .prepare(
@@ -472,6 +475,7 @@ fn shared_buffer_distinct_placements_become_direct_hits() {
         scale: 1.0,
         bounds: full_bounds(),
         default_color: Color::rgb(255, 255, 255),
+        border: None,
     };
 
     let first = prepare_areas(&mut h, [area(0.0), area(100.0)]);
@@ -518,6 +522,7 @@ fn shared_buffer_order_swap_converges_after_recull() {
         scale: 1.0,
         bounds: full_bounds(),
         default_color: Color::rgb(255, 255, 255),
+        border: None,
     };
 
     let cold = prepare_areas(&mut h, [area(0.0), area(100.0)]);
@@ -558,6 +563,7 @@ fn shared_buffer_shrink_grow_discards_stale_occurrences() {
         scale: 1.0,
         bounds: full_bounds(),
         default_color: Color::rgb(255, 255, 255),
+        border: None,
     };
 
     prepare_areas(&mut h, [area(0.0), area(100.0)]);
@@ -630,6 +636,7 @@ fn shared_buffer_default_color_variants_become_direct_hits() {
                 scale: 1.0,
                 bounds: full_bounds(),
                 default_color: Color::rgb(255, 0, 0),
+                border: None,
             },
             TextArea {
                 buffer,
@@ -638,6 +645,7 @@ fn shared_buffer_default_color_variants_become_direct_hits() {
                 scale: 1.0,
                 bounds: full_bounds(),
                 default_color: Color::rgb(0, 255, 0),
+                border: None,
             },
         ]
     });
@@ -666,6 +674,7 @@ fn shared_buffer_scale_variants_become_direct_hits() {
                 scale: 1.0,
                 bounds: full_bounds(),
                 default_color: Color::rgb(255, 255, 255),
+                border: None,
             },
             TextArea {
                 buffer,
@@ -674,6 +683,7 @@ fn shared_buffer_scale_variants_become_direct_hits() {
                 scale: 1.5,
                 bounds: full_bounds(),
                 default_color: Color::rgb(255, 255, 255),
+                border: None,
             },
         ]
     });
@@ -691,6 +701,7 @@ fn shared_buffer_bounds_variants_become_direct_hits() {
                 scale: 1.0,
                 bounds: full_bounds(),
                 default_color: Color::rgb(255, 255, 255),
+                border: None,
             },
             TextArea {
                 buffer,
@@ -704,7 +715,79 @@ fn shared_buffer_bounds_variants_become_direct_hits() {
                     bottom: 600,
                 },
                 default_color: Color::rgb(255, 255, 255),
+                border: None,
             },
         ]
     });
+}
+
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn border_color_change_is_a_direct_hit_and_preserves_instances() {
+    let mut h = TestHarness::new();
+    let mut buffer = h.make_buffer("Outlined");
+    buffer.set_redraw(false);
+    let area = |color| TextArea {
+        buffer: &buffer,
+        left: 20.0,
+        top: 20.0,
+        scale: 1.0,
+        bounds: full_bounds(),
+        default_color: Color::rgb(255, 255, 255),
+        border: Some(TextBorder { color, width: 2.0 }),
+    };
+    let first = prepare_areas(&mut h, [area(Color::rgb(255, 0, 0))]);
+    let second = prepare_areas(&mut h, [area(Color::rgb(0, 0, 255))]);
+    assert_instances_equal(&second, &first);
+    assert_eq!(h.renderer.last_prepare_stats().direct_hits, 1);
+}
+
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn border_width_change_reculls() {
+    let mut h = TestHarness::new();
+    let mut buffer = h.make_buffer("Outlined");
+    buffer.set_redraw(false);
+    let area = |width| TextArea {
+        buffer: &buffer,
+        left: 20.0,
+        top: 20.0,
+        scale: 1.0,
+        bounds: full_bounds(),
+        default_color: Color::rgb(255, 255, 255),
+        border: Some(TextBorder {
+            color: Color::rgb(0, 0, 0),
+            width,
+        }),
+    };
+    prepare_areas(&mut h, [area(1.0)]);
+    prepare_areas(&mut h, [area(8.0)]);
+    assert_eq!(h.renderer.last_prepare_stats().reculls, 1);
+}
+
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn removing_border_restores_never_bordered_instances() {
+    let mut h = TestHarness::new();
+    let mut buffer = h.make_buffer("Outlined");
+    buffer.set_redraw(false);
+    let area = |border| TextArea {
+        buffer: &buffer,
+        left: 20.0,
+        top: 20.0,
+        scale: 1.0,
+        bounds: full_bounds(),
+        default_color: Color::rgb(255, 255, 255),
+        border,
+    };
+    let baseline = prepare_areas(&mut h, [area(None)]);
+    prepare_areas(
+        &mut h,
+        [area(Some(TextBorder {
+            color: Color::rgb(0, 0, 0),
+            width: 3.0,
+        }))],
+    );
+    let removed = prepare_areas(&mut h, [area(None)]);
+    assert_instances_equal(&removed, &baseline);
 }

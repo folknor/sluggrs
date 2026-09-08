@@ -6,13 +6,33 @@ pub(crate) struct ResidentBlob {
     pub start_texel: u32,
     pub texel_len: u32,
     pub kind: BlobKind,
+    pub border: Option<ResidentBorderBlob>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ResidentBorderBlob {
+    pub start_texel: u32,
+    pub texel_len: u32,
+    pub radius_bucket: f32,
+    pub ppem_ceiling: f32,
+    pub grid_radius_units: f32,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct CachedBlob {
     pub data: Box<[i32]>,
     pub kind: BlobKind,
+    pub border: Option<CachedBorderBlob>,
     pub last_used_epoch: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CachedBorderBlob {
+    pub relative_offset: u32,
+    pub texel_len: u32,
+    pub radius_bucket: f32,
+    pub ppem_ceiling: f32,
+    pub grid_radius_units: f32,
 }
 
 #[derive(Clone, Debug)]

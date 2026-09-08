@@ -1,6 +1,7 @@
 use crate::band::{BandScratch, CurveLocation};
 use crate::blob_cache::{
-    BlobCacheStats, BlobKind, CachedBlob, CachedColorLayer, GlyphBlobCache, ResidentBlob,
+    BlobCacheStats, BlobKind, CachedBlob, CachedBorderBlob, CachedColorLayer, GlyphBlobCache,
+    ResidentBlob, ResidentBorderBlob,
 };
 use crate::glyph_cache::{
     COLOR_V1_VECTOR_GLYPH, COLOR_VECTOR_GLYPH, ColorGlyphEntry, ColorGlyphLayer, ColorV1GlyphEntry,
@@ -73,6 +74,9 @@ pub struct TextAtlas {
     /// COLRv1 color glyph command sequences.
     color_v1_glyphs: FxHashMap<GlyphKey, ColorV1GlyphEntry>,
     resident_blobs: FxHashMap<GlyphKey, ResidentBlob>,
+    /// Superseded supplemental spans. They remain immutable until the next
+    /// compaction so already-prepared renderers keep valid descriptors.
+    reclaimable_border_spans: Vec<(u32, u32)>,
     blob_cache: GlyphBlobCache,
     /// Monotonic counter incremented on atlas compaction. Used by TextRenderer's
     /// retained cache to detect when cached glyph offsets are invalidated.
@@ -146,6 +150,7 @@ impl TextAtlas {
             color_glyphs: FxHashMap::default(),
             color_v1_glyphs: FxHashMap::default(),
             resident_blobs: FxHashMap::default(),
+            reclaimable_border_spans: Vec::new(),
             blob_cache: GlyphBlobCache::new(BLOB_CACHE_BUDGET),
             raster: None,
             swash_cache: cosmic_text::SwashCache::new(),
@@ -179,6 +184,92 @@ impl TextAtlas {
 
     pub(crate) fn glyph(&self, key: &GlyphKey) -> Option<GlyphEntry> {
         self.glyphs.get(key)
+    }
+
+    /// Lazily append or grow a mono glyph's border descriptor and payload.
+    /// The returned offset addresses the border descriptor, not the fill blob.
+    pub(crate) fn resolve_border_blob(
+        &mut self,
+        key: GlyphKey,
+        outline: &crate::outline::GlyphOutline,
+        ppem: f32,
+        radius_px: f32,
+    ) -> Result<u32, crate::types::PrepareError> {
+        let entry = self
+            .glyphs
+            .get(&key)
+            .ok_or(crate::types::PrepareError::AtlasFull)?;
+        let wanted_bucket = 2.0_f32.powf(radius_px.max(f32::MIN_POSITIVE).log2().ceil());
+        if let Some(border) = self
+            .resident_blobs
+            .get(&key)
+            .and_then(|blob| blob.border.as_ref())
+        {
+            let required_units = wanted_bucket * entry.units_per_em / ppem.max(f32::MIN_POSITIVE);
+            if border.radius_bucket >= wanted_bucket
+                && border.ppem_ceiling >= ppem
+                && border.grid_radius_units >= required_units
+            {
+                return Ok(border.start_texel);
+            }
+        }
+        let prepared = crate::border::prepare_border(
+            outline,
+            entry.glyph_offset,
+            entry.units_per_em,
+            ppem,
+            radius_px,
+        )?;
+        let start = self.buffer_cursor;
+        self.buffer_cursor = self.checked_buffer_end(prepared.texel_len)?;
+        self.buffer_data.extend_from_slice(&prepared.data);
+        let resident = self
+            .resident_blobs
+            .get_mut(&key)
+            .ok_or(crate::types::PrepareError::AtlasFull)?;
+        let replaced = resident.border.replace(ResidentBorderBlob {
+            start_texel: start,
+            texel_len: prepared.texel_len,
+            radius_bucket: prepared.descriptor.radius_bucket,
+            ppem_ceiling: prepared.descriptor.ppem_ceiling,
+            grid_radius_units: prepared.grid.radius,
+        });
+        if let Some(old) = replaced {
+            self.reclaimable_border_spans
+                .push((old.start_texel, old.texel_len));
+        }
+        Ok(start)
+    }
+
+    pub(crate) fn resolve_border_glyph(
+        &mut self,
+        key: GlyphKey,
+        ppem: f32,
+        radius_px: f32,
+    ) -> Result<u32, crate::types::PrepareError> {
+        let weight = cosmic_text::Weight(key.font_weight);
+        let cached = self
+            .font_cache
+            .get(&(key.font_id, weight))
+            .expect("resolved mono glyph has cached font");
+        let location = [VariationSetting::new(
+            skrifa::Tag::new(b"wght"),
+            key.font_weight as f32,
+        )];
+        let mut outline = extract_outline(
+            cached.font.data(),
+            cached.face_index,
+            key.glyph_id,
+            &location,
+        )
+        .ok_or(crate::types::PrepareError::AtlasFull)?;
+        if key
+            .cache_key_flags
+            .contains(cosmic_text::CacheKeyFlags::FAKE_ITALIC)
+        {
+            apply_italic_shear(&mut outline);
+        }
+        self.resolve_border_blob(key, &outline, ppem, radius_px)
     }
 
     pub(crate) fn color_glyph(&self, key: &GlyphKey) -> Option<&ColorGlyphEntry> {
@@ -316,6 +407,7 @@ impl TextAtlas {
                 start: usize,
                 end: usize,
                 kind: BlobKind,
+                border: Option<(usize, usize, CachedBorderBlob)>,
             },
             Ready(CachedBlob),
         }
@@ -331,6 +423,17 @@ impl TextAtlas {
             if self.glyphs.is_current_frame(&key) {
                 let new_start = u32::try_from(compact.len() / 2).expect("atlas size");
                 compact.extend_from_slice(&old_data[start..end]);
+                let new_border = blob.border.as_ref().map(|border| {
+                    let start = usize::try_from(border.start_texel).expect("atlas offset") * 2;
+                    let end = start + usize::try_from(border.texel_len).expect("atlas size") * 2;
+                    let new_border_start = u32::try_from(compact.len() / 2).expect("atlas size");
+                    compact.extend_from_slice(&old_data[start..end]);
+                    compact[new_border_start as usize * 2] = new_start as i32;
+                    ResidentBorderBlob {
+                        start_texel: new_border_start,
+                        ..border.clone()
+                    }
+                });
                 self.install_offsets(key, new_start, &blob.kind);
                 self.resident_blobs.insert(
                     key,
@@ -338,16 +441,39 @@ impl TextAtlas {
                         start_texel: new_start,
                         texel_len: blob.texel_len,
                         kind: blob.kind,
+                        border: new_border,
                     },
                 );
             } else {
                 self.remove_glyph_group(&key);
+                let cached_border = blob.border.map(|border| {
+                    let border_start = border.start_texel as usize * 2;
+                    let border_end = border_start + border.texel_len as usize * 2;
+                    (
+                        border_start,
+                        border_end,
+                        CachedBorderBlob {
+                            relative_offset: blob.texel_len,
+                            texel_len: border.texel_len,
+                            radius_bucket: border.radius_bucket,
+                            ppem_ceiling: border.ppem_ceiling,
+                            grid_radius_units: border.grid_radius_units,
+                        },
+                    )
+                });
                 cand_keys.push(key);
-                cand_meta.push((epoch, (end - start) * std::mem::size_of::<i32>()));
+                let border_bytes = cached_border
+                    .as_ref()
+                    .map_or(0, |(start, end, _)| end - start);
+                cand_meta.push((
+                    epoch,
+                    (end - start + border_bytes) * std::mem::size_of::<i32>(),
+                ));
                 cand_src.push(Source::Slice {
                     start,
                     end,
                     kind: blob.kind,
+                    border: cached_border,
                 });
             }
         }
@@ -376,17 +502,31 @@ impl TextAtlas {
             let (epoch, _) = cand_meta[idx];
             let blob = match source {
                 Source::Ready(blob) => blob,
-                Source::Slice { start, end, kind } => CachedBlob {
-                    data: old_data[start..end].to_vec().into_boxed_slice(),
+                Source::Slice {
+                    start,
+                    end,
                     kind,
-                    last_used_epoch: epoch,
-                },
+                    border,
+                } => {
+                    let mut data = old_data[start..end].to_vec();
+                    let border_meta = border.map(|(border_start, border_end, meta)| {
+                        data.extend_from_slice(&old_data[border_start..border_end]);
+                        meta
+                    });
+                    CachedBlob {
+                        data: data.into_boxed_slice(),
+                        kind,
+                        border: border_meta,
+                        last_used_epoch: epoch,
+                    }
+                }
             };
             kept.push((cand_keys[idx], blob));
         }
         self.blob_cache
             .replace_entries(kept, budget_evictions, oversized_drops);
         self.buffer_data = compact;
+        self.reclaimable_border_spans.clear();
         self.buffer_cursor = u32::try_from(self.buffer_data.len() / 2).expect("atlas size");
         self.gpu_flush_cursor = 0;
         self.generation = self.generation.wrapping_add(1);
@@ -623,25 +763,41 @@ impl TextAtlas {
             return Ok(None);
         };
         let new_end = self.checked_buffer_end(texel_len)?;
-        let blob = self.blob_cache.take(&key).expect("cache entry checked");
+        let mut blob = self.blob_cache.take(&key).expect("cache entry checked");
         let start = self.buffer_cursor;
+        if let Some(border) = &blob.border {
+            blob.data[border.relative_offset as usize * 2] = start as i32;
+        }
         self.buffer_data.extend_from_slice(&blob.data);
         self.buffer_cursor = new_end;
         let entry = match &blob.kind {
             BlobKind::Mono {
                 bounds,
                 units_per_em,
+                ..
             } => GlyphEntry::new(start, *bounds, *units_per_em),
             BlobKind::ColorV0 { .. } => COLOR_VECTOR_GLYPH,
             BlobKind::ColorV1 { .. } => COLOR_V1_VECTOR_GLYPH,
         };
         self.install_offsets(key, start, &blob.kind);
+        let primary_texel_len = blob
+            .border
+            .as_ref()
+            .map_or(texel_len, |border| border.relative_offset);
+        let resident_border = blob.border.as_ref().map(|border| ResidentBorderBlob {
+            start_texel: start + border.relative_offset,
+            texel_len: border.texel_len,
+            radius_bucket: border.radius_bucket,
+            ppem_ceiling: border.ppem_ceiling,
+            grid_radius_units: border.grid_radius_units,
+        });
         self.resident_blobs.insert(
             key,
             ResidentBlob {
                 start_texel: start,
-                texel_len,
+                texel_len: primary_texel_len,
                 kind: blob.kind,
+                border: resident_border,
             },
         );
         let entry = self.glyphs.insert_and_mark_used(key, entry);
@@ -713,6 +869,7 @@ impl TextAtlas {
                     bounds: prepared.bounds,
                     units_per_em: prepared.units_per_em,
                 },
+                border: None,
             },
         );
         Ok(entry)
@@ -917,6 +1074,7 @@ impl TextAtlas {
                     units_per_em,
                     cmd_texel_count,
                 },
+                border: None,
             },
         );
         Ok(entry)
@@ -1010,6 +1168,7 @@ impl TextAtlas {
                 start_texel: start,
                 texel_len: total,
                 kind,
+                border: None,
             },
         );
         Ok(ColorGlyphEntry {
@@ -1053,6 +1212,16 @@ impl TextAtlas {
     ) -> RenderPipeline {
         self.cache
             .get_or_create_pipeline(device, self.format, multisample, depth_stencil)
+    }
+
+    pub(crate) fn get_or_create_border_pipeline(
+        &self,
+        device: &Device,
+        multisample: MultisampleState,
+        depth_stencil: Option<DepthStencilState>,
+    ) -> crate::gpu_cache::BorderPipelineState {
+        self.cache
+            .get_or_create_border_pipeline(device, self.format, multisample, depth_stencil)
     }
 }
 

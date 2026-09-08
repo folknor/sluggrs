@@ -7,8 +7,9 @@ use crate::viewport::Viewport;
 
 use rustc_hash::FxHashMap;
 use wgpu::{
-    Buffer, BufferDescriptor, BufferUsages, COPY_BUFFER_ALIGNMENT, CommandEncoder,
-    DepthStencilState, Device, MultisampleState, Queue, RenderPass, RenderPipeline,
+    BindGroup, BindGroupDescriptor, BindGroupEntry, Buffer, BufferBinding, BufferDescriptor,
+    BufferUsages, COPY_BUFFER_ALIGNMENT, CommandEncoder, DepthStencilState, Device,
+    MultisampleState, Queue, RenderPass, RenderPipeline,
 };
 
 use crate::types::TextBounds;
@@ -38,13 +39,46 @@ struct CachedTextArea {
     scale: f32,
     bounds: TextBounds,
     default_color: cosmic_text::Color,
+    border_width: Option<f32>,
     atlas_generation: u32,
     instances: Vec<GlyphInstance>,
+    border_instances: Vec<GlyphInstance>,
     distinct_keys: Vec<GlyphKey>,
     non_vector_glyphs: Vec<NonVectorGlyph>,
     /// Whether the cached candidates cover the entire area, so a later
     /// placement-only change can re-cull them without re-walking the buffer.
     complete: bool,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct BorderUniform {
+    color: [f32; 4],
+    width: f32,
+    _pad: [f32; 3],
+}
+
+#[derive(Clone, Copy)]
+enum DrawStream {
+    Normal,
+    Border,
+}
+
+#[derive(Clone, Copy)]
+enum DrawMode {
+    Fill,
+    Underlay,
+}
+
+struct OrderedDraw {
+    stream: DrawStream,
+    range: std::ops::Range<u32>,
+    mode: DrawMode,
+    uniform_offset: u32,
+}
+
+fn instance_stream_unchanged(current: &[GlyphInstance], previous: &[GlyphInstance]) -> bool {
+    bytemuck::cast_slice::<_, u8>(current) == bytemuck::cast_slice::<_, u8>(previous)
 }
 
 /// One glyph queued for instance packing in pass 3 (cache-miss areas only).
@@ -66,12 +100,14 @@ struct MissArea<'a> {
     bounds_max_y: i32,
     default_color: [f32; 4],
     all_runs_included: bool,
+    border_width: Option<f32>,
 }
 
 /// Plan record per text area produced by pass 1 and consumed by pass 3 in input order.
 enum AreaPlan<'a> {
     HitDirect {
         cache_key: TextAreaCacheKey,
+        border: Option<([f32; 4], f32)>,
     },
     ReCull {
         cache_key: TextAreaCacheKey,
@@ -81,6 +117,8 @@ enum AreaPlan<'a> {
         top: f32,
         bounds: [i32; 4],
         scroll: [f32; 2],
+        border_width: Option<f32>,
+        border_color: Option<[f32; 4]>,
     },
     Miss(MissArea<'a>),
 }
@@ -100,6 +138,16 @@ pub struct TextRenderer {
     vertex_buffer_size: u64,
     pipeline: RenderPipeline,
     instances: Vec<GlyphInstance>,
+    border_instances: Vec<GlyphInstance>,
+    border_vertex_buffer: Option<Buffer>,
+    border_vertex_buffer_size: u64,
+    border_uniform_buffer: Option<Buffer>,
+    border_uniform_bind_group: Option<BindGroup>,
+    border_uniform_stride: u64,
+    border_pipeline: Option<RenderPipeline>,
+    multisample: MultisampleState,
+    depth_stencil: Option<DepthStencilState>,
+    draws: Vec<OrderedDraw>,
     glyphs_to_render: u32,
     /// Per-TextArea retained cache, keyed by buffer pointer and occurrence.
     text_area_cache: FxHashMap<TextAreaCacheKey, CachedTextArea>,
@@ -136,7 +184,7 @@ impl TextRenderer {
 
         let pipeline = atlas.get_or_create_pipeline(device, multisample, depth_stencil.clone());
 
-        atlas.init_raster(device, depth_stencil, multisample);
+        atlas.init_raster(device, depth_stencil.clone(), multisample);
 
         let raster_vertex_buffer_size = 4096u64;
         let raster_vertex_buffer = device.create_buffer(&BufferDescriptor {
@@ -151,6 +199,16 @@ impl TextRenderer {
             vertex_buffer_size,
             pipeline,
             instances: Vec::new(),
+            border_instances: Vec::new(),
+            border_vertex_buffer: None,
+            border_vertex_buffer_size: 0,
+            border_uniform_buffer: None,
+            border_uniform_bind_group: None,
+            border_uniform_stride: 0,
+            border_pipeline: None,
+            multisample,
+            depth_stencil,
+            draws: Vec::new(),
             glyphs_to_render: 0,
             text_area_cache: FxHashMap::default(),
             text_area_occurrences: FxHashMap::default(),
@@ -198,7 +256,9 @@ impl TextRenderer {
             self.atlas_id,
             "TextRenderer must be prepared with the TextAtlas used to construct it"
         );
-        self.instances.clear();
+        let previous_instances = std::mem::take(&mut self.instances);
+        let previous_border_instances = std::mem::take(&mut self.border_instances);
+        self.draws.clear();
         self.text_area_occurrences.clear();
         let mut non_vector_collector: Vec<NonVectorGlyph> = Vec::new();
 
@@ -244,16 +304,28 @@ impl TextRenderer {
                 if glyphs_valid {
                     let dx = text_area.left - cached.left;
                     let dy = text_area.top - cached.top;
+                    let border_width = text_area.physical_border_width();
+                    let border_width_matches = cached.border_width == border_width;
                     match classify_placement(
                         dx,
                         dy,
-                        cached.scroll == scroll,
+                        cached.scroll == scroll && border_width_matches,
                         cached.complete,
                         !cached.non_vector_glyphs.is_empty(),
                     ) {
                         PlacementClass::Direct => {
                             prepare_stats.direct_hits += 1;
-                            plans.push(AreaPlan::HitDirect { cache_key });
+                            plans.push(AreaPlan::HitDirect {
+                                cache_key,
+                                border: border_width.map(|width| {
+                                    (
+                                        color_to_f32(
+                                            text_area.border.expect("validated border").color,
+                                        ),
+                                        width,
+                                    )
+                                }),
+                            });
                             continue;
                         }
                         PlacementClass::ReCull => {
@@ -267,6 +339,10 @@ impl TextRenderer {
                                 top: text_area.top,
                                 bounds: clipped_bounds(text_area.bounds, resolution),
                                 scroll,
+                                border_width,
+                                border_color: border_width.map(|_| {
+                                    color_to_f32(text_area.border.expect("validated border").color)
+                                }),
                             });
                             continue;
                         }
@@ -282,6 +358,7 @@ impl TextRenderer {
                 clipped_bounds(text_area.bounds, resolution);
 
             let default_color = color_to_f32(text_area.default_color);
+            let border_width = text_area.physical_border_width();
             let work_start = work.len();
 
             let mut all_runs_included = true;
@@ -294,6 +371,7 @@ impl TextRenderer {
                     &run,
                     bounds_min_y,
                     bounds_max_y,
+                    border_width.unwrap_or(0.0),
                 ) {
                     all_runs_included = false;
                     if started_visible_range {
@@ -324,6 +402,7 @@ impl TextRenderer {
                 bounds_max_y,
                 default_color,
                 all_runs_included,
+                border_width,
             }));
         }
 
@@ -337,13 +416,121 @@ impl TextRenderer {
             atlas.resolve_glyph(font_system, *key)?;
         }
 
-        // ===== Pass 3: emit instances per area in input order =====
+        // Resolve each glyph's largest requirement for this frame before any
+        // descriptor is emitted. This prevents an early instance from naming
+        // a border blob superseded by a later, larger use in the same frame.
+        let mut border_requirements: FxHashMap<GlyphKey, (f32, f32)> = FxHashMap::default();
         for plan in &plans {
             match plan {
-                AreaPlan::HitDirect { cache_key } => {
+                AreaPlan::HitDirect {
+                    cache_key,
+                    border: Some((_, width)),
+                } => {
                     let cached = &self.text_area_cache[cache_key];
+                    for instance in &cached.instances {
+                        if let Some(key) = cached.distinct_keys.iter().copied().find(|key| {
+                            atlas.glyph(key).is_some_and(|entry| {
+                                !entry.is_non_vector()
+                                    && !entry.is_color_vector()
+                                    && !entry.is_color_v1_vector()
+                                    && entry.glyph_offset == instance.glyph_offset
+                            })
+                        }) {
+                            let requirement = border_requirements.entry(key).or_insert((0.0, 0.0));
+                            requirement.0 = requirement.0.max(instance.ppem);
+                            requirement.1 = requirement.1.max(*width + 0.5);
+                        }
+                    }
+                }
+                AreaPlan::Miss(area) => {
+                    if let Some(width) = area.border_width {
+                        for wi in &work[area.work_start..area.work_end] {
+                            let entry = atlas.glyph(&wi.key).expect("glyph resolved");
+                            if !entry.is_non_vector()
+                                && !entry.is_color_vector()
+                                && !entry.is_color_v1_vector()
+                            {
+                                let requirement =
+                                    border_requirements.entry(wi.key).or_insert((0.0, 0.0));
+                                requirement.0 =
+                                    requirement.0.max(wi.glyph.font_size * area.text_area.scale);
+                                requirement.1 = requirement.1.max(width + 0.5);
+                            }
+                        }
+                    }
+                }
+                AreaPlan::ReCull {
+                    cache_key,
+                    border_width: Some(width),
+                    ..
+                } => {
+                    let cached = &self.text_area_cache[cache_key];
+                    for instance in &cached.instances {
+                        if let Some(key) = cached.distinct_keys.iter().copied().find(|key| {
+                            atlas.glyph(key).is_some_and(|entry| {
+                                !entry.is_non_vector()
+                                    && !entry.is_color_vector()
+                                    && !entry.is_color_v1_vector()
+                                    && entry.glyph_offset == instance.glyph_offset
+                            })
+                        }) {
+                            let requirement = border_requirements.entry(key).or_insert((0.0, 0.0));
+                            requirement.0 = requirement.0.max(instance.ppem);
+                            requirement.1 = requirement.1.max(*width + 0.5);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (key, (ppem, radius)) in border_requirements {
+            atlas.resolve_border_glyph(key, ppem, radius)?;
+        }
+
+        // ===== Pass 3: emit instances per area in input order =====
+        let bordered_frame = plans.iter().any(|plan| match plan {
+            AreaPlan::HitDirect { border, .. } => border.is_some(),
+            AreaPlan::ReCull { border_width, .. } => border_width.is_some(),
+            AreaPlan::Miss(area) => area.border_width.is_some(),
+        });
+        let mut border_uniforms = Vec::new();
+        for plan in &plans {
+            let normal_start = self.instances.len() as u32;
+            let border_start = self.border_instances.len() as u32;
+            let border_paint = match plan {
+                AreaPlan::HitDirect { cache_key, border } => {
+                    let cached = self
+                        .text_area_cache
+                        .get_mut(cache_key)
+                        .expect("direct-hit cache entry exists");
                     self.instances.extend_from_slice(&cached.instances);
+                    if let Some((_, width)) = border {
+                        let mut refreshed = Vec::new();
+                        for instance in &cached.instances {
+                            if let Some(key) = cached.distinct_keys.iter().copied().find(|key| {
+                                atlas.glyph(key).is_some_and(|entry| {
+                                    !entry.is_non_vector()
+                                        && !entry.is_color_vector()
+                                        && !entry.is_color_v1_vector()
+                                        && entry.glyph_offset == instance.glyph_offset
+                                })
+                            }) {
+                                refreshed.push(GlyphInstance {
+                                    glyph_offset: atlas.resolve_border_glyph(
+                                        key,
+                                        instance.ppem,
+                                        *width + 0.5,
+                                    )?,
+                                    ..*instance
+                                });
+                            }
+                        }
+                        cached.border_instances = refreshed;
+                    }
+                    self.border_instances
+                        .extend_from_slice(&cached.border_instances);
                     non_vector_collector.extend_from_slice(&cached.non_vector_glyphs);
+                    *border
                 }
                 AreaPlan::ReCull {
                     cache_key,
@@ -353,6 +540,8 @@ impl TextRenderer {
                     top,
                     bounds,
                     scroll,
+                    border_width,
+                    border_color,
                 } => {
                     let cached = self
                         .text_area_cache
@@ -365,18 +554,45 @@ impl TextRenderer {
                         *dy,
                         *scroll,
                         *bounds,
+                        border_width.unwrap_or(0.0),
                     );
                     non_vector_collector.extend_from_slice(&cached.non_vector_glyphs);
                     self.instances.extend_from_slice(&instances);
+                    let mut border_instances = Vec::new();
+                    if let Some(width) = *border_width {
+                        for instance in &instances {
+                            let key = cached.distinct_keys.iter().copied().find(|key| {
+                                atlas.glyph(key).is_some_and(|entry| {
+                                    !entry.is_non_vector()
+                                        && !entry.is_color_vector()
+                                        && !entry.is_color_v1_vector()
+                                        && entry.glyph_offset == instance.glyph_offset
+                                })
+                            });
+                            if let Some(key) = key {
+                                let descriptor =
+                                    atlas.resolve_border_glyph(key, instance.ppem, width + 0.5)?;
+                                border_instances.push(GlyphInstance {
+                                    glyph_offset: descriptor,
+                                    ..*instance
+                                });
+                            }
+                        }
+                    }
+                    self.border_instances.extend_from_slice(&border_instances);
                     cached.left = *left;
                     cached.top = *top;
                     cached.scroll = *scroll;
+                    cached.border_width = *border_width;
                     cached.instances = instances;
+                    cached.border_instances = border_instances;
                     cached.complete = complete;
+                    (*border_color).zip(*border_width)
                 }
                 AreaPlan::Miss(area) => {
                     let mut area_instances: Vec<GlyphInstance> = Vec::new();
                     let mut area_non_vector: Vec<NonVectorGlyph> = Vec::new();
+                    let mut area_border_instances: Vec<GlyphInstance> = Vec::new();
                     let mut area_keys: Vec<GlyphKey> = Vec::new();
                     let mut complete = area.all_runs_included;
 
@@ -430,7 +646,7 @@ impl TextRenderer {
                                 let screen_h = (max_y - min_y) * scale;
 
                                 let screen_rect = [screen_x, screen_y, screen_w, screen_h];
-                                if vector_rect_visible(screen_rect, scroll, bounds) {
+                                if vector_rect_visible(screen_rect, scroll, bounds, 0.0) {
                                     area_instances.push(GlyphInstance {
                                         screen_rect,
                                         color: match glyph.color_opt {
@@ -477,7 +693,7 @@ impl TextRenderer {
                                     let screen_h = (max_y - min_y) * scale;
 
                                     let screen_rect = [screen_x, screen_y, screen_w, screen_h];
-                                    if !vector_rect_visible(screen_rect, scroll, bounds) {
+                                    if !vector_rect_visible(screen_rect, scroll, bounds, 0.0) {
                                         complete = false;
                                         continue;
                                     }
@@ -516,7 +732,12 @@ impl TextRenderer {
                         let screen_h = (max_y - min_y) * scale;
 
                         let screen_rect = [screen_x, screen_y, screen_w, screen_h];
-                        if !vector_rect_visible(screen_rect, scroll, bounds) {
+                        if !vector_rect_visible(
+                            screen_rect,
+                            scroll,
+                            bounds,
+                            area.border_width.unwrap_or(0.0),
+                        ) {
                             complete = false;
                             continue;
                         }
@@ -526,20 +747,34 @@ impl TextRenderer {
                             None => area.default_color,
                         };
 
-                        area_instances.push(GlyphInstance {
+                        let fill_instance = GlyphInstance {
                             screen_rect,
                             color,
                             glyph_offset: entry.glyph_offset,
                             cmd_texel_count: 0,
                             depth: metadata_to_depth(glyph.metadata),
                             ppem: glyph.font_size * text_area.scale,
-                        });
+                        };
+                        area_instances.push(fill_instance);
+                        if let Some(width) = area.border_width {
+                            let descriptor = atlas.resolve_border_glyph(
+                                wi.key,
+                                fill_instance.ppem,
+                                width + 0.5,
+                            )?;
+                            area_border_instances.push(GlyphInstance {
+                                glyph_offset: descriptor,
+                                ..fill_instance
+                            });
+                        }
                     }
 
                     area_keys.sort_unstable();
                     area_keys.dedup();
 
                     self.instances.extend_from_slice(&area_instances);
+                    self.border_instances
+                        .extend_from_slice(&area_border_instances);
                     non_vector_collector.extend_from_slice(&area_non_vector);
 
                     self.text_area_cache.insert(
@@ -550,15 +785,48 @@ impl TextRenderer {
                             scale: text_area.scale,
                             bounds: text_area.bounds,
                             default_color: text_area.default_color,
+                            border_width: area.border_width,
                             atlas_generation: atlas_gen,
                             instances: area_instances,
+                            border_instances: area_border_instances,
                             distinct_keys: area_keys,
                             non_vector_glyphs: area_non_vector,
                             scroll,
                             complete,
                         },
                     );
+                    area.border_width.map(|width| {
+                        (
+                            color_to_f32(text_area.border.expect("validated border").color),
+                            width,
+                        )
+                    })
                 }
+            };
+            let normal_end = self.instances.len() as u32;
+            let border_end = self.border_instances.len() as u32;
+            if border_end > border_start {
+                let (color, width) = border_paint.expect("border instances have paint");
+                let uniform_offset = border_uniforms.len() as u32;
+                border_uniforms.push(BorderUniform {
+                    color,
+                    width,
+                    _pad: [0.0; 3],
+                });
+                self.draws.push(OrderedDraw {
+                    stream: DrawStream::Border,
+                    range: border_start..border_end,
+                    mode: DrawMode::Underlay,
+                    uniform_offset,
+                });
+            }
+            if bordered_frame && normal_end > normal_start {
+                self.draws.push(OrderedDraw {
+                    stream: DrawStream::Normal,
+                    range: normal_start..normal_end,
+                    mode: DrawMode::Fill,
+                    uniform_offset: 0,
+                });
             }
         }
 
@@ -571,21 +839,40 @@ impl TextRenderer {
 
         atlas.flush_uploads(queue);
 
+        let normal_order_unchanged =
+            instance_stream_unchanged(&self.instances, &previous_instances);
+        let border_order_unchanged =
+            instance_stream_unchanged(&self.border_instances, &previous_border_instances);
+        self.upload_border_resources(
+            device,
+            queue,
+            atlas,
+            &border_uniforms,
+            !(all_direct_hits && border_order_unchanged),
+        );
+        let current_generation = atlas.generation();
+        for cached in self.text_area_cache.values_mut() {
+            cached.atlas_generation = current_generation;
+        }
+
         self.raster_instances =
             atlas.rasterize_glyphs(queue, font_system, &non_vector_collector, scroll);
         self.raster_glyphs_to_render = self.raster_instances.len() as u32;
 
         // Only direct hits leave the vector vertex buffer unchanged.
-        if all_direct_hits && self.instances.len() == self.glyphs_to_render as usize {
+        if all_direct_hits
+            && normal_order_unchanged
+            && self.instances.len() == self.glyphs_to_render as usize
+        {
             self.upload_raster_vertices(device, queue);
-            self.prepared_atlas_generation = atlas_gen;
+            self.prepared_atlas_generation = atlas.generation();
             self.last_prepare_stats = prepare_stats;
             return Ok(());
         }
 
         self.upload_vertices(device, queue);
         self.upload_raster_vertices(device, queue);
-        self.prepared_atlas_generation = atlas_gen;
+        self.prepared_atlas_generation = atlas.generation();
         self.last_prepare_stats = prepare_stats;
         Ok(())
     }
@@ -619,6 +906,90 @@ impl TextRenderer {
                 .copy_from_slice(vertices_raw);
             self.vertex_buffer.unmap();
             self.vertex_buffer_size = new_size;
+        }
+    }
+
+    fn upload_border_resources(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        atlas: &TextAtlas,
+        uniforms: &[BorderUniform],
+        upload_instances: bool,
+    ) {
+        if self.border_instances.is_empty() {
+            return;
+        }
+        let raw = bytemuck::cast_slice(&self.border_instances);
+        let mut recreated = false;
+        if self.border_vertex_buffer_size < raw.len() as u64 {
+            if let Some(buffer) = self.border_vertex_buffer.take() {
+                buffer.destroy();
+            }
+            self.border_vertex_buffer_size = next_copy_buffer_size(raw.len() as u64);
+            self.border_vertex_buffer = Some(device.create_buffer(&BufferDescriptor {
+                label: Some("sluggrs border vertices"),
+                size: self.border_vertex_buffer_size,
+                usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            recreated = true;
+        }
+        if upload_instances || recreated {
+            queue.write_buffer(
+                self.border_vertex_buffer
+                    .as_ref()
+                    .expect("border vertex buffer"),
+                0,
+                raw,
+            );
+        }
+
+        let state = atlas.get_or_create_border_pipeline(
+            device,
+            self.multisample,
+            self.depth_stencil.clone(),
+        );
+        self.border_pipeline = Some(state.pipeline);
+        let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment);
+        self.border_uniform_stride = 32u64.next_multiple_of(alignment.max(1));
+        let required = self.border_uniform_stride * uniforms.len() as u64;
+        let recreate = self
+            .border_uniform_buffer
+            .as_ref()
+            .is_none_or(|buffer| buffer.size() < required);
+        if recreate {
+            let buffer = device.create_buffer(&BufferDescriptor {
+                label: Some("sluggrs border uniforms"),
+                size: required.max(32),
+                usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let bind_group = device.create_bind_group(&BindGroupDescriptor {
+                label: Some("sluggrs border uniforms bind group"),
+                layout: &state.uniforms_layout,
+                entries: &[BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(BufferBinding {
+                        buffer: &buffer,
+                        offset: 0,
+                        size: std::num::NonZeroU64::new(32),
+                    }),
+                }],
+            });
+            self.border_uniform_buffer = Some(buffer);
+            self.border_uniform_bind_group = Some(bind_group);
+        }
+        let buffer = self
+            .border_uniform_buffer
+            .as_ref()
+            .expect("border buffer created");
+        for (index, uniform) in uniforms.iter().enumerate() {
+            queue.write_buffer(
+                buffer,
+                self.border_uniform_stride * index as u64,
+                bytemuck::bytes_of(uniform),
+            );
         }
     }
 
@@ -689,12 +1060,44 @@ impl TextRenderer {
             return Err(RenderError::RemovedFromAtlas);
         }
 
-        if self.glyphs_to_render > 0 {
+        if self.border_instances.is_empty() && self.glyphs_to_render > 0 {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &viewport.bind_group, &[]);
             pass.set_bind_group(1, atlas.bind_group(), &[]);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             pass.draw(0..4, 0..self.glyphs_to_render);
+        } else if !self.border_instances.is_empty() {
+            pass.set_bind_group(0, &viewport.bind_group, &[]);
+            pass.set_bind_group(1, atlas.bind_group(), &[]);
+            for draw in &self.draws {
+                match (draw.stream, draw.mode) {
+                    (DrawStream::Border, DrawMode::Underlay) => {
+                        pass.set_pipeline(self.border_pipeline.as_ref().expect("border pipeline"));
+                        let offset =
+                            (u64::from(draw.uniform_offset) * self.border_uniform_stride) as u32;
+                        pass.set_bind_group(
+                            2,
+                            self.border_uniform_bind_group
+                                .as_ref()
+                                .expect("border bind group"),
+                            &[offset],
+                        );
+                        pass.set_vertex_buffer(
+                            0,
+                            self.border_vertex_buffer
+                                .as_ref()
+                                .expect("border vertex buffer")
+                                .slice(..),
+                        );
+                    }
+                    (DrawStream::Normal, DrawMode::Fill) => {
+                        pass.set_pipeline(&self.pipeline);
+                        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                    }
+                    _ => unreachable!("draw stream and mode agree"),
+                }
+                pass.draw(0..4, draw.range.clone());
+            }
         }
 
         // Raster fallback (emoji, bitmap fonts)
@@ -745,20 +1148,27 @@ fn run_is_visible(
     run: &cosmic_text::LayoutRun,
     bounds_min_y: i32,
     bounds_max_y: i32,
+    border_margin: f32,
 ) -> bool {
     let start_y = top + run.line_top * scale + scroll_y;
     let end_y = start_y + run.line_height * scale;
-    start_y <= bounds_max_y as f32 && bounds_min_y as f32 <= end_y
+    start_y - border_margin <= bounds_max_y as f32 && bounds_min_y as f32 <= end_y + border_margin
 }
 
-fn vector_rect_visible(screen_rect: [f32; 4], scroll: [f32; 2], bounds: [i32; 4]) -> bool {
+fn vector_rect_visible(
+    screen_rect: [f32; 4],
+    scroll: [f32; 2],
+    bounds: [i32; 4],
+    border_margin: f32,
+) -> bool {
     let [x, y, width, height] = screen_rect;
     let x = x + scroll[0];
     let y = y + scroll[1];
-    x + width + 1.0 >= bounds[0] as f32
-        && x - 1.0 <= bounds[2] as f32
-        && y + height + 1.0 >= bounds[1] as f32
-        && y - 1.0 <= bounds[3] as f32
+    let margin = border_margin + 1.0;
+    x + width + margin >= bounds[0] as f32
+        && x - margin <= bounds[2] as f32
+        && y + height + margin >= bounds[1] as f32
+        && y - margin <= bounds[3] as f32
 }
 
 /// Classify a placement-valid cache hit. `Direct` when nothing about the
@@ -789,6 +1199,7 @@ fn re_cull_vector_instances(
     dy: f32,
     scroll: [f32; 2],
     bounds: [i32; 4],
+    border_margin: f32,
 ) -> (Vec<GlyphInstance>, bool) {
     let mut visible = Vec::with_capacity(instances.len());
     let mut complete = complete;
@@ -796,7 +1207,7 @@ fn re_cull_vector_instances(
         let mut adjusted = *instance;
         adjusted.screen_rect[0] += dx;
         adjusted.screen_rect[1] += dy;
-        if vector_rect_visible(adjusted.screen_rect, scroll, bounds) {
+        if vector_rect_visible(adjusted.screen_rect, scroll, bounds, border_margin) {
             visible.push(adjusted);
         } else {
             complete = false;
@@ -828,6 +1239,24 @@ fn zero_depth(_: usize) -> f32 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn order_changed_direct_hit_stream_requires_upload() {
+        let instance = |x| GlyphInstance {
+            screen_rect: [x, 0.0, 1.0, 1.0],
+            color: [1.0; 4],
+            glyph_offset: 1,
+            cmd_texel_count: 0,
+            depth: 0.0,
+            ppem: 12.0,
+        };
+        let previous = [instance(1.0), instance(2.0)];
+        let reordered = [instance(2.0), instance(1.0)];
+        let normal_may_skip = instance_stream_unchanged(&reordered, &previous);
+        let border_may_skip = instance_stream_unchanged(&reordered, &previous);
+        assert!(!normal_may_skip);
+        assert!(!border_may_skip);
+    }
+
     fn run(line_top: f32, line_height: f32) -> cosmic_text::LayoutRun<'static> {
         cosmic_text::LayoutRun {
             line_i: 0,
@@ -845,16 +1274,22 @@ mod tests {
     #[test]
     fn run_visibility_applies_fractional_and_negative_scroll_at_inclusive_edges() {
         let layout_run = run(10.0, 5.0);
-        assert!(run_is_visible(0.0, 1.0, -15.0, &layout_run, 0, 10));
-        assert!(run_is_visible(0.5, 1.0, -10.5, &layout_run, 0, 5));
-        assert!(!run_is_visible(0.0, 1.0, -15.1, &layout_run, 0, 10));
+        assert!(run_is_visible(0.0, 1.0, -15.0, &layout_run, 0, 10, 0.0));
+        assert!(run_is_visible(0.5, 1.0, -10.5, &layout_run, 0, 5, 0.0));
+        assert!(!run_is_visible(0.0, 1.0, -15.1, &layout_run, 0, 10, 0.0));
     }
 
     #[test]
     fn vector_culling_uses_scroll_and_one_pixel_margin() {
         let rect = [10.0, 10.0, 5.0, 5.0];
-        assert!(vector_rect_visible(rect, [-16.0, 0.0], [0, 0, 10, 20]));
-        assert!(!vector_rect_visible(rect, [-16.1, 0.0], [0, 0, 10, 20]));
+        assert!(vector_rect_visible(rect, [-16.0, 0.0], [0, 0, 10, 20], 0.0));
+        assert!(!vector_rect_visible(
+            rect,
+            [-16.1, 0.0],
+            [0, 0, 10, 20],
+            0.0
+        ));
+        assert!(vector_rect_visible(rect, [-18.0, 0.0], [0, 0, 10, 20], 2.0));
     }
 
     #[test]
@@ -901,13 +1336,27 @@ mod tests {
             depth: 0.0,
             ppem: 0.0,
         };
-        let (visible, complete) =
-            re_cull_vector_instances(&[instance], true, 1.5, -0.5, [0.0, 0.0], [0, 0, 10, 10]);
+        let (visible, complete) = re_cull_vector_instances(
+            &[instance],
+            true,
+            1.5,
+            -0.5,
+            [0.0, 0.0],
+            [0, 0, 10, 10],
+            0.0,
+        );
         assert!(complete);
         assert_eq!(visible[0].screen_rect[..2], [3.5, 1.5]);
 
-        let (visible, complete) =
-            re_cull_vector_instances(&[instance], true, -10.0, 0.0, [0.0, 0.0], [0, 0, 10, 10]);
+        let (visible, complete) = re_cull_vector_instances(
+            &[instance],
+            true,
+            -10.0,
+            0.0,
+            [0.0, 0.0],
+            [0, 0, 10, 10],
+            0.0,
+        );
         assert!(visible.is_empty());
         assert!(!complete);
     }

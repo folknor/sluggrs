@@ -592,6 +592,7 @@ fn render(state: &mut RenderState) {
                 bottom: vp_h as i32,
             },
             default_color: line.default_color,
+            border: None,
         })
         .collect();
 

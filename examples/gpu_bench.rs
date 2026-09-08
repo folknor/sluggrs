@@ -132,6 +132,7 @@ fn main() {
                 bottom: HEIGHT as i32,
             },
             default_color: cosmic_text::Color::rgb(255, 255, 255),
+            border: None,
         };
         let encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });

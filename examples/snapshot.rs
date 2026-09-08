@@ -294,6 +294,7 @@ fn main() {
             scale: 1.0,
             bounds,
             default_color: *color,
+            border: None,
         })
         .collect();
 

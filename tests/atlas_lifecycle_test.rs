@@ -121,6 +121,7 @@ impl TestHarness {
                 bottom: 600,
             },
             default_color: cosmic_text::Color::rgb(0, 0, 0),
+            border: None,
         };
 
         self.renderer.prepare(
@@ -230,6 +231,7 @@ fn prepare_rejects_different_atlas_than_constructor() {
             bottom: 600,
         },
         default_color: cosmic_text::Color::rgb(0, 0, 0),
+        border: None,
     };
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

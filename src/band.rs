@@ -123,8 +123,52 @@ pub fn build_bands(
     curve_locations: &[CurveLocation],
     band_count_x: u32,
     band_count_y: u32,
+    scratch_entries: Vec<i16>,
+    scratch: &mut BandScratch,
+) -> BandData {
+    build_bands_impl(
+        outline,
+        curve_locations,
+        band_count_x,
+        band_count_y,
+        scratch_entries,
+        scratch,
+        false,
+    )
+}
+
+/// Build winding bands for the border shader. Unlike the fill bands, curves
+/// touching a band's upper edge are present in both adjacent bands. The
+/// winding root test owns endpoints half-open, so the duplicate membership
+/// cannot double count a crossing.
+pub fn build_border_bands(
+    outline: &GlyphOutline,
+    curve_locations: &[CurveLocation],
+    band_count_x: u32,
+    band_count_y: u32,
+    scratch_entries: Vec<i16>,
+    scratch: &mut BandScratch,
+) -> BandData {
+    build_bands_impl(
+        outline,
+        curve_locations,
+        band_count_x,
+        band_count_y,
+        scratch_entries,
+        scratch,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_bands_impl(
+    outline: &GlyphOutline,
+    curve_locations: &[CurveLocation],
+    band_count_x: u32,
+    band_count_y: u32,
     mut scratch_entries: Vec<i16>,
     scratch: &mut BandScratch,
+    include_upper_boundary: bool,
 ) -> BandData {
     let [min_x, min_y, max_x, max_y] = outline.bounds;
     let width = max_x - min_x;
@@ -198,7 +242,12 @@ pub fn build_bands(
             hband_min = (curve_min_y * scale_y + offset_y)
                 .floor()
                 .clamp(0.0, hcount as f32 - 1.0) as usize;
-            hband_max = ((curve_max_y * scale_y + offset_y - BAND_EPSILON).floor())
+            let upper_bias = if include_upper_boundary {
+                0.0
+            } else {
+                BAND_EPSILON
+            };
+            hband_max = ((curve_max_y * scale_y + offset_y - upper_bias).floor())
                 .clamp(0.0, hcount as f32 - 1.0) as usize;
             for count in &mut scratch.hband_counts[hband_min..=hband_max] {
                 *count += 1;
@@ -211,7 +260,12 @@ pub fn build_bands(
             vband_min = (curve_min_x * scale_x + offset_x)
                 .floor()
                 .clamp(0.0, vcount as f32 - 1.0) as usize;
-            vband_max = ((curve_max_x * scale_x + offset_x - BAND_EPSILON).floor())
+            let upper_bias = if include_upper_boundary {
+                0.0
+            } else {
+                BAND_EPSILON
+            };
+            vband_max = ((curve_max_x * scale_x + offset_x - upper_bias).floor())
                 .clamp(0.0, vcount as f32 - 1.0) as usize;
             for count in &mut scratch.vband_counts[vband_min..=vband_max] {
                 *count += 1;
