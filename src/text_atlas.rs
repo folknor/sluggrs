@@ -302,6 +302,17 @@ impl TextAtlas {
         &self.bind_group
     }
 
+    /// The shared pipeline cache, for offscreen passes (a shadow mask) that
+    /// need a pipeline the atlas itself does not hold.
+    pub(crate) fn cache(&self) -> &Cache {
+        &self.cache
+    }
+
+    /// The surface format this atlas renders to.
+    pub(crate) fn format(&self) -> TextureFormat {
+        self.format
+    }
+
     pub fn buffer_elements_used(&self) -> u32 {
         self.buffer_cursor
     }

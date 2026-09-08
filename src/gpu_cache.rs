@@ -46,6 +46,8 @@ struct Inner {
             BorderPipelineState,
         )>,
     >,
+    /// The mask pipeline has one fixed target format, so it needs no key.
+    mask: Mutex<Option<BorderPipelineState>>,
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +142,7 @@ impl Cache {
             pipeline_layout,
             pipelines: Mutex::new(Vec::new()),
             border: Mutex::new(Vec::new()),
+            mask: Mutex::new(None),
         }))
     }
 
@@ -316,6 +319,83 @@ impl Cache {
             uniforms_layout: border_uniforms_layout,
         };
         cached.push((format, multisample, depth_stencil, state.clone()));
+        state
+    }
+}
+
+impl Cache {
+    /// Pipeline that renders glyph coverage into a filtered shadow's source
+    /// mask: the border vertex shader with a coverage-only fragment, drawn
+    /// into a single-channel linear target.
+    ///
+    /// Blending is source-over union rather than additive, so glyphs that
+    /// overlap do not push coverage past 1.0 and show as a bright core once
+    /// blurred.
+    pub(crate) fn get_or_create_mask_pipeline(&self, device: &Device) -> BorderPipelineState {
+        let mut cached = self.0.mask.lock().expect("Write mask pipeline cache");
+        if let Some(state) = cached.as_ref() {
+            return state.clone();
+        }
+        let mask_uniforms_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("sluggrs mask uniforms bind group layout"),
+                entries: &[BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: NonZeroU64::new(32),
+                    },
+                    count: None,
+                }],
+            });
+        let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("sluggrs mask pipeline layout"),
+            bind_group_layouts: &[
+                Some(&self.0.uniforms_layout),
+                Some(&self.0.atlas_layout),
+                Some(&mask_uniforms_layout),
+            ],
+            immediate_size: 0,
+        });
+        let shader = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("sluggrs mask shader"),
+            source: ShaderSource::Wgsl(std::borrow::Cow::Borrowed(crate::BORDER_SHADER_WGSL)),
+        });
+        let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some("sluggrs mask pipeline"),
+            layout: Some(&layout),
+            vertex: VertexState {
+                module: &shader,
+                entry_point: Some("vs_border"),
+                buffers: &self.0.vertex_buffers,
+                compilation_options: PipelineCompilationOptions::default(),
+            },
+            fragment: Some(FragmentState {
+                module: &shader,
+                entry_point: Some("fs_mask"),
+                targets: &[Some(ColorTargetState {
+                    format: crate::blur::MASK_FORMAT,
+                    blend: Some(crate::blur::mask_blend()),
+                    write_mask: ColorWrites::RED,
+                })],
+                compilation_options: PipelineCompilationOptions::default(),
+            }),
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleStrip,
+                ..PrimitiveState::default()
+            },
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let state = BorderPipelineState {
+            pipeline,
+            uniforms_layout: mask_uniforms_layout,
+        };
+        *cached = Some(state.clone());
         state
     }
 }

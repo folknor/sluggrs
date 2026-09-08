@@ -87,7 +87,7 @@ impl TestHarness {
         buffer: &Buffer,
         bounds: TextBounds,
     ) -> Result<(), sluggrs::PrepareError> {
-        let encoder = self
+        let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
@@ -104,7 +104,7 @@ impl TestHarness {
         self.renderer.prepare(
             &self.device,
             &self.queue,
-            &encoder,
+            &mut encoder,
             &mut self.font_system,
             &mut self.atlas,
             &self.viewport,
@@ -134,7 +134,7 @@ impl TestHarness {
         metadata_to_depth: impl FnMut(usize) -> f32,
     ) -> Result<(), sluggrs::PrepareError> {
         let buffer = self.make_buffer(text);
-        let encoder = self
+        let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
@@ -156,7 +156,7 @@ impl TestHarness {
         self.renderer.prepare_with_depth(
             &self.device,
             &self.queue,
-            &encoder,
+            &mut encoder,
             &mut self.font_system,
             &mut self.atlas,
             &self.viewport,
@@ -305,7 +305,7 @@ fn prepare_shared_buffer_frame(
     left_a: f32,
     left_b: f32,
 ) -> Vec<sluggrs::GlyphInstance> {
-    let encoder = h
+    let mut encoder = h
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     let bounds = TextBounds {
@@ -327,7 +327,7 @@ fn prepare_shared_buffer_frame(
         .prepare(
             &h.device,
             &h.queue,
-            &encoder,
+            &mut encoder,
             &mut h.font_system,
             &mut h.atlas,
             &h.viewport,
@@ -432,14 +432,14 @@ fn prepare_areas<'a>(
     h: &mut TestHarness,
     areas: impl IntoIterator<Item = TextArea<'a>>,
 ) -> Vec<sluggrs::GlyphInstance> {
-    let encoder = h
+    let mut encoder = h
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     h.renderer
         .prepare(
             &h.device,
             &h.queue,
-            &encoder,
+            &mut encoder,
             &mut h.font_system,
             &mut h.atlas,
             &h.viewport,

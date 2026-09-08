@@ -596,10 +596,13 @@ fn render(state: &mut RenderState) {
         })
         .collect();
 
-    let encoder = state
+    // One encoder for both phases: prepare() encodes the mask and blur passes
+    // for filtered decorations, so a separate render encoder would leave that
+    // work unsubmitted.
+    let mut encoder = state
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("render encoder"),
+            label: Some("sluggrs encoder"),
         });
 
     state
@@ -607,7 +610,7 @@ fn render(state: &mut RenderState) {
         .prepare(
             &state.device,
             &state.queue,
-            &encoder,
+            &mut encoder,
             &mut state.font_system,
             &mut state.atlas,
             &state.viewport,
@@ -615,12 +618,6 @@ fn render(state: &mut RenderState) {
             &mut state.swash_cache,
         )
         .expect("prepare failed");
-
-    let mut encoder = state
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("render encoder"),
-        });
 
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

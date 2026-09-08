@@ -8,6 +8,7 @@ use crate::types::{
 use crate::viewport::Viewport;
 
 use rustc_hash::FxHashMap;
+use wgpu::util::DeviceExt;
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, Buffer, BufferBinding, BufferDescriptor,
     BufferUsages, COPY_BUFFER_ALIGNMENT, CommandEncoder, DepthStencilState, Device,
@@ -93,6 +94,9 @@ impl BorderUniform {
 enum DrawStream {
     Normal,
     Border,
+    /// A pre-blurred shadow composited from its own texture. Carries an index
+    /// into `blur_jobs` rather than an instance range.
+    Shadow,
 }
 
 #[derive(Clone, Copy)]
@@ -106,6 +110,193 @@ struct OrderedDraw {
     range: std::ops::Range<u32>,
     mode: DrawMode,
     uniform_offset: u32,
+}
+
+/// Render one area's glyph coverage into a mask, blur it, and build the
+/// composite record.
+///
+/// The mask is rendered in MASK-LOCAL space: the params uniform gives it the
+/// mask's own size as the screen, and a scroll offset shifted by the source
+/// origin, so a glyph lands at the same place relative to the mask that it
+/// occupies on screen. The decoration's offset is deliberately NOT applied
+/// here - it moves the finished shadow at composite time, and applying it
+/// twice would double it.
+#[allow(clippy::too_many_arguments)]
+fn encode_blur_job(
+    resources: &mut crate::blur::BlurResources,
+    device: &Device,
+    queue: &Queue,
+    encoder: &mut CommandEncoder,
+    atlas: &TextAtlas,
+    instances: &[GlyphInstance],
+    geometry: crate::blur::BlurGeometry,
+    color: [f32; 4],
+    resolution: crate::types::Resolution,
+    flags: u32,
+) -> crate::blur::BlurJob {
+    let cache = atlas.cache();
+    let (width, height) = geometry.source_size();
+
+    let mask = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("sluggrs shadow mask"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: crate::blur::MASK_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let mask_view = mask.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let state = cache.get_or_create_mask_pipeline(device);
+
+    // Per-job buffers, never reused: rewriting a shared buffer before submit
+    // would let an already-encoded pass observe a later job's values.
+    let params = crate::gpu_cache::Params {
+        screen_size: [width as f32, height as f32],
+        scroll_offset: [-geometry.source[0], -geometry.source[1]],
+        flags,
+        _pad: 0,
+    };
+    let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("sluggrs shadow mask params"),
+        contents: bytemuck::bytes_of(&params),
+        usage: BufferUsages::UNIFORM,
+    });
+    let params_group = cache.create_uniforms_bind_group(device, &params_buffer);
+
+    let decoration = BorderUniform {
+        color: [1.0, 1.0, 1.0, 1.0],
+        spread: 0.0,
+        mode: 0,
+        offset: [0.0, 0.0],
+    };
+    let decoration_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("sluggrs shadow mask decoration"),
+        contents: bytemuck::bytes_of(&decoration),
+        usage: BufferUsages::UNIFORM,
+    });
+    let alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
+    let stride = 32u64.next_multiple_of(alignment.max(1));
+    let decoration_group = device.create_bind_group(&BindGroupDescriptor {
+        label: Some("sluggrs shadow mask decoration bind group"),
+        layout: &state.uniforms_layout,
+        entries: &[BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::Buffer(BufferBinding {
+                buffer: &decoration_buffer,
+                offset: 0,
+                size: std::num::NonZeroU64::new(stride.min(decoration_buffer.size())),
+            }),
+        }],
+    });
+
+    let raw = bytemuck::cast_slice::<_, u8>(instances);
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("sluggrs shadow mask vertices"),
+        contents: raw,
+        usage: BufferUsages::VERTEX,
+    });
+
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("sluggrs shadow mask"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &mask_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            multiview_mask: None,
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&state.pipeline);
+        pass.set_bind_group(0, &params_group, &[]);
+        pass.set_bind_group(1, atlas.bind_group(), &[]);
+        pass.set_bind_group(2, &decoration_group, &[0]);
+        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+        pass.draw(0..4, 0..instances.len() as u32);
+    }
+
+    let (_horizontal, vertical) =
+        crate::blur::encode_blur(resources, device, queue, encoder, &mask_view, geometry);
+
+    crate::blur::finish_job(
+        resources,
+        device,
+        queue,
+        vertical,
+        geometry,
+        color,
+        [resolution.width as f32, resolution.height as f32],
+        flags,
+    )
+}
+
+/// A filtered decoration queued during instance emission, encoded once the
+/// atlas storage buffer has been flushed.
+struct PendingBlur {
+    instances: std::ops::Range<u32>,
+    geometry: crate::blur::BlurGeometry,
+    color: [f32; 4],
+}
+
+/// The area's clip rect in physical pixels, for clipping a shadow.
+fn plan_bounds(plan: &AreaPlan<'_>, resolution: crate::types::Resolution) -> [f32; 4] {
+    let bounds = match plan {
+        AreaPlan::Miss(area) => [
+            area.bounds_min_x,
+            area.bounds_min_y,
+            area.bounds_max_x,
+            area.bounds_max_y,
+        ],
+        AreaPlan::ReCull { bounds, .. } => *bounds,
+        // A direct hit does not carry its bounds forward, and a shadow that
+        // covers the viewport is clipped correctly anyway by the scissor the
+        // caller already applies to the pass.
+        AreaPlan::HitDirect { .. } => [0, 0, resolution.width as i32, resolution.height as i32],
+    };
+    [
+        bounds[0] as f32,
+        bounds[1] as f32,
+        bounds[2] as f32,
+        bounds[3] as f32,
+    ]
+}
+
+/// Union of the instance rects, in scrolled screen space, or `None` when
+/// there is nothing to shadow.
+fn instance_bounds(instances: &[GlyphInstance], scroll: [f32; 2]) -> Option<[f32; 4]> {
+    let mut bounds: Option<[f32; 4]> = None;
+    for instance in instances {
+        let [x, y, w, h] = instance.screen_rect;
+        let rect = [
+            x + scroll[0],
+            y + scroll[1],
+            x + scroll[0] + w,
+            y + scroll[1] + h,
+        ];
+        bounds = Some(match bounds {
+            None => rect,
+            Some(b) => [
+                b[0].min(rect[0]),
+                b[1].min(rect[1]),
+                b[2].max(rect[2]),
+                b[3].max(rect[3]),
+            ],
+        });
+    }
+    bounds
 }
 
 /// Split an area into draw runs that preserve glyph order.
@@ -277,6 +468,16 @@ pub struct TextRenderer {
     border_uniform_bind_group: Option<BindGroup>,
     border_uniform_stride: u64,
     border_pipeline: Option<RenderPipeline>,
+    /// Blur pipelines and sampler, created on first filtered decoration so a
+    /// caller that never blurs pays nothing.
+    blur: Option<crate::blur::BlurResources>,
+    /// Composite pipeline for the surface format, resolved during prepare so
+    /// render does not need the device.
+    shadow_pipeline: Option<RenderPipeline>,
+    /// This frame's blurred shadows. Rebuilt every prepare: a blurred result
+    /// depends on the whole area mask, so an ordinary glyph-cache hit does
+    /// not establish that a previous one is still valid.
+    blur_jobs: Vec<crate::blur::BlurJob>,
     multisample: MultisampleState,
     depth_stencil: Option<DepthStencilState>,
     draws: Vec<OrderedDraw>,
@@ -338,6 +539,9 @@ impl TextRenderer {
             border_uniform_bind_group: None,
             border_uniform_stride: 0,
             border_pipeline: None,
+            blur: None,
+            shadow_pipeline: None,
+            blur_jobs: Vec::new(),
             multisample,
             depth_stencil,
             draws: Vec::new(),
@@ -371,11 +575,23 @@ impl TextRenderer {
     /// 3. Walk plans in input order; emit instances per area; populate cache.
     #[allow(clippy::too_many_arguments)]
     #[hotpath::measure]
+    /// `encoder` is mutable because a filtered (blurred) decoration encodes
+    /// its own render passes here: the source mask and the two blur passes.
+    /// They cannot go in `render`, which runs inside the caller's already
+    /// open pass, and a shared `&CommandEncoder` cannot begin a pass at all.
+    ///
+    /// # The caller MUST submit this encoder
+    ///
+    /// It carries real work now. Preparing into one encoder and then rendering
+    /// into a second, submitting only the second, silently drops every mask
+    /// and blur pass and leaves blurred shadows empty - the encoder was
+    /// previously unused, so that pattern used to be harmless. Either use one
+    /// encoder for both phases, or submit the prepare encoder first.
     pub fn prepare_with_depth<'a>(
         &mut self,
         device: &Device,
         queue: &Queue,
-        _encoder: &CommandEncoder,
+        encoder: &mut CommandEncoder,
         font_system: &mut cosmic_text::FontSystem,
         atlas: &mut TextAtlas,
         viewport: &Viewport,
@@ -606,6 +822,20 @@ impl TextRenderer {
         // ===== Pass 3: emit instances per area in input order =====
         let bordered_frame = plans.iter().any(|plan| !plan.decorations().is_empty());
         let mut border_uniforms = Vec::new();
+        let mut pending_blurs: Vec<PendingBlur> = Vec::new();
+        self.blur_jobs.clear();
+        if plans.iter().any(|plan| {
+            plan.decorations()
+                .iter()
+                .any(PhysicalDecoration::is_filtered)
+        }) {
+            if self.blur.is_none() {
+                self.blur = Some(crate::blur::BlurResources::new(device));
+            }
+            let format = atlas.format();
+            let resources = self.blur.as_mut().expect("just created");
+            self.shadow_pipeline = Some(resources.shadow_pipeline(device, format).clone());
+        }
         for plan in &plans {
             let normal_start = self.instances.len() as u32;
             let border_start = self.border_instances.len() as u32;
@@ -947,12 +1177,55 @@ impl TextRenderer {
             // Iterated in REVERSE because the list is back-to-front like CSS
             // text-shadow: the first entry must paint on top, so it is
             // encoded last.
+            // Filtered decorations are encoded first and composited before
+            // the analytic ones, so within an area the painting order is
+            // still back-to-front across the whole list.
+            if border_end > border_start {
+                let area_bounds = plan_bounds(plan, resolution);
+                for decoration in decorations.iter().rev().filter(|d| d.is_filtered()) {
+                    let instances =
+                        &self.border_instances[border_start as usize..border_end as usize];
+                    let Some(glyph_bounds) = instance_bounds(instances, scroll) else {
+                        continue;
+                    };
+                    let support = crate::types::blur_support(decoration.blur);
+                    let Some(geometry) = crate::blur::BlurGeometry::new(
+                        glyph_bounds,
+                        area_bounds,
+                        decoration.offset,
+                        decoration.blur,
+                        support,
+                    ) else {
+                        continue;
+                    };
+                    // Queued rather than encoded here: the atlas storage
+                    // buffer is not flushed until after this pass, and the
+                    // mask pass reads glyph data out of it.
+                    self.draws.push(OrderedDraw {
+                        stream: DrawStream::Shadow,
+                        range: pending_blurs.len() as u32..pending_blurs.len() as u32 + 1,
+                        mode: DrawMode::Underlay,
+                        uniform_offset: 0,
+                    });
+                    pending_blurs.push(PendingBlur {
+                        instances: border_start..border_end,
+                        geometry,
+                        color: decoration.color,
+                    });
+                }
+            }
+
             if border_end > border_start {
                 // Skip index 0 when it is the ring: it is emitted below,
                 // interleaved with the COLR runs, so mono and COLR glyphs
                 // keep their relative order at the fill stage.
                 let solid_count = decorations.len() - usize::from(ring.is_some());
-                for decoration in decorations[decorations.len() - solid_count..].iter().rev() {
+                for decoration in decorations[decorations.len() - solid_count..]
+                    .iter()
+                    .rev()
+                    // Filtered decorations were encoded and composited above.
+                    .filter(|d| !d.is_filtered())
+                {
                     let uniform_offset = border_uniforms.len() as u32;
                     border_uniforms.push(BorderUniform::of(decoration));
                     self.draws.push(OrderedDraw {
@@ -1016,6 +1289,26 @@ impl TextRenderer {
         });
 
         atlas.flush_uploads(queue);
+
+        // Only now is the atlas storage buffer complete, so only now can a
+        // mask pass read glyph data out of it.
+        for pending in pending_blurs {
+            let resources = self.blur.as_mut().expect("blur resources created above");
+            let instances = &self.border_instances
+                [pending.instances.start as usize..pending.instances.end as usize];
+            self.blur_jobs.push(encode_blur_job(
+                resources,
+                device,
+                queue,
+                encoder,
+                atlas,
+                instances,
+                pending.geometry,
+                pending.color,
+                resolution,
+                viewport.flags(),
+            ));
+        }
 
         let normal_order_unchanged =
             instance_stream_unchanged(&self.instances, &previous_instances);
@@ -1201,7 +1494,7 @@ impl TextRenderer {
         &mut self,
         device: &Device,
         queue: &Queue,
-        encoder: &CommandEncoder,
+        encoder: &mut CommandEncoder,
         font_system: &mut cosmic_text::FontSystem,
         atlas: &mut TextAtlas,
         viewport: &Viewport,
@@ -1271,6 +1564,24 @@ impl TextRenderer {
                     (DrawStream::Normal, DrawMode::Fill) => {
                         pass.set_pipeline(&self.pipeline);
                         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                    }
+                    // A blurred shadow is already rendered into its own
+                    // texture; compositing is one quad, not an instance run.
+                    (DrawStream::Shadow, _) => {
+                        let job = &self.blur_jobs[draw.range.start as usize];
+                        let pipeline = self
+                            .shadow_pipeline
+                            .as_ref()
+                            .expect("shadow pipeline created during prepare");
+                        pass.set_pipeline(pipeline);
+                        pass.set_bind_group(0, &job.bind_group, &[]);
+                        pass.draw(0..4, 0..1);
+                        // The composite borrows group 0 for its own layout;
+                        // restore the shared bindings or the next glyph draw
+                        // validates against the shadow's bind group.
+                        pass.set_bind_group(0, &viewport.bind_group, &[]);
+                        pass.set_bind_group(1, atlas.bind_group(), &[]);
+                        continue;
                     }
                     _ => unreachable!("draw stream and mode agree"),
                 }

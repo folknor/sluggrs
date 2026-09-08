@@ -135,11 +135,12 @@ fn prepare(
     swash_cache: &mut SwashCache,
     buffer: &Buffer,
 ) -> Result<(), sluggrs::PrepareError> {
-    let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    let mut encoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     renderer.prepare(
         device,
         queue,
-        &encoder,
+        &mut encoder,
         font_system,
         atlas,
         viewport,

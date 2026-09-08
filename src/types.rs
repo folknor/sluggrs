@@ -41,7 +41,32 @@ pub struct TextDecoration {
     /// Translation in logical pixels, positive y downward. Does not enter the
     /// glyph's distance-query radius - it moves the quad, not the query.
     pub offset: [f32; 2],
+    /// Gaussian sigma in logical pixels. Zero means an analytic decoration
+    /// drawn from the distance field; above zero the decoration becomes a
+    /// FILTERED shadow - the area's glyph coverage is rendered to a mask,
+    /// blurred separably, and composited.
+    ///
+    /// The two are different mechanisms, not a parameter of one another. A
+    /// falloff over the nearest-boundary distance is a feathered dilation:
+    /// it keeps counters open that a real blur hazes shut, holds thin stems
+    /// at full opacity where a blur thins them, and treats touching glyphs as
+    /// separate shapes where a blur merges them.
+    pub blur: f32,
     pub mode: DecorationMode,
+}
+
+/// A Gaussian has infinite support; the kernel is cut off at this many sigma.
+/// One axis loses about 0.0063% of its mass beyond 4 sigma. Culling, mask
+/// bounds, tap count and composite bounds must all use the SAME rounded
+/// support or the shadow will be clipped somewhere in the chain.
+pub const BLUR_SUPPORT_SIGMAS: f32 = 4.0;
+
+/// Kernel support in physical pixels for a physical sigma.
+pub(crate) fn blur_support(sigma: f32) -> f32 {
+    if sigma <= 0.0 {
+        return 0.0;
+    }
+    (sigma * BLUR_SUPPORT_SIGMAS).ceil()
 }
 
 /// What a decoration paints.
@@ -79,6 +104,9 @@ pub enum DecorationError {
     /// A decoration ordered above the ring would paint over that fill, so the
     /// ring must be first in the back-to-front list.
     RingNotTopmost,
+    /// A ring is evaluated analytically from the glyph's distance field and a
+    /// blur is a convolution of a rendered mask. One draw cannot be both.
+    RingWithBlur,
 }
 
 impl std::fmt::Display for DecorationError {
@@ -89,6 +117,7 @@ impl std::fmt::Display for DecorationError {
             Self::RingNotTopmost => {
                 write!(f, "a Ring decoration must be first in the decoration list")
             }
+            Self::RingWithBlur => write!(f, "a Ring decoration cannot be blurred"),
         }
     }
 }
@@ -112,6 +141,9 @@ pub fn validate_decorations(decorations: &[TextDecoration]) -> Result<(), Decora
         if index != 0 {
             return Err(DecorationError::RingNotTopmost);
         }
+        if decoration.blur > 0.0 {
+            return Err(DecorationError::RingWithBlur);
+        }
     }
     Ok(())
 }
@@ -124,6 +156,7 @@ impl TextDecoration {
             color,
             spread: width,
             offset: [0.0, 0.0],
+            blur: 0.0,
             mode: DecorationMode::Solid,
         }
     }
@@ -134,6 +167,22 @@ impl TextDecoration {
             color,
             spread: 0.0,
             offset: [dx, dy],
+            blur: 0.0,
+            mode: DecorationMode::Solid,
+        }
+    }
+
+    /// A blurred drop shadow: the CSS `text-shadow` effect. `sigma` is the
+    /// Gaussian standard deviation in logical pixels.
+    ///
+    /// This is a convolution of the area's whole glyph mask, so touching
+    /// glyphs blur together and counters haze shut, exactly as in a browser.
+    pub fn blurred_shadow(color: cosmic_text::Color, dx: f32, dy: f32, sigma: f32) -> Self {
+        Self {
+            color,
+            spread: 0.0,
+            offset: [dx, dy],
+            blur: sigma,
             mode: DecorationMode::Solid,
         }
     }
@@ -147,6 +196,7 @@ impl TextDecoration {
             color,
             spread: width,
             offset: [0.0, 0.0],
+            blur: 0.0,
             mode: DecorationMode::Ring,
         }
     }
@@ -158,7 +208,29 @@ pub(crate) struct PhysicalDecoration {
     pub color: [f32; 4],
     pub spread: f32,
     pub offset: [f32; 2],
+    /// Physical sigma. Above zero this is a filtered shadow rather than an
+    /// analytic one, and takes an entirely different path through the
+    /// renderer: mask render, separable blur, composite.
+    pub blur: f32,
     pub mode: DecorationMode,
+}
+
+impl PhysicalDecoration {
+    pub fn is_filtered(&self) -> bool {
+        self.blur > 0.0
+    }
+
+    /// How far this decoration's paint reaches past the glyph, before the
+    /// offset is applied. Analytic decorations reach by their dilation plus
+    /// the antialiasing allowance; a filtered one reaches by its kernel
+    /// support, which the mask, the taps and the composite all share.
+    pub fn radius(&self, aa: f32) -> f32 {
+        if self.is_filtered() {
+            self.spread + blur_support(self.blur)
+        } else {
+            self.spread + aa
+        }
+    }
 }
 
 /// Resolve one decoration to physical pixels, or `None` if it cannot be
@@ -173,14 +245,21 @@ pub(crate) fn physical_decoration(
     }
     let spread = decoration.spread * scale;
     let offset = [decoration.offset[0] * scale, decoration.offset[1] * scale];
+    let blur = decoration.blur * scale;
     // Spread of exactly zero is valid - that is an unspread drop shadow.
     if !spread.is_finite() || spread < 0.0 || !offset[0].is_finite() || !offset[1].is_finite() {
+        return None;
+    }
+    // A non-finite or negative sigma is not a blur; a zero one is simply the
+    // analytic path. Reject the former, allow the latter.
+    if !blur.is_finite() || blur < 0.0 || !blur_support(blur).is_finite() {
         return None;
     }
     Some(PhysicalDecoration {
         color: crate::text_renderer::color_to_f32(decoration.color),
         spread,
         offset,
+        blur,
         mode: decoration.mode,
     })
 }
@@ -203,7 +282,7 @@ impl DecorationExtents {
     pub fn of(decorations: &[PhysicalDecoration], aa: f32) -> Self {
         let mut extents = Self::default();
         for decoration in decorations {
-            let radius = decoration.spread + aa;
+            let radius = decoration.radius(aa);
             let [dx, dy] = decoration.offset;
             extents.left = extents.left.max(radius - dx);
             extents.right = extents.right.max(radius + dx);
@@ -395,6 +474,7 @@ mod tests {
             color: white(),
             spread: 2.0,
             offset: [3.0, -4.0],
+            blur: 0.0,
             mode: DecorationMode::Solid,
         };
         let physical = physical_decoration(decoration, 1.5).expect("valid");
@@ -419,6 +499,7 @@ mod tests {
             color: white(),
             spread,
             offset: [0.0, 0.0],
+            blur: 0.0,
             mode: DecorationMode::Solid,
         };
         for spread in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0] {
@@ -431,6 +512,7 @@ mod tests {
             color: white(),
             spread: 1.0,
             offset,
+            blur: 0.0,
             mode: DecorationMode::Solid,
         };
         assert_eq!(physical_decoration(with_offset([f32::NAN, 0.0]), 1.0), None);
@@ -457,6 +539,7 @@ mod tests {
             color: [1.0; 4],
             spread: 1.0,
             offset: [4.0, 0.0],
+            blur: 0.0,
             mode: DecorationMode::Solid,
         };
         let extents = DecorationExtents::of(&[decoration], 0.5);
@@ -474,6 +557,7 @@ mod tests {
             color: [1.0; 4],
             spread: 0.0,
             offset: [dx, 0.0],
+            blur: 0.0,
             mode: DecorationMode::Solid,
         };
         let extents = DecorationExtents::of(&[at(6.0), at(-3.0)], 0.5);

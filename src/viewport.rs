@@ -65,6 +65,12 @@ impl Viewport {
         &self.bind_group
     }
 
+    /// The raw params flags, so an offscreen pass (a shadow mask) can be
+    /// encoded with the same MSAA and colour-mode behaviour as the screen.
+    pub(crate) fn flags(&self) -> u32 {
+        self.params.flags
+    }
+
     pub fn resolution(&self) -> Resolution {
         Resolution {
             width: self.params.screen_size[0] as u32,

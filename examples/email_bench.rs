@@ -569,14 +569,14 @@ impl RenderHarness {
     }
 
     fn prepare_areas(&mut self, areas: &[TextArea]) -> Result<(), sluggrs::PrepareError> {
-        let encoder = self
+        let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
         self.renderer.prepare(
             &self.device,
             &self.queue,
-            &encoder,
+            &mut encoder,
             &mut self.font_system,
             &mut self.atlas,
             &self.viewport,

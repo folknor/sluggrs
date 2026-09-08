@@ -93,6 +93,21 @@ fn vs_border(instance: GlyphInstance, @builtin(vertex_index) vid: u32) -> Border
     return output;
 }
 
+/// Coverage-only output for a filtered shadow's source mask.
+///
+/// Writes a scalar into a single-channel linear target. The pipeline blends
+/// it as source-over (`One`, `OneMinusSrc`) so overlapping glyphs form a
+/// union rather than accumulating past 1.0, which additive blending would do
+/// and which would show as a bright core wherever glyphs touch.
+@fragment
+fn fs_mask(input: BorderVertexOutput) -> @location(0) f32 {
+    let outer = border_outer_coverage(input);
+    // At zero spread the distance field's rendition of the glyph edge is not
+    // exactly the analytic fill's; take whichever covers more so the mask
+    // never undercuts the shape being shadowed.
+    return max(outer, fill_coverage(input));
+}
+
 /// The coverage the normal pipeline would produce for this fragment.
 ///
 /// This must track fs_main exactly - the extra sampling below 16 ppem and the
@@ -230,8 +245,9 @@ fn border_winding(p: vec2<f32>, band_base: u32, bounds: vec4<f32>, band_count: u
     return winding;
 }
 
-@fragment
-fn fs_border(input: BorderVertexOutput) -> @location(0) vec4<f32> {
+/// Dilated coverage from the glyph's signed distance field: 1 well inside,
+/// falling to 0 half a pixel past the dilated edge.
+fn border_outer_coverage(input: BorderVertexOutput) -> f32 {
     let raw = input.descriptor * 2u;
     let winding_offset = u32(atlas[raw + 1u]);
     let grid_offset = u32(atlas[raw + 2u]);
@@ -275,7 +291,12 @@ fn fs_border(input: BorderVertexOutput) -> @location(0) vec4<f32> {
         }
     }
     let signed_distance_px = select(distance, -distance, inside) * pixels_per_unit;
-    let outer = clamp(border.spread_px + 0.5 - signed_distance_px, 0.0, 1.0);
+    return clamp(border.spread_px + 0.5 - signed_distance_px, 0.0, 1.0);
+}
+
+@fragment
+fn fs_border(input: BorderVertexOutput) -> @location(0) vec4<f32> {
+    let outer = border_outer_coverage(input);
     let web = (params.flags & 2u) != 0u;
     let ring_rgb = select(border.color.rgb, pow(border.color.rgb, vec3<f32>(2.2)), web);
 

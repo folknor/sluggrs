@@ -64,5 +64,12 @@ fonts = [
     "examples/fonts/InterVariable.ttf",
 ]
 
+[[sluggrs.snapshot]]
+id = "blur"
+description = "Blurred shadows: sigma sweep, large sigma on small type, centred glow, kerning and counters, and a blurred shadow behind a hard one"
+fonts = [
+    "examples/fonts/InterVariable.ttf",
+]
+
 [test]
 debug = true

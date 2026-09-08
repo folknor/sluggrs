@@ -105,7 +105,7 @@ impl TestHarness {
         buffer.set_text(text, &Attrs::new(), Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
-        let encoder = self
+        let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
@@ -127,7 +127,7 @@ impl TestHarness {
         self.renderer.prepare(
             &self.device,
             &self.queue,
-            &encoder,
+            &mut encoder,
             &mut self.font_system,
             &mut self.atlas,
             &self.viewport,
@@ -216,7 +216,7 @@ fn prepare_rejects_different_atlas_than_constructor() {
     let mut buffer = Buffer::new(&mut h.font_system, Metrics::new(24.0, 30.0));
     buffer.set_text("paired vector text", &Attrs::new(), Shaping::Advanced, None);
     buffer.shape_until_scroll(&mut h.font_system, false);
-    let encoder = h
+    let mut encoder = h
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     let text_area = TextArea {
@@ -238,7 +238,7 @@ fn prepare_rejects_different_atlas_than_constructor() {
         h.renderer.prepare(
             &h.device,
             &h.queue,
-            &encoder,
+            &mut encoder,
             &mut h.font_system,
             &mut atlas_b,
             &h.viewport,

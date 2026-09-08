@@ -15,8 +15,11 @@ Generalize text borders into ordered text decorations: outline-only
   ring and the fill from one fragment as a disjoint partition, with the
   covered glyphs withheld from the normal pipeline and draw runs that
   preserve mono/COLR order.
-- TODO: blurred shadows - mask render plus separable blur, which needs
-  `prepare` to take `&mut CommandEncoder`.
+- DONE: blurred shadows. `TextDecoration::blur` above zero routes the
+  decoration through a mask render, a separable Gaussian, and a tinted
+  composite. `prepare` now takes `&mut CommandEncoder` and CALLERS MUST
+  SUBMIT IT - preparing into one encoder and rendering into another
+  silently drops every blur pass.
 - TODO: `repos/iced` constructs `TextArea` without the decorations field
   and has not compiled against sluggrs HEAD since the border feature
   landed. It needs `decorations: &[]`.

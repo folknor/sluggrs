@@ -211,6 +211,7 @@ fn scene(id: &str) -> Option<Vec<Block>> {
                         color: gold,
                         spread: 2.0,
                         offset: [3.0, 3.0],
+                        blur: 0.0,
                         mode: DecorationMode::Solid,
                     }]),
                 // First entry paints on top, like CSS text-shadow: gold over
@@ -289,6 +290,43 @@ fn scene(id: &str) -> Option<Vec<Block>> {
                     .weight(Weight::BOLD)
                     .color(clear)
                     .decorate(vec![TextDecoration::outline(gold, 2.0)]),
+            ])
+        }
+        // Blurred shadows. Unlike every other decoration these are a
+        // convolution of the whole area mask, so touching glyphs blur into
+        // one another and counters haze shut.
+        "blur" => {
+            let crimson = Color::rgb(196, 48, 64);
+            let cyan = Color::rgb(102, 217, 230);
+            let gold = Color::rgb(242, 199, 51);
+            Some(vec![
+                Block::new(inter, 48.0, "blur 2, offset (3, 3)")
+                    .weight(Weight::BOLD)
+                    .decorate(vec![TextDecoration::blurred_shadow(crimson, 3.0, 3.0, 2.0)]),
+                Block::new(inter, 48.0, "blur 6, offset (4, 4)")
+                    .weight(Weight::BOLD)
+                    .decorate(vec![TextDecoration::blurred_shadow(crimson, 4.0, 4.0, 6.0)]),
+                // A large sigma on small type is where an SDF feather looks
+                // most obviously wrong: a real blur becomes a soft mass.
+                Block::new(inter, 18.0, "blur 8 on small type")
+                    .decorate(vec![TextDecoration::blurred_shadow(cyan, 0.0, 0.0, 8.0)]),
+                // Zero offset: a glow centred on the glyph.
+                Block::new(inter, 56.0, "centred glow")
+                    .weight(Weight::BOLD)
+                    .decorate(vec![TextDecoration::blurred_shadow(gold, 0.0, 0.0, 5.0)]),
+                // Tight kerning and counters: the cases that separate a
+                // convolution from a distance falloff.
+                Block::new(inter, 40.0, "aeob88@@ lll rn rn")
+                    .weight(Weight::BOLD)
+                    .decorate(vec![TextDecoration::blurred_shadow(cyan, 0.0, 0.0, 3.0)]),
+                // A blurred shadow behind a hard one: both kinds in one list.
+                Block::new(inter, 44.0, "blurred behind hard")
+                    .weight(Weight::BOLD)
+                    .decorate(vec![
+                        TextDecoration::shadow(gold, 2.0, 2.0),
+                        TextDecoration::blurred_shadow(crimson, 8.0, 8.0, 4.0),
+                    ]),
+                Block::new(inter, 40.0, "no shadow").weight(Weight::BOLD),
             ])
         }
         _ => None,
@@ -426,12 +464,13 @@ fn main() {
         .collect();
 
     let mut swash_cache = SwashCache::new();
-    let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    let mut encoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     renderer
         .prepare(
             &device,
             &queue,
-            &encoder,
+            &mut encoder,
             &mut font_system,
             &mut atlas,
             &viewport,
@@ -450,8 +489,9 @@ fn main() {
         mapped_at_creation: false,
     });
 
-    let mut encoder =
-        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    // Reuse the encoder prepare() wrote into: it now carries the mask and
+    // blur passes for any filtered decoration, and dropping it would discard
+    // them, leaving every blurred shadow empty.
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("snapshot pass"),

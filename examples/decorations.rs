@@ -266,6 +266,7 @@ fn build_lines(font_system: &mut FontSystem, sf: f32) -> Vec<TextLine> {
             color: navy,
             spread: 2.0,
             offset: [3.0, 3.0],
+            blur: 0.0,
             mode: DecorationMode::Solid,
         }]
     );
@@ -430,10 +431,13 @@ fn render(state: &mut RenderState) {
         })
         .collect();
 
-    let encoder = state
+    // One encoder for both phases: prepare() encodes the mask and blur passes
+    // for filtered decorations, so a separate render encoder would leave that
+    // work unsubmitted and every blurred shadow empty.
+    let mut encoder = state
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("prepare encoder"),
+            label: Some("sluggrs encoder"),
         });
 
     state
@@ -441,7 +445,7 @@ fn render(state: &mut RenderState) {
         .prepare(
             &state.device,
             &state.queue,
-            &encoder,
+            &mut encoder,
             &mut state.font_system,
             &mut state.atlas,
             &state.viewport,
@@ -449,12 +453,6 @@ fn render(state: &mut RenderState) {
             &mut state.swash_cache,
         )
         .expect("prepare failed");
-
-    let mut encoder = state
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("render encoder"),
-        });
 
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

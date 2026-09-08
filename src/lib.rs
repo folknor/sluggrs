@@ -15,6 +15,7 @@ pub mod viewport;
 // may change.
 pub mod band;
 pub(crate) mod blob_cache;
+pub(crate) mod blur;
 pub mod border;
 pub mod glyph_cache;
 pub mod outline;
@@ -43,6 +44,8 @@ pub const SIMPLE_SHADER_WGSL: &str = include_str!("simple_shader.wgsl");
 /// Normal shader assembled from its source fragments. Kept separate from the
 /// border module so the normal GPU path remains byte-for-byte stable.
 pub const ASSEMBLED_SIMPLE_SHADER_WGSL: &str = concat!(include_str!("simple_shader.wgsl"));
+pub(crate) const BLUR_SHADER_WGSL: &str = include_str!("blur_shader.wgsl");
+pub(crate) const SHADOW_SHADER_WGSL: &str = include_str!("shadow_shader.wgsl");
 pub(crate) const BORDER_SHADER_WGSL: &str = concat!(
     include_str!("simple_shader.wgsl"),
     "\n",

@@ -285,7 +285,7 @@ impl RenderHarness {
         buffer.set_text(text, &Attrs::new(), Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
-        let encoder = self
+        let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
@@ -307,7 +307,7 @@ impl RenderHarness {
         self.renderer.prepare(
             &self.device,
             &self.queue,
-            &encoder,
+            &mut encoder,
             &mut self.font_system,
             &mut self.atlas,
             &self.viewport,
