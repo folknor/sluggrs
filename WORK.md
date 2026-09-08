@@ -11,8 +11,10 @@ Generalize text borders into ordered text decorations: outline-only
   `decorations: &[TextDecoration { color, spread, offset }]`; all of an
   area's decorations share one instance range with a per-draw uniform;
   order is back-to-front like CSS; culling uses directional extents.
-- IN PROGRESS: outline-only (hollow) text - the combined ring+fill
-  fragment. Design settled below.
+- DONE: outline-only (hollow) text. `DecorationMode::Ring` emits the
+  ring and the fill from one fragment as a disjoint partition, with the
+  covered glyphs withheld from the normal pipeline and draw runs that
+  preserve mono/COLR order.
 - TODO: blurred shadows - mask render plus separable blur, which needs
   `prepare` to take `&mut CommandEncoder`.
 - TODO: `repos/iced` constructs `TextArea` without the decorations field

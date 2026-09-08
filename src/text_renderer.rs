@@ -2,7 +2,9 @@ use crate::GlyphInstance;
 use crate::glyph_cache::GlyphKey;
 use crate::raster_text::{NonVectorGlyph, RasterVertex};
 use crate::text_atlas::TextAtlas;
-use crate::types::{DecorationExtents, PhysicalDecoration, PrepareError, RenderError, TextArea};
+use crate::types::{
+    DecorationExtents, DecorationMode, PhysicalDecoration, PrepareError, RenderError, TextArea,
+};
 use crate::viewport::Viewport;
 
 use rustc_hash::FxHashMap;
@@ -44,6 +46,12 @@ struct CachedTextArea {
     decorations: Vec<PhysicalDecoration>,
     /// Culling envelope the cached candidate set was selected against.
     extents: DecorationExtents,
+    /// Per normal instance: whether a decoration covers it, i.e. whether it
+    /// is a monochrome vector glyph. Parallel to `instances`, in glyph order.
+    /// A Ring draw supplies the fill for exactly these, so they must then be
+    /// withheld from the normal pipeline - and the ones NOT covered (COLRv0
+    /// layers, COLRv1) must keep their position relative to them.
+    decorated: Vec<bool>,
     atlas_generation: u32,
     instances: Vec<GlyphInstance>,
     border_instances: Vec<GlyphInstance>,
@@ -62,8 +70,23 @@ struct CachedTextArea {
 struct BorderUniform {
     color: [f32; 4],
     spread: f32,
-    _pad0: f32,
+    /// Matches `MODE_RING` in the border shader: 0 Solid, 1 Ring.
+    mode: u32,
     offset: [f32; 2],
+}
+
+impl BorderUniform {
+    fn of(decoration: &PhysicalDecoration) -> Self {
+        Self {
+            color: decoration.color,
+            spread: decoration.spread,
+            mode: match decoration.mode {
+                DecorationMode::Solid => 0,
+                DecorationMode::Ring => 1,
+            },
+            offset: decoration.offset,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -83,6 +106,36 @@ struct OrderedDraw {
     range: std::ops::Range<u32>,
     mode: DrawMode,
     uniform_offset: u32,
+}
+
+/// Split an area into draw runs that preserve glyph order.
+///
+/// `decorated[i]` says whether normal instance `i` is covered by the Ring
+/// draw. Emitting all covered instances first and all uncovered ones after
+/// would reorder them, which is observable wherever quads overlap - combining
+/// marks, negative letter spacing, overhanging bounds, or merely overlapping
+/// antialiasing fringes - and can change depth/stencil results. So adjacent
+/// instances of the same kind coalesce into a run and the runs stay in order.
+///
+/// Yields `(decorated, normal_range, border_range)`, where `border_range`
+/// indexes the decoration stream (the covered subset, same glyph order).
+fn decoration_runs(decorated: &[bool]) -> Vec<(bool, std::ops::Range<u32>, std::ops::Range<u32>)> {
+    let mut runs = Vec::new();
+    let mut index = 0usize;
+    let mut covered_seen = 0u32;
+    while index < decorated.len() {
+        let kind = decorated[index];
+        let start = index;
+        let border_start = covered_seen;
+        while index < decorated.len() && decorated[index] == kind {
+            if kind {
+                covered_seen += 1;
+            }
+            index += 1;
+        }
+        runs.push((kind, start as u32..index as u32, border_start..covered_seen));
+    }
+    runs
 }
 
 /// Antialiasing allowance the border shader adds to every dilation, in
@@ -557,6 +610,16 @@ impl TextRenderer {
             let normal_start = self.instances.len() as u32;
             let border_start = self.border_instances.len() as u32;
             let decorations = plan.decorations();
+            // A Ring, if present, is the FIRST entry (validation enforces it),
+            // so it is encoded last among decorations and paints on top of
+            // them - and it also carries the fill for the glyphs it covers.
+            let ring = decorations
+                .first()
+                .filter(|d| d.mode == DecorationMode::Ring)
+                .copied();
+            // Only a ring needs the per-instance coverage flags, to split the
+            // area into order-preserving runs.
+            let mut decorated_for_runs: Vec<bool> = Vec::new();
             match plan {
                 AreaPlan::HitDirect { cache_key, .. } => {
                     let cached = self
@@ -586,6 +649,9 @@ impl TextRenderer {
                         .extend_from_slice(&cached.border_instances);
                     non_vector_collector.extend_from_slice(&cached.non_vector_glyphs);
                     cached.decorations = decorations.to_vec();
+                    if ring.is_some() {
+                        decorated_for_runs = cached.decorated.clone();
+                    }
                 }
                 AreaPlan::ReCull {
                     cache_key,
@@ -602,8 +668,9 @@ impl TextRenderer {
                         .text_area_cache
                         .get_mut(cache_key)
                         .expect("re-cull cache entry exists");
-                    let (instances, complete) = re_cull_vector_instances(
+                    let (instances, decorated, complete) = re_cull_vector_instances(
                         &cached.instances,
+                        &cached.decorated,
                         cached.complete,
                         *dx,
                         *dy,
@@ -637,11 +704,16 @@ impl TextRenderer {
                     cached.decorations = decorations.to_vec();
                     cached.extents = *extents;
                     cached.instances = instances;
+                    if ring.is_some() {
+                        decorated_for_runs = decorated.clone();
+                    }
+                    cached.decorated = decorated;
                     cached.border_instances = border_instances;
                     cached.complete = complete;
                 }
                 AreaPlan::Miss(area) => {
                     let mut area_instances: Vec<GlyphInstance> = Vec::new();
+                    let mut area_decorated: Vec<bool> = Vec::new();
                     let mut area_non_vector: Vec<NonVectorGlyph> = Vec::new();
                     let mut area_border_instances: Vec<GlyphInstance> = Vec::new();
                     let mut area_keys: Vec<GlyphKey> = Vec::new();
@@ -714,6 +786,8 @@ impl TextRenderer {
                                         depth: metadata_to_depth(glyph.metadata),
                                         ppem: glyph.font_size * text_area.scale,
                                     });
+                                    // COLRv1 is never decorated.
+                                    area_decorated.push(false);
                                 } else {
                                     complete = false;
                                 }
@@ -773,6 +847,8 @@ impl TextRenderer {
                                         depth,
                                         ppem,
                                     });
+                                    // COLRv0 layers are never decorated.
+                                    area_decorated.push(false);
                                 }
                             } else {
                                 complete = false;
@@ -812,6 +888,10 @@ impl TextRenderer {
                             ppem: glyph.font_size * text_area.scale,
                         };
                         area_instances.push(fill_instance);
+                        // Parallel to the decoration stream below: true here
+                        // means a decoration instance is emitted for this
+                        // glyph, so a Ring draw would own its fill.
+                        area_decorated.push(!decorations.is_empty());
                         if !decorations.is_empty() {
                             area_border_instances.push(GlyphInstance {
                                 glyph_offset: atlas
@@ -842,6 +922,12 @@ impl TextRenderer {
                             extents: area.extents,
                             atlas_generation: atlas_gen,
                             instances: area_instances,
+                            decorated: {
+                                if ring.is_some() {
+                                    decorated_for_runs = area_decorated.clone();
+                                }
+                                area_decorated
+                            },
                             border_instances: area_border_instances,
                             distinct_keys: area_keys,
                             non_vector_glyphs: area_non_vector,
@@ -862,14 +948,13 @@ impl TextRenderer {
             // text-shadow: the first entry must paint on top, so it is
             // encoded last.
             if border_end > border_start {
-                for decoration in decorations.iter().rev() {
+                // Skip index 0 when it is the ring: it is emitted below,
+                // interleaved with the COLR runs, so mono and COLR glyphs
+                // keep their relative order at the fill stage.
+                let solid_count = decorations.len() - usize::from(ring.is_some());
+                for decoration in decorations[decorations.len() - solid_count..].iter().rev() {
                     let uniform_offset = border_uniforms.len() as u32;
-                    border_uniforms.push(BorderUniform {
-                        color: decoration.color,
-                        spread: decoration.spread,
-                        _pad0: 0.0,
-                        offset: decoration.offset,
-                    });
+                    border_uniforms.push(BorderUniform::of(decoration));
                     self.draws.push(OrderedDraw {
                         stream: DrawStream::Border,
                         range: border_start..border_end,
@@ -878,13 +963,48 @@ impl TextRenderer {
                     });
                 }
             }
-            if bordered_frame && normal_end > normal_start {
-                self.draws.push(OrderedDraw {
-                    stream: DrawStream::Normal,
-                    range: normal_start..normal_end,
-                    mode: DrawMode::Fill,
-                    uniform_offset: 0,
-                });
+
+            match ring {
+                // No ring: the fill draws as one range, exactly as before.
+                None => {
+                    if bordered_frame && normal_end > normal_start {
+                        self.draws.push(OrderedDraw {
+                            stream: DrawStream::Normal,
+                            range: normal_start..normal_end,
+                            mode: DrawMode::Fill,
+                            uniform_offset: 0,
+                        });
+                    }
+                }
+                // A ring owns the fill of every glyph it covers, so those
+                // instances must not also run the normal pipeline - a
+                // zero-alpha fill would still write depth and stencil. The
+                // uncovered instances (COLRv0 layers, COLRv1) still draw
+                // normally, and the runs interleave to preserve glyph order.
+                Some(ring) => {
+                    let uniform_offset = border_uniforms.len() as u32;
+                    border_uniforms.push(BorderUniform::of(&ring));
+                    for (covered, normal_range, ring_range) in decoration_runs(&decorated_for_runs)
+                    {
+                        if covered {
+                            self.draws.push(OrderedDraw {
+                                stream: DrawStream::Border,
+                                range: border_start + ring_range.start
+                                    ..border_start + ring_range.end,
+                                mode: DrawMode::Underlay,
+                                uniform_offset,
+                            });
+                        } else {
+                            self.draws.push(OrderedDraw {
+                                stream: DrawStream::Normal,
+                                range: normal_start + normal_range.start
+                                    ..normal_start + normal_range.end,
+                                mode: DrawMode::Fill,
+                                uniform_offset: 0,
+                            });
+                        }
+                    }
+                }
             }
         }
 
@@ -1256,28 +1376,35 @@ fn classify_placement(
     PlacementClass::Miss
 }
 
+/// Re-cull cached instances after a placement change. `decorated` is filtered
+/// in lockstep so it stays parallel to the surviving instances - the run
+/// splitter depends on that correspondence.
+#[allow(clippy::too_many_arguments)]
 fn re_cull_vector_instances(
     instances: &[GlyphInstance],
+    decorated: &[bool],
     complete: bool,
     dx: f32,
     dy: f32,
     scroll: [f32; 2],
     bounds: [i32; 4],
     extents: DecorationExtents,
-) -> (Vec<GlyphInstance>, bool) {
+) -> (Vec<GlyphInstance>, Vec<bool>, bool) {
     let mut visible = Vec::with_capacity(instances.len());
+    let mut visible_decorated = Vec::with_capacity(instances.len());
     let mut complete = complete;
-    for instance in instances {
+    for (index, instance) in instances.iter().enumerate() {
         let mut adjusted = *instance;
         adjusted.screen_rect[0] += dx;
         adjusted.screen_rect[1] += dy;
         if vector_rect_visible(adjusted.screen_rect, scroll, bounds, extents) {
             visible.push(adjusted);
+            visible_decorated.push(decorated.get(index).copied().unwrap_or(false));
         } else {
             complete = false;
         }
     }
-    (visible, complete)
+    (visible, visible_decorated, complete)
 }
 
 /// Convert a cosmic_text Color to normalized [f32; 4].
@@ -1475,8 +1602,9 @@ mod tests {
             depth: 0.0,
             ppem: 0.0,
         };
-        let (visible, complete) = re_cull_vector_instances(
+        let (visible, decorated, complete) = re_cull_vector_instances(
             &[instance],
+            &[true],
             true,
             1.5,
             -0.5,
@@ -1486,9 +1614,11 @@ mod tests {
         );
         assert!(complete);
         assert_eq!(visible[0].screen_rect[..2], [3.5, 1.5]);
+        assert_eq!(decorated, vec![true], "flags follow their instances");
 
-        let (visible, complete) = re_cull_vector_instances(
+        let (visible, decorated, complete) = re_cull_vector_instances(
             &[instance],
+            &[true],
             true,
             -10.0,
             0.0,
@@ -1497,6 +1627,73 @@ mod tests {
             no_extents(),
         );
         assert!(visible.is_empty());
+        assert!(decorated.is_empty(), "a culled instance drops its flag");
         assert!(!complete);
+    }
+
+    /// The flags must stay parallel to the surviving instances, or the run
+    /// splitter pairs a COLR glyph with a ring range.
+    #[test]
+    fn re_cull_keeps_flags_aligned_when_some_instances_die() {
+        let at = |x: f32| GlyphInstance {
+            screen_rect: [x, 2.0, 2.0, 2.0],
+            color: [0.0; 4],
+            glyph_offset: 0,
+            cmd_texel_count: 0,
+            depth: 0.0,
+            ppem: 0.0,
+        };
+        // The middle instance is far off to the left and will be culled.
+        let instances = [at(2.0), at(-500.0), at(4.0)];
+        let (visible, decorated, complete) = re_cull_vector_instances(
+            &instances,
+            &[true, false, true],
+            true,
+            0.0,
+            0.0,
+            [0.0, 0.0],
+            [0, 0, 10, 10],
+            no_extents(),
+        );
+        assert_eq!(visible.len(), 2);
+        assert_eq!(decorated, vec![true, true]);
+        assert!(!complete);
+    }
+
+    /// Runs must alternate in glyph order rather than grouping all covered
+    /// instances together, and the ring ranges must index the decoration
+    /// stream, which holds only the covered subset.
+    #[test]
+    fn decoration_runs_preserve_glyph_order() {
+        let runs = decoration_runs(&[true, true, false, true, false, false]);
+        let shape: Vec<(bool, u32, u32, u32, u32)> = runs
+            .iter()
+            .map(|(covered, normal, ring)| {
+                (*covered, normal.start, normal.end, ring.start, ring.end)
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                // Two covered glyphs: decoration instances 0..2.
+                (true, 0, 2, 0, 2),
+                // One uncovered glyph, drawn between them.
+                (false, 2, 3, 2, 2),
+                // One more covered glyph: decoration instance 2.
+                (true, 3, 4, 2, 3),
+                (false, 4, 6, 3, 3),
+            ]
+        );
+    }
+
+    #[test]
+    fn decoration_runs_handle_uniform_and_empty_input() {
+        assert!(decoration_runs(&[]).is_empty());
+        let all = decoration_runs(&[true, true, true]);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].2, 0..3);
+        let none = decoration_runs(&[false, false]);
+        assert_eq!(none.len(), 1);
+        assert_eq!(none[0].2, 0..0);
     }
 }

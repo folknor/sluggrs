@@ -234,6 +234,63 @@ fn scene(id: &str) -> Option<Vec<Block>> {
                 Block::new(inter, 36.0, "no decorations").weight(Weight::BOLD),
             ])
         }
+        // Ring mode. A transparent fill under a Solid decoration would be a
+        // solid fat glyph; under a Ring it is hollow, because the ring and
+        // the fill are emitted as disjoint regions by one fragment.
+        "ring" => {
+            let gold = Color::rgb(242, 199, 51);
+            let cyan = Color::rgb(102, 217, 230);
+            let crimson = Color::rgb(196, 48, 64);
+            let clear = Color::rgba(0, 0, 0, 0);
+            let translucent = Color::rgba(255, 255, 255, 90);
+            Some(vec![
+                // The headline case: nothing painted where the fill is.
+                Block::new(inter, 48.0, "hollow: ring over a clear fill")
+                    .weight(Weight::BOLD)
+                    .color(clear)
+                    .decorate(vec![TextDecoration::ring(gold, 2.0)]),
+                Block::new(inter, 48.0, "hollow, thin 1px ring")
+                    .weight(Weight::BOLD)
+                    .color(clear)
+                    .decorate(vec![TextDecoration::ring(cyan, 1.0)]),
+                // Ring with a visible fill: the two regions are disjoint, so
+                // the seam between them must not darken or leave a gap.
+                Block::new(inter, 48.0, "ring plus an opaque fill")
+                    .weight(Weight::BOLD)
+                    .decorate(vec![TextDecoration::ring(crimson, 2.5)]),
+                // Translucent fill is the case a separate fill draw cannot
+                // express at all: the backdrop shows through the counter
+                // while the ring stays solid.
+                Block::new(inter, 48.0, "ring plus a translucent fill")
+                    .weight(Weight::BOLD)
+                    .color(translucent)
+                    .decorate(vec![TextDecoration::ring(gold, 2.5)]),
+                // Ring above a shadow: the ring must be first in the list,
+                // and the shadow must stay behind it.
+                Block::new(inter, 48.0, "ring over a shadow")
+                    .weight(Weight::BOLD)
+                    .color(clear)
+                    .decorate(vec![
+                        TextDecoration::ring(cyan, 2.0),
+                        TextDecoration::shadow(crimson, 6.0, 6.0),
+                    ]),
+                // Small sizes exercise the coverage policy the combined
+                // fragment has to reproduce: extra sampling below 16 ppem and
+                // brightness darkening below 48 ppem.
+                Block::new(inter, 12.0, PANGRAM)
+                    .color(clear)
+                    .decorate(vec![TextDecoration::ring(gold, 1.0)]),
+                Block::new(inter, 24.0, "ring at 24px")
+                    .color(clear)
+                    .decorate(vec![TextDecoration::ring(gold, 1.5)]),
+                // Solid at the same width and a clear fill, for contrast:
+                // this one SHOULD be a solid slab, not hollow.
+                Block::new(inter, 48.0, "solid, clear fill: a slab")
+                    .weight(Weight::BOLD)
+                    .color(clear)
+                    .decorate(vec![TextDecoration::outline(gold, 2.0)]),
+            ])
+        }
         _ => None,
     }
 }

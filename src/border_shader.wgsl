@@ -9,9 +9,13 @@
 struct BorderParams {
     color: vec4<f32>,
     spread_px: f32,
-    _pad0: f32,
+    // 0 = Solid (whole dilated glyph, fill drawn separately over it),
+    // 1 = Ring (band only, and THIS draw also emits the fill).
+    mode: u32,
     offset_px: vec2<f32>,
 }
+
+const MODE_RING: u32 = 1u;
 
 @group(2) @binding(0) var<uniform> border: BorderParams;
 
@@ -20,6 +24,12 @@ struct BorderVertexOutput {
     @location(0) texcoord: vec2<f32>,
     @location(1) @interpolate(flat) descriptor: u32,
     @location(2) @interpolate(flat) pixels_per_em: f32,
+    // Fill-side data, used only by Ring. Reaching the fill blob through the
+    // border descriptor's fill_offset lets one fragment evaluate the same
+    // coverage the normal pipeline would have produced for this fragment.
+    @location(3) @interpolate(flat) banding: vec4<f32>,
+    @location(4) @interpolate(flat) fill_glyph: vec4<i32>,
+    @location(5) @interpolate(flat) color: vec4<f32>,
 }
 
 @vertex
@@ -62,7 +72,63 @@ fn vs_border(instance: GlyphInstance, @builtin(vertex_index) vid: u32) -> Border
         + vec2<f32>(normal.x, -normal.y) * ems_per_pixel * dilation;
     output.descriptor = instance.glyph.x;
     output.pixels_per_em = instance.depth_ppem.y;
+
+    // The screen-to-em map above is affine and uses the same ems_per_pixel
+    // denominator as vs_main, so `texcoord` IS the fill coordinate for this
+    // fragment - no separate fill varying, and matching derivatives. That
+    // holds only because a Ring has no offset; a translated quad would move
+    // the fill with it.
+    output.banding = vec4<f32>(
+        bitcast<f32>(atlas[fill_raw + 4u]), bitcast<f32>(atlas[fill_raw + 5u]),
+        bitcast<f32>(atlas[fill_raw + 6u]), bitcast<f32>(atlas[fill_raw + 7u]),
+    );
+    let fill_band_max = read_texel(fill_offset + GLYPH_HEADER_TEXELS - 1u).xy;
+    output.fill_glyph = vec4<i32>(
+        i32(fill_offset + GLYPH_HEADER_TEXELS),
+        fill_band_max.x,
+        fill_band_max.y,
+        0,
+    );
+    output.color = instance.color;
     return output;
+}
+
+/// The coverage the normal pipeline would produce for this fragment.
+///
+/// This must track fs_main exactly - the extra sampling below 16 ppem and the
+/// brightness-dependent darkening below 48 ppem included - or the ring's inner
+/// edge will not meet the fill it is emitted alongside.
+fn fill_coverage(input: BorderVertexOutput) -> f32 {
+    let render_coord = input.texcoord;
+    let ems_per_pixel = max(fwidth(render_coord), vec2<f32>(1.0 / 65536.0));
+    let pixels_per_em = 1.0 / ems_per_pixel;
+    let ppem = input.pixels_per_em;
+
+    let glyph_base = u32(input.fill_glyph.x);
+    var band_max = input.fill_glyph.yz;
+    band_max.y &= 0x00FF;
+
+    var coverage = render_single(
+        render_coord, pixels_per_em, input.banding, glyph_base, band_max);
+
+    if (params.flags & 1u) != 0u {
+        if ppem < 16.0 {
+            let d = ems_per_pixel * (1.0 / 3.0);
+            let msaa = 0.25 * (
+                render_single(render_coord + vec2<f32>(-d.x, -d.y), pixels_per_em, input.banding, glyph_base, band_max) +
+                render_single(render_coord + vec2<f32>( d.x, -d.y), pixels_per_em, input.banding, glyph_base, band_max) +
+                render_single(render_coord + vec2<f32>(-d.x,  d.y), pixels_per_em, input.banding, glyph_base, band_max) +
+                render_single(render_coord + vec2<f32>( d.x,  d.y), pixels_per_em, input.banding, glyph_base, band_max)
+            );
+            coverage = mix(coverage, msaa, smoothstep(16.0, 8.0, ppem));
+        }
+        // Brightness comes from the UNCONVERTED fill RGB, as in fs_main.
+        if ppem < 48.0 {
+            let brightness = dot(input.color.rgb, vec3<f32>(0.299, 0.587, 0.114));
+            coverage = darken(coverage, brightness, ppem);
+        }
+    }
+    return coverage;
 }
 
 fn border_curve(base: u32, index: u32) -> mat3x2<f32> {
@@ -209,8 +275,27 @@ fn fs_border(input: BorderVertexOutput) -> @location(0) vec4<f32> {
         }
     }
     let signed_distance_px = select(distance, -distance, inside) * pixels_per_unit;
-    let coverage = clamp(border.spread_px + 0.5 - signed_distance_px, 0.0, 1.0);
-    let alpha = border.color.a * coverage;
-    let rgb = select(border.color.rgb, pow(border.color.rgb, vec3<f32>(2.2)), (params.flags & 2u) != 0u);
-    return vec4<f32>(rgb * alpha, alpha);
+    let outer = clamp(border.spread_px + 0.5 - signed_distance_px, 0.0, 1.0);
+    let web = (params.flags & 2u) != 0u;
+    let ring_rgb = select(border.color.rgb, pow(border.color.rgb, vec3<f32>(2.2)), web);
+
+    if border.mode != MODE_RING {
+        let alpha = border.color.a * outer;
+        return vec4<f32>(ring_rgb * alpha, alpha);
+    }
+
+    // Ring owns the fill for this glyph: emit both as DISJOINT regions in one
+    // premultiplied result. Compositing a ring under a separate fill draw
+    // cannot reconstruct the union - source-over would give o - f(o-f) - so
+    // the two contributions are summed here instead of blended.
+    let f = fill_coverage(input);
+    // f <= outer is not guaranteed at small spread with stem darkening, and a
+    // negative band would subtract light. Widening the outer edge is the
+    // conservative resolution.
+    let effective_outer = max(outer, f);
+    let fill_rgb = select(input.color.rgb, pow(input.color.rgb, vec3<f32>(2.2)), web);
+    let fill_alpha = input.color.a * f;
+    let ring_alpha = border.color.a * (effective_outer - f);
+    let alpha = fill_alpha + ring_alpha;
+    return vec4<f32>(fill_rgb * fill_alpha + ring_rgb * ring_alpha, alpha);
 }

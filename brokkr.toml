@@ -57,5 +57,12 @@ fonts = [
     "examples/fonts/InterVariable.ttf",
 ]
 
+[[sluggrs.snapshot]]
+id = "ring"
+description = "Ring mode: hollow text, ring with opaque and translucent fills, ring over a shadow, and a Solid slab for contrast"
+fonts = [
+    "examples/fonts/InterVariable.ttf",
+]
+
 [test]
 debug = true
