@@ -148,10 +148,12 @@ pub fn render_coverage(
         contents: bytemuck::bytes_of(&GlyphInstance {
             screen_rect: [0.0, 0.0, 1.0, 1.0],
             color: [1.0; 4],
+            border_color: [0.1; 4],
             glyph_offset: 0,
             cmd_texel_count: 0,
             depth: 0.0,
             ppem: 200.0,
+            border_width: 2.0
         }),
         usage: wgpu::BufferUsages::VERTEX,
     });

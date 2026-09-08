@@ -119,6 +119,8 @@ fn make_areas(buffer: &Buffer, bounds: TextBounds) -> [TextArea<'_>; OCCURRENCES
         scale: 1.0,
         bounds,
         default_color: Color::rgb(255, 255, 255),
+        border_color: Color::rgb(0, 10, 0),
+        border_width: 2.0
     })
 }
 

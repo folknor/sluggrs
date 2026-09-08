@@ -6,7 +6,7 @@
 //!
 //!     cargo test --test atlas_lifecycle_test -- --ignored --nocapture
 
-use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
+use cosmic_text::{Attrs, Buffer, Color, FontSystem, Metrics, Shaping};
 use sluggrs::{
     Cache, ColorMode, RenderError, Resolution, SwashCache, TextArea, TextAtlas, TextBounds,
     TextRenderer, Viewport,
@@ -122,6 +122,8 @@ impl TestHarness {
                 bottom: 600,
             },
             default_color: cosmic_text::Color::rgb(0, 0, 0),
+            border_color: Color::rgb(0, 10, 0),
+            border_width: 2.0
         };
 
         self.renderer.prepare(
@@ -229,6 +231,8 @@ fn prepare_rejects_different_atlas_than_constructor() {
             bottom: 600,
         },
         default_color: cosmic_text::Color::rgb(0, 0, 0),
+        border_color: Color::rgb(0, 10, 0),
+        border_width: 2.0
     };
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

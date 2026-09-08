@@ -38,6 +38,8 @@ struct CachedTextArea {
     scale: f32,
     bounds: TextBounds,
     default_color: cosmic_text::Color,
+    border_color: cosmic_text::Color,
+    border_width: f32,
     atlas_generation: u32,
     instances: Vec<GlyphInstance>,
     distinct_keys: Vec<GlyphKey>,
@@ -232,6 +234,8 @@ impl TextRenderer {
                 && cached.scale == text_area.scale
                 && cached.bounds == text_area.bounds
                 && cached.default_color == text_area.default_color
+                && cached.border_color == text_area.border_color
+                && cached.border_width == text_area.border_width
                 && cached.atlas_generation == atlas_gen
             {
                 let glyphs_valid = cached
@@ -435,10 +439,12 @@ impl TextRenderer {
                                             Some(c) => color_to_f32(c),
                                             None => area.default_color,
                                         },
+                                        border_color: color_to_f32(text_area.border_color),
                                         glyph_offset: v1_entry.glyph_offset,
                                         cmd_texel_count: v1_entry.cmd_texel_count,
                                         depth: metadata_to_depth(glyph.metadata),
                                         ppem: glyph.font_size * text_area.scale,
+                                        border_width: text_area.border_width
                                     });
                                 } else {
                                     complete = false;
@@ -455,12 +461,9 @@ impl TextRenderer {
                                     Some(c) => color_to_f32(c),
                                     None => area.default_color,
                                 };
-                                let scale =
-                                    glyph.font_size * text_area.scale / color_entry.units_per_em;
-                                let glyph_x =
-                                    text_area.left + (glyph.x + glyph.x_offset) * text_area.scale;
-                                let glyph_y =
-                                    text_area.top + (wi.line_y + glyph.y_offset) * text_area.scale;
+                                let scale = glyph.font_size * text_area.scale / color_entry.units_per_em;
+                                let glyph_x = text_area.left + (glyph.x + glyph.x_offset) * text_area.scale;
+                                let glyph_y = text_area.top + (wi.line_y + glyph.y_offset) * text_area.scale;
                                 let depth = metadata_to_depth(glyph.metadata);
                                 let ppem = glyph.font_size * text_area.scale;
 
@@ -489,10 +492,12 @@ impl TextRenderer {
                                     area_instances.push(GlyphInstance {
                                         screen_rect,
                                         color,
+                                        border_color: color_to_f32(text_area.border_color),
                                         glyph_offset: layer.entry.glyph_offset,
                                         cmd_texel_count: 0,
                                         depth,
                                         ppem,
+                                        border_width: text_area.border_width
                                     });
                                 }
                             } else {
@@ -527,10 +532,12 @@ impl TextRenderer {
                         area_instances.push(GlyphInstance {
                             screen_rect,
                             color,
+                            border_color: color_to_f32(text_area.border_color),
                             glyph_offset: entry.glyph_offset,
                             cmd_texel_count: 0,
                             depth: metadata_to_depth(glyph.metadata),
                             ppem: glyph.font_size * text_area.scale,
+                            border_width: text_area.border_width
                         });
                     }
 
@@ -548,12 +555,14 @@ impl TextRenderer {
                             scale: text_area.scale,
                             bounds: text_area.bounds,
                             default_color: text_area.default_color,
+                            border_color: text_area.border_color,
+                            border_width: text_area.border_width,
                             atlas_generation: atlas_gen,
                             instances: area_instances,
                             distinct_keys: area_keys,
                             non_vector_glyphs: area_non_vector,
                             scroll,
-                            complete,
+                            complete
                         },
                     );
                 }
@@ -886,18 +895,18 @@ mod tests {
         let instance = GlyphInstance {
             screen_rect: [2.0, 2.0, 2.0, 2.0],
             color: [0.0; 4],
+            border_color: [0.0; 4],
             glyph_offset: 0,
             cmd_texel_count: 0,
             depth: 0.0,
             ppem: 0.0,
+            border_width: 0.0
         };
-        let (visible, complete) =
-            re_cull_vector_instances(&[instance], true, 1.5, -0.5, [0.0, 0.0], [0, 0, 10, 10]);
+        let (visible, complete) = re_cull_vector_instances(&[instance], true, 1.5, -0.5, [0.0, 0.0], [0, 0, 10, 10]);
         assert!(complete);
         assert_eq!(visible[0].screen_rect[..2], [3.5, 1.5]);
 
-        let (visible, complete) =
-            re_cull_vector_instances(&[instance], true, -10.0, 0.0, [0.0, 0.0], [0, 0, 10, 10]);
+        let (visible, complete) = re_cull_vector_instances(&[instance], true, -10.0, 0.0, [0.0, 0.0], [0, 0, 10, 10]);
         assert!(visible.is_empty());
         assert!(!complete);
     }

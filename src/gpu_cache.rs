@@ -46,36 +46,7 @@ impl Cache {
             source: ShaderSource::Wgsl(std::borrow::Cow::Borrowed(crate::SIMPLE_SHADER_WGSL)),
         });
 
-        let vertex_buffer_layout = wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<GlyphInstance>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &[
-                // screen_rect: vec4<f32>
-                wgpu::VertexAttribute {
-                    format: VertexFormat::Float32x4,
-                    offset: 0,
-                    shader_location: 0,
-                },
-                // color: vec4<f32>
-                wgpu::VertexAttribute {
-                    format: VertexFormat::Float32x4,
-                    offset: 16,
-                    shader_location: 1,
-                },
-                // glyph_offset, cmd_texel_count
-                wgpu::VertexAttribute {
-                    format: VertexFormat::Uint32x2,
-                    offset: 32,
-                    shader_location: 2,
-                },
-                // depth, ppem
-                wgpu::VertexAttribute {
-                    format: VertexFormat::Float32x2,
-                    offset: 40,
-                    shader_location: 3,
-                },
-            ],
-        };
+        let vertex_buffer_layout = GlyphInstance::layout();
 
         // Bind group 0: unified glyph storage buffer
         let atlas_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -176,8 +147,7 @@ impl Cache {
 
         let mut cache = pipelines.lock().expect("Write pipeline cache");
 
-        cache
-            .iter()
+        cache.iter()
             .find(|(fmt, ms, ds, _)| fmt == &format && ms == &multisample && ds == &depth_stencil)
             .map(|(_, _, _, p)| p.clone())
             .unwrap_or_else(|| {

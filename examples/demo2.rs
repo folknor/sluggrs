@@ -5,10 +5,9 @@ use sluggrs::{
     Cache, ColorMode, Resolution, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
 
-use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
+use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
 
 use std::sync::Arc;
-use wgpu::hal::DynQueue;
 use winit::{
     application::ApplicationHandler, event::WindowEvent, event_loop::EventLoop, window::Window,
 };
@@ -85,7 +84,7 @@ fn make_line(
     left: f32,
     top: f32,
     sf: f32,
-    default_color: cosmic_text::Color,
+    default_color: cosmic_text::Color
 ) -> TextLine {
     let metrics = Metrics::new(font_size * sf, font_size * sf * 1.2);
     let mut buffer = Buffer::new(font_system, metrics);
@@ -562,9 +561,7 @@ fn render(state: &mut RenderState) {
         }
     };
 
-    let view = frame
-        .texture
-        .create_view(&wgpu::TextureViewDescriptor::default());
+    let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
     // Update viewport for current zoom
     let vp_w = (state.config.width as f32 / state.zoom) as u32;
@@ -594,14 +591,11 @@ fn render(state: &mut RenderState) {
                 bottom: vp_h as i32,
             },
             default_color: line.default_color,
+            border_color: Color::rgba(0, 0, 5, 250),
+            border_width: 5.0
         })
         .collect();
 
-    let encoder = state
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("render encoder"),
-        });
 
     state.text_renderer.prepare(
             &state.device,

@@ -10,9 +10,9 @@
 
 use std::time::Instant;
 
-use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
+use cosmic_text::{Attrs, Buffer, Color, FontSystem, Metrics, Shaping, SwashCache};
 use sluggrs::{
-    Cache, ColorMode, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
+    Cache, ColorMode, Resolution, TextArea, TextAtlas, TextBounds, TextRenderer,
     Viewport,
 };
 
@@ -302,6 +302,8 @@ impl RenderHarness {
                 bottom: 1080,
             },
             default_color: cosmic_text::Color::rgb(255, 255, 255),
+            border_color: Color::rgb(0, 10, 0),
+            border_width: 2.0
         };
 
         self.renderer.prepare(

@@ -13,7 +13,7 @@ pub struct TextBounds {
     pub left: i32,
     pub top: i32,
     pub right: i32,
-    pub bottom: i32,
+    pub bottom: i32
 }
 
 impl Default for TextBounds {
@@ -35,7 +35,10 @@ pub struct TextArea<'a> {
     pub top: f32,
     pub scale: f32,
     pub bounds: TextBounds,
-    pub default_color: cosmic_text::Color,
+    pub default_color: cosmic_text::Color,    
+    
+    pub border_color: cosmic_text::Color,
+    pub border_width: f32
 }
 
 /// The color mode of the text atlas.
@@ -44,7 +47,7 @@ pub enum ColorMode {
     /// Accurate color management (sRGB texture for colored glyphs).
     Accurate,
     /// Web color management (linear RGB texture with sRGB colors).
-    Web,
+    Web
 }
 
 /// An error that occurred while preparing text for rendering.

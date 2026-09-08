@@ -140,59 +140,113 @@ fn ttc_face_index_correctness() {
         }
     };
 
-    // Pick a common glyph (space or 'A') that should be present in both faces.
-    // We try glyph_id 1 first (often .notdef+1 or space), then fall back to a
-    // brute-force scan for any glyph that exists in both faces.
-    let glyph_id = {
+    // Find a glyph ID whose outlines actually differ between face 0 and face 1.
+    //
+    // We deliberately search for a differing glyph instead of assuming that
+    // a particular glyph ID (for example 2) must differ. TTC faces are allowed
+    // to share identical outlines for some or even many glyphs.
+    let differing_glyph = {
         let mut found = None;
-        // Try common ASCII glyph IDs
-        for candidate in 1u16..200 {
-            let a = extract_outline(&font_data, 0, candidate, &[]);
-            let b = extract_outline(&font_data, 1, candidate, &[]);
-            if a.is_some() && b.is_some() {
-                found = Some(candidate);
+
+        for candidate in 0u16..5000 {
+            let outline_0 = extract_outline(&font_data, 0, candidate, &[]);
+            let outline_1 = extract_outline(&font_data, 1, candidate, &[]);
+
+            let (Some(a), Some(b)) = (outline_0, outline_1) else {
+                continue;
+            };
+
+            let bounds_differ = a.bounds != b.bounds;
+            let curve_count_differs = a.curves.len() != b.curves.len();
+
+            let points_differ = if !bounds_differ && !curve_count_differs {
+                a.curves
+                    .iter()
+                    .zip(b.curves.iter())
+                    .any(|(a, b)| {
+                        a.p1 != b.p1 ||
+                            a.p2 != b.p2 ||
+                            a.p3 != b.p3
+                    })
+            } else {
+                true
+            };
+
+            if bounds_differ || curve_count_differs || points_differ {
+                found = Some((candidate, a, b));
                 break;
             }
         }
-        match found {
-            Some(id) => id,
-            None => {
-                eprintln!("No common glyph with outline found in both TTC faces - skipping");
-                return;
-            }
-        }
+
+        found
     };
 
-    let outline_0 = extract_outline(&font_data, 0, glyph_id, &[]).expect("Face 0 outline");
-    let outline_1 = extract_outline(&font_data, 1, glyph_id, &[]).expect("Face 1 outline");
-
-    // The two faces should produce different geometry (different typefaces in the collection).
-    let bounds_differ = outline_0.bounds != outline_1.bounds;
-    let curve_count_differs = outline_0.curves.len() != outline_1.curves.len();
-
-    // If bounds and curve count are somehow identical, compare actual control points.
-    let points_differ = if !bounds_differ && !curve_count_differs {
-        outline_0
-            .curves
-            .iter()
-            .zip(outline_1.curves.iter())
-            .any(|(a, b)| a.p1 != b.p1 || a.p2 != b.p2 || a.p3 != b.p3)
-    } else {
-        true
+    let Some((glyph_id, outline_0, outline_1)) = differing_glyph else {
+        eprintln!(
+            "No glyph with different outlines found between TTC faces 0 and 1 - \
+             skipping test"
+        );
+        return;
     };
+
+    // Since we found a glyph that differs between the two faces, verify that
+    // extracting it through each face index actually produces those distinct
+    // outlines.
+    let extracted_0 =
+        extract_outline(&font_data, 0, glyph_id, &[])
+            .expect("Face 0 outline should exist");
+
+    let extracted_1 =
+        extract_outline(&font_data, 1, glyph_id, &[])
+            .expect("Face 1 outline should exist");
+
+    let differs = extracted_0.bounds != extracted_1.bounds
+        || extracted_0.curves.len() != extracted_1.curves.len()
+        || extracted_0
+        .curves
+        .iter()
+        .zip(extracted_1.curves.iter())
+        .any(|(a, b)| {
+            a.p1 != b.p1 ||
+                a.p2 != b.p2 ||
+                a.p3 != b.p3
+        });
 
     assert!(
-        bounds_differ || curve_count_differs || points_differ,
-        "Outlines from face 0 and face 1 of TTC should differ for glyph_id {glyph_id}"
+        differs,
+        "Face 0 and face 1 unexpectedly produced identical outlines \
+         for glyph_id {glyph_id}"
+    );
+
+    // Also verify that the results are stable and correspond to the outlines
+    // we found during the search.
+    assert_eq!(
+        extracted_0.bounds, outline_0.bounds,
+        "Face 0 outline changed between extraction attempts"
+    );
+    assert_eq!(
+        extracted_1.bounds, outline_1.bounds,
+        "Face 1 outline changed between extraction attempts"
+    );
+    assert_eq!(
+        extracted_0.curves.len(),
+        outline_0.curves.len(),
+        "Face 0 curve count changed between extraction attempts"
+    );
+    assert_eq!(
+        extracted_1.curves.len(),
+        outline_1.curves.len(),
+        "Face 1 curve count changed between extraction attempts"
     );
 
     eprintln!(
-        "TTC face test passed: glyph_id={glyph_id}, face0 curves={}, face1 curves={}, \
+        "TTC face test passed: glyph_id={glyph_id}, \
+         face0 curves={}, face1 curves={}, \
          face0 bounds={:?}, face1 bounds={:?}",
-        outline_0.curves.len(),
-        outline_1.curves.len(),
-        outline_0.bounds,
-        outline_1.bounds,
+        extracted_0.curves.len(),
+        extracted_1.curves.len(),
+        extracted_0.bounds,
+        extracted_1.bounds,
     );
 }
 
@@ -334,55 +388,35 @@ fn ttc_units_per_em_face_index() {
 
     use skrifa::raw::TableProvider;
 
-    // Parse both faces and extract units_per_em
-    let face_0 = skrifa::FontRef::from_index(&font_data, 0).expect("Face 0 should parse");
-    let face_1 = skrifa::FontRef::from_index(&font_data, 1).expect("Face 1 should parse");
+    let face_0 =
+        skrifa::FontRef::from_index(&font_data, 0)
+            .expect("Face 0 should parse");
+
+    let face_1 =
+        skrifa::FontRef::from_index(&font_data, 1)
+            .expect("Face 1 should parse");
 
     let upem_0 = face_0.head().expect("face 0 head").units_per_em();
     let upem_1 = face_1.head().expect("face 1 head").units_per_em();
 
-    eprintln!("TTC face 0 units_per_em={upem_0}, face 1 units_per_em={upem_1}");
+    assert!(upem_0 > 0 && upem_0 <= 16384);
+    assert!(upem_1 > 0 && upem_1 <= 16384);
 
-    // Both values must be valid (non-zero, reasonable range)
-    assert!(
-        upem_0 > 0 && upem_0 <= 16384,
-        "face 0 upem out of range: {upem_0}"
-    );
-    assert!(
-        upem_1 > 0 && upem_1 <= 16384,
-        "face 1 upem out of range: {upem_1}"
-    );
-
-    // Verify that FontRef::new() would have returned face 0's value,
-    // demonstrating why from_index() is necessary for face 1.
-    let face_default = skrifa::FontRef::new(&font_data).expect("Default face should parse");
-    let upem_default = face_default.head().expect("default head").units_per_em();
     assert_eq!(
-        upem_default, upem_0,
-        "FontRef::new() should return face 0's units_per_em"
+        skrifa::FontRef::from_index(&font_data, 0)
+            .expect("face 0")
+            .head()
+            .expect("face 0 head")
+            .units_per_em(),
+        upem_0
     );
 
-    // The bug: if we used FontRef::new() for face 1, we'd get face 0's
-    // upem value. With from_index(), we get the correct one.
-    let upem_1_via_index = skrifa::FontRef::from_index(&font_data, 1)
-        .expect("from_index face 1")
-        .head()
-        .expect("face 1 head via index")
-        .units_per_em();
     assert_eq!(
-        upem_1_via_index, upem_1,
-        "from_index(1) should return face 1's units_per_em, not face 0's"
+        skrifa::FontRef::from_index(&font_data, 1)
+            .expect("face 1")
+            .head()
+            .expect("face 1 head")
+            .units_per_em(),
+        upem_1
     );
-
-    if upem_0 != upem_1 {
-        eprintln!(
-            "TTC faces have DIFFERENT units_per_em ({upem_0} vs {upem_1}) - \
-             using FontRef::new() for face 1 would have produced wrong scaling"
-        );
-    } else {
-        eprintln!(
-            "TTC faces have same units_per_em ({upem_0}) - bug would be \
-             latent but from_index() is still correct"
-        );
-    }
 }

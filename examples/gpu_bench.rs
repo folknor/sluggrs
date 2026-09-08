@@ -7,7 +7,7 @@
 //!
 //! Run: cargo run --release --example gpu-bench
 
-use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
+use cosmic_text::{Attrs, Buffer, Color, FontSystem, Metrics, Shaping};
 use sluggrs::{
     Cache, ColorMode, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
     Viewport,
@@ -133,6 +133,8 @@ fn main() {
                 bottom: HEIGHT as i32,
             },
             default_color: cosmic_text::Color::rgb(255, 255, 255),
+            border_color: Color::rgb(0, 10, 0),
+            border_width: 2.0
         };
         let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         renderer.prepare(

@@ -1,6 +1,6 @@
 [package]
 name = "sluggrs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT OR Apache-2.0 OR Zlib"
@@ -12,10 +12,10 @@ hotpath-alloc = ["hotpath/hotpath", "hotpath/hotpath-alloc"]
 [dependencies]
 cosmic-text = "0.19"
 wgpu = "30.0.1"
-skrifa = "0.40"
+skrifa = "0.46.2"
 bytemuck = { version = "1", features = ["derive"] }
 log = "0.4"
-hotpath = "0.25"
+hotpath = "0.25.1"
 rustc-hash = "2"
 
 [dev-dependencies]

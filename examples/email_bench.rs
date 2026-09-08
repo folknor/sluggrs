@@ -11,7 +11,7 @@
 
 use std::time::Instant;
 
-use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight};
+use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Weight};
 use sluggrs::{
     Cache, ColorMode, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
     Viewport,
@@ -301,6 +301,8 @@ fn main() {
                     scale: area.scale,
                     bounds: area.bounds,
                     default_color: area.default_color,
+                    border_color: Color::rgb(0, 10, 0),
+                    border_width: 2.0
                 }
             })
             .collect();
@@ -453,6 +455,8 @@ fn layout_text_areas(buffers: &[Buffer]) -> Vec<TextArea<'_>> {
                     bottom: HEIGHT as i32,
                 },
                 default_color: cosmic_text::Color::rgb(230, 230, 230),
+                border_color: Color::rgb(0, 10, 0),
+                border_width: 2.0
             };
             top += height + gap;
             area

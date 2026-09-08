@@ -14,7 +14,7 @@
 
 use std::time::Instant;
 
-use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight};
+use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Weight};
 use sluggrs::{
     Cache, ColorMode, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
     Viewport,
@@ -453,6 +453,8 @@ fn layout_text_areas(buffers: &[Buffer]) -> Vec<TextArea<'_>> {
                     bottom: HEIGHT as i32,
                 },
                 default_color: cosmic_text::Color::rgb(230, 230, 230),
+                border_color: Color::rgb(0, 10, 0),
+                border_width: 2.0
             };
             top += height + 30.0;
             area
@@ -570,9 +572,7 @@ impl RenderHarness {
     }
 
     fn prepare_areas(&mut self, areas: &[TextArea]) -> Result<(), sluggrs::PrepareError> {
-        let encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
         self.renderer.prepare(
             &self.device,

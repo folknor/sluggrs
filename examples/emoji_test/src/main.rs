@@ -27,7 +27,7 @@ impl App {
             column![
                 text("Hello 👋 World 🎉 Emoji Test 😀🦊🐕").size(32),
                 text("The quick brown fox 🦊 jumps over the lazy dog 🐕").size(24),
-                text("Sluggrs + Raster Fallback 🚀✨🎨").size(20),
+                text("sluggrs + Raster Fallback 🚀✨🎨").size(20),
                 text("Pure vector text: no emoji here").size(16),
                 text("Mixed: abc 🔥 def 💧 ghi ⚡ jkl").size(14),
             ]

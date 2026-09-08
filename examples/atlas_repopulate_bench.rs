@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache};
+use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache};
 use sluggrs::{
     Cache, ColorMode, Resolution, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
@@ -154,6 +154,8 @@ fn prepare(
                 bottom: 1080,
             },
             default_color: cosmic_text::Color::rgb(255, 255, 255),
+            border_color: Color::rgb(0, 10, 0),
+            border_width: 2.0
         }]
     )
 }

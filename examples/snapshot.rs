@@ -295,6 +295,8 @@ fn main() {
             scale: 1.0,
             bounds,
             default_color: *color,
+            border_color: Color::rgb(0, 10, 0),
+            border_width: 2.0
         })
         .collect();
 

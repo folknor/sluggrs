@@ -99,6 +99,8 @@ impl TestHarness {
             scale: 1.0,
             bounds,
             default_color: Color::rgb(255, 255, 255),
+            border_color: Color::rgb(0, 10, 0),
+            border_width: 2.0
         };
 
         self.renderer.prepare(
@@ -148,6 +150,8 @@ impl TestHarness {
                 bottom: 600,
             },
             default_color: Color::rgb(255, 255, 255),
+            border_color: Color::rgb(0, 10, 0),
+            border_width: 2.0
         };
 
         self.renderer.prepare_with_depth(
@@ -316,6 +320,8 @@ fn prepare_shared_buffer_frame(
         scale: 1.0,
         bounds,
         default_color: Color::rgb(255, 255, 255),
+        border_color: Color::rgb(0, 10, 0),
+        border_width: 2.0
     };
     h.renderer.prepare(
             &h.device,
@@ -462,6 +468,8 @@ fn shared_buffer_distinct_placements_become_direct_hits() {
         scale: 1.0,
         bounds: full_bounds(),
         default_color: Color::rgb(255, 255, 255),
+        border_color: Color::rgb(0, 10, 0),
+        border_width: 2.0
     };
 
     let first = prepare_areas(&mut h, [area(0.0), area(100.0)]);
@@ -508,6 +516,8 @@ fn shared_buffer_order_swap_converges_after_recull() {
         scale: 1.0,
         bounds: full_bounds(),
         default_color: Color::rgb(255, 255, 255),
+        border_color: Color::rgb(0, 10, 0),
+        border_width: 2.0
     };
 
     let cold = prepare_areas(&mut h, [area(0.0), area(100.0)]);
@@ -548,6 +558,8 @@ fn shared_buffer_shrink_grow_discards_stale_occurrences() {
         scale: 1.0,
         bounds: full_bounds(),
         default_color: Color::rgb(255, 255, 255),
+        border_color: Color::rgb(0, 10, 0),
+        border_width: 2.0
     };
 
     prepare_areas(&mut h, [area(0.0), area(100.0)]);
@@ -620,6 +632,8 @@ fn shared_buffer_default_color_variants_become_direct_hits() {
                 scale: 1.0,
                 bounds: full_bounds(),
                 default_color: Color::rgb(255, 0, 0),
+                border_color: Color::rgb(0, 10, 0),
+                border_width: 2.0
             },
             TextArea {
                 buffer,
@@ -628,6 +642,8 @@ fn shared_buffer_default_color_variants_become_direct_hits() {
                 scale: 1.0,
                 bounds: full_bounds(),
                 default_color: Color::rgb(0, 255, 0),
+                border_color: Color::rgb(0, 10, 0),
+                border_width: 2.0
             },
         ]
     });
@@ -656,6 +672,8 @@ fn shared_buffer_scale_variants_become_direct_hits() {
                 scale: 1.0,
                 bounds: full_bounds(),
                 default_color: Color::rgb(255, 255, 255),
+                border_color: Color::rgb(0, 10, 0),
+                border_width: 2.0
             },
             TextArea {
                 buffer,
@@ -664,6 +682,8 @@ fn shared_buffer_scale_variants_become_direct_hits() {
                 scale: 1.5,
                 bounds: full_bounds(),
                 default_color: Color::rgb(255, 255, 255),
+                border_color: Color::rgb(0, 10, 0),
+                border_width: 2.0
             },
         ]
     });
@@ -681,6 +701,8 @@ fn shared_buffer_bounds_variants_become_direct_hits() {
                 scale: 1.0,
                 bounds: full_bounds(),
                 default_color: Color::rgb(255, 255, 255),
+                border_color: Color::rgb(0, 10, 0),
+                border_width: 2.0
             },
             TextArea {
                 buffer,
@@ -694,6 +716,8 @@ fn shared_buffer_bounds_variants_become_direct_hits() {
                     bottom: 600,
                 },
                 default_color: Color::rgb(255, 255, 255),
+                border_color: Color::rgb(0, 10, 0),
+                border_width: 2.0
             },
         ]
     });
