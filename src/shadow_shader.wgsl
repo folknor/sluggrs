@@ -8,6 +8,12 @@ struct ShadowParams {
     color: vec4<f32>,
     // Destination rect in physical pixels: origin then size.
     rect: vec4<f32>,
+    // Where the destination sits inside the blurred texture, as UV origin and
+    // UV size. The texture covers the SOURCE rect, which is larger than the
+    // destination - pulled back by the offset and padded by the kernel
+    // support on every side - so mapping UV 0..1 across the destination quad
+    // would squeeze the whole padded source into it and scale the shadow.
+    uv_rect: vec4<f32>,
     screen_size: vec2<f32>,
     // Bit 1 matches the main shader's Params.flags: Web colour mode.
     flags: u32,
@@ -27,7 +33,9 @@ struct ShadowVertexOutput {
 fn vs_shadow(@builtin(vertex_index) vid: u32) -> ShadowVertexOutput {
     var output: ShadowVertexOutput;
     let corner = vec2<f32>(f32(vid & 1u), f32((vid >> 1u) & 1u));
-    output.uv = corner;
+    // Sample the sub-rectangle of the source texture that corresponds to the
+    // destination, not the whole texture.
+    output.uv = shadow.uv_rect.xy + corner * shadow.uv_rect.zw;
     let screen_pos = shadow.rect.xy + corner * shadow.rect.zw;
     output.position = vec4<f32>(
         screen_pos.x / shadow.screen_size.x * 2.0 - 1.0,

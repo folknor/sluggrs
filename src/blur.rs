@@ -60,6 +60,7 @@ struct BlurUniform {
 struct ShadowUniform {
     color: [f32; 4],
     rect: [f32; 4],
+    uv_rect: [f32; 4],
     screen_size: [f32; 2],
     flags: u32,
     _pad: f32,
@@ -71,7 +72,13 @@ pub(crate) struct BlurResources {
     blur_layout: BindGroupLayout,
     shadow_layout: BindGroupLayout,
     blur_pipeline: RenderPipeline,
-    shadow_pipelines: Vec<(TextureFormat, RenderPipeline)>,
+    #[allow(clippy::type_complexity)]
+    shadow_pipelines: Vec<(
+        TextureFormat,
+        MultisampleState,
+        Option<wgpu::DepthStencilState>,
+        RenderPipeline,
+    )>,
     sampler: Sampler,
     /// Held so the composite pipeline for a newly seen surface format can be
     /// created later without re-parsing the WGSL.
@@ -185,14 +192,24 @@ impl BlurResources {
         }
     }
 
-    /// The composite pipeline for a surface format, created on first use.
-    pub fn shadow_pipeline(&mut self, device: &Device, format: TextureFormat) -> &RenderPipeline {
-        if let Some(index) = self
-            .shadow_pipelines
-            .iter()
-            .position(|(fmt, _)| *fmt == format)
-        {
-            return &self.shadow_pipelines[index].1;
+    /// The composite pipeline for a surface format and multisample state,
+    /// created on first use.
+    ///
+    /// The multisample state is part of the key because this pipeline is bound
+    /// inside the CALLER's text render pass: a single-sample pipeline against
+    /// a multisampled attachment fails render-pass validation, so a renderer
+    /// configured for MSAA needs its own.
+    pub fn shadow_pipeline(
+        &mut self,
+        device: &Device,
+        format: TextureFormat,
+        multisample: MultisampleState,
+        depth_stencil: Option<wgpu::DepthStencilState>,
+    ) -> &RenderPipeline {
+        if let Some(index) = self.shadow_pipelines.iter().position(|(fmt, ms, ds, _)| {
+            *fmt == format && *ms == multisample && *ds == depth_stencil
+        }) {
+            return &self.shadow_pipelines[index].3;
         }
         let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("sluggrs shadow composite pipeline layout"),
@@ -222,14 +239,38 @@ impl BlurResources {
                 topology: PrimitiveTopology::TriangleStrip,
                 ..PrimitiveState::default()
             },
-            depth_stencil: None,
-            multisample: MultisampleState::default(),
+            // Depth TESTED but not written, matching the analytic decoration
+            // pipeline: a blurred shadow and a hard one must be occluded by
+            // the same geometry, and neither should write depth for a glyph
+            // whose fill has not been drawn yet.
+            depth_stencil: composite_depth_stencil(depth_stencil.clone()),
+            multisample,
             multiview_mask: None,
             cache: None,
         });
-        self.shadow_pipelines.push((format, pipeline));
-        &self.shadow_pipelines.last().expect("just pushed").1
+        self.shadow_pipelines
+            .push((format, multisample, depth_stencil, pipeline));
+        &self.shadow_pipelines.last().expect("just pushed").3
     }
+}
+
+/// Depth/stencil state for a shadow composite: keep the caller's comparison
+/// so geometry occludes a blurred shadow exactly as it occludes an analytic
+/// one, but write neither depth nor stencil.
+fn composite_depth_stencil(
+    depth_stencil: Option<wgpu::DepthStencilState>,
+) -> Option<wgpu::DepthStencilState> {
+    depth_stencil.map(|mut state| {
+        state.depth_write_enabled = Some(false);
+        state.stencil.front.fail_op = wgpu::StencilOperation::Keep;
+        state.stencil.front.depth_fail_op = wgpu::StencilOperation::Keep;
+        state.stencil.front.pass_op = wgpu::StencilOperation::Keep;
+        state.stencil.back.fail_op = wgpu::StencilOperation::Keep;
+        state.stencil.back.depth_fail_op = wgpu::StencilOperation::Keep;
+        state.stencil.back.pass_op = wgpu::StencilOperation::Keep;
+        state.stencil.write_mask = 0;
+        state
+    })
 }
 
 /// Source-over union blending for the coverage mask.
@@ -271,6 +312,9 @@ pub(crate) struct BlurGeometry {
     /// the offset and grown by the kernel support on every side, so every
     /// glyph that can contribute through the kernel is inside it.
     pub source: [f32; 4],
+    /// Retained because the composite has to undo it: a destination pixel
+    /// samples the mask at `p - offset`.
+    pub offset: [f32; 2],
     pub support: f32,
     pub sigma: f32,
 }
@@ -321,6 +365,7 @@ impl BlurGeometry {
                 source[2] - source[0],
                 source[3] - source[1],
             ],
+            offset,
             support,
             sigma,
         })
@@ -331,6 +376,23 @@ impl BlurGeometry {
             (self.source[2].ceil() as u32).max(1),
             (self.source[3].ceil() as u32).max(1),
         )
+    }
+
+    /// Where the destination sits inside the source texture, in UV: origin
+    /// then size. The texture covers the source rect, which is larger than
+    /// the destination, so the composite must sample this sub-rectangle
+    /// rather than stretching the whole texture over the quad.
+    pub fn uv_rect(&self) -> [f32; 4] {
+        let (width, height) = self.source_size();
+        let (width, height) = (width as f32, height as f32);
+        // A destination pixel `p` samples the mask at `p - offset`: the
+        // shadow is displaced, the glyphs that cast it are not.
+        [
+            (self.dest[0] - self.offset[0] - self.source[0]) / width,
+            (self.dest[1] - self.offset[1] - self.source[1]) / height,
+            self.dest[2] / width,
+            self.dest[3] / height,
+        ]
     }
 }
 
@@ -448,6 +510,7 @@ pub(crate) fn finish_job(
         contents: bytemuck::bytes_of(&ShadowUniform {
             color,
             rect: geometry.dest,
+            uv_rect: geometry.uv_rect(),
             screen_size,
             flags,
             _pad: 0.0,
@@ -520,6 +583,54 @@ mod tests {
         // Undoing the offset returns to the glyph-space origin, minus support.
         assert_eq!(geometry.source[0], 92.0);
         assert_eq!(geometry.source[1], 92.0);
+    }
+
+    /// The texture covers the SOURCE, which is larger than the destination.
+    /// Mapping UV 0..1 across the destination quad would squeeze the whole
+    /// padded source into it, scaling the shadow and its blur width.
+    #[test]
+    fn uv_rect_addresses_the_destination_within_the_padded_source() {
+        let geometry = BlurGeometry::new(
+            [100.0, 100.0, 200.0, 140.0],
+            [0.0, 0.0, 500.0, 500.0],
+            [0.0, 0.0],
+            2.0,
+            8.0,
+        )
+        .expect("visible");
+        let uv = geometry.uv_rect();
+        let (width, height) = geometry.source_size();
+        // Destination starts one support in from the source origin.
+        assert!((uv[0] - 8.0 / width as f32).abs() < 1e-6);
+        assert!((uv[1] - 8.0 / height as f32).abs() < 1e-6);
+        // And spans the destination, not the whole texture.
+        assert!((uv[2] - geometry.dest[2] / width as f32).abs() < 1e-6);
+        assert!((uv[3] - geometry.dest[3] / height as f32).abs() < 1e-6);
+        assert!(uv[2] < 1.0, "the destination is a strict sub-rectangle");
+    }
+
+    /// An offset moves the destination but not the glyphs, so the sampled
+    /// sub-rectangle must shift back by the same amount.
+    #[test]
+    fn uv_rect_is_unaffected_by_the_offset() {
+        let plain = BlurGeometry::new(
+            [100.0, 100.0, 200.0, 140.0],
+            [0.0, 0.0, 500.0, 500.0],
+            [0.0, 0.0],
+            2.0,
+            8.0,
+        )
+        .expect("visible");
+        let shifted = BlurGeometry::new(
+            [100.0, 100.0, 200.0, 140.0],
+            [0.0, 0.0, 500.0, 500.0],
+            [17.0, -9.0],
+            2.0,
+            8.0,
+        )
+        .expect("visible");
+        assert_eq!(plain.uv_rect(), shifted.uv_rect());
+        assert_ne!(plain.dest, shifted.dest);
     }
 
     #[test]

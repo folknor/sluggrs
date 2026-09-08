@@ -50,11 +50,22 @@ fn fs_blur(input: BlurVertexOutput) -> @location(0) f32 {
         let offset = f32(i);
         let weight = exp(-offset * offset * inv_two_sigma_sq);
         let uv = input.uv + blur.direction * blur.texel * offset;
-        // Clamp so taps past the mask edge repeat the edge texel rather than
-        // wrapping. The mask is allocated with the full support as padding,
-        // so the edge is empty and this contributes nothing.
-        let clamped = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0));
-        total += textureSampleLevel(mask_texture, mask_sampler, clamped, 0.0).r * weight;
+        // ZERO extension, not clamp-to-edge. Repeating the edge texel would
+        // duplicate any coverage that reaches the mask boundary once per
+        // out-of-bounds tap and brighten the shadow into a stripe. The source
+        // rectangle is padded by the full support, but a destination clipped
+        // by the area bounds can still put a contributing glyph against that
+        // boundary, so the edge is not guaranteed empty.
+        let inside = all(uv >= vec2<f32>(0.0)) && all(uv <= vec2<f32>(1.0));
+        let sample = select(
+            0.0,
+            textureSampleLevel(mask_texture, mask_sampler, uv, 0.0).r,
+            inside,
+        );
+        total += sample * weight;
+        // The full truncated kernel weight stays in the denominator: the mask
+        // is zero-extended, so an out-of-bounds tap contributes zero to the
+        // numerator and must not renormalise the rest upward.
         weight_sum += weight;
     }
     // Normalising by the actual sum rather than an analytic constant keeps

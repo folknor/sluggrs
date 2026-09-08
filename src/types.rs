@@ -107,6 +107,9 @@ pub enum DecorationError {
     /// A ring is evaluated analytically from the glyph's distance field and a
     /// blur is a convolution of a rendered mask. One draw cannot be both.
     RingWithBlur,
+    /// A filtered decoration's mask is rendered from the undilated glyph, so a
+    /// spread on it would be silently dropped. Reject rather than mis-render.
+    BlurWithSpread,
 }
 
 impl std::fmt::Display for DecorationError {
@@ -118,17 +121,30 @@ impl std::fmt::Display for DecorationError {
                 write!(f, "a Ring decoration must be first in the decoration list")
             }
             Self::RingWithBlur => write!(f, "a Ring decoration cannot be blurred"),
+            Self::BlurWithSpread => {
+                write!(f, "a blurred decoration cannot also carry a spread")
+            }
         }
     }
 }
 
 impl std::error::Error for DecorationError {}
 
-/// Check the constraints the ring execution model imposes on a list.
+/// Check the constraints the execution model imposes on a decoration list.
+///
+/// `prepare` calls this on every area, so an invalid list is refused rather
+/// than drawn wrongly. It is public so callers can check ahead of time.
 pub fn validate_decorations(decorations: &[TextDecoration]) -> Result<(), DecorationError> {
     let mut seen_ring = false;
     for (index, decoration) in decorations.iter().enumerate() {
         if decoration.mode != DecorationMode::Ring {
+            // The mask for a filtered decoration is rendered from the
+            // undilated glyph, so a spread would be accepted then ignored.
+            // Checked after the Ring branch so a blurred ring reports the
+            // more specific RingWithBlur.
+            if decoration.blur > 0.0 && decoration.spread > 0.0 {
+                return Err(DecorationError::BlurWithSpread);
+            }
             continue;
         }
         if seen_ring {
@@ -347,11 +363,23 @@ pub enum ColorMode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PrepareError {
     AtlasFull,
+    /// A text area's decoration list names a combination the renderer cannot
+    /// draw. Refused rather than mis-rendered.
+    Decoration(DecorationError),
 }
 
 impl std::fmt::Display for PrepareError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "Prepare error: glyph texture atlas is full")
+        match self {
+            Self::AtlasFull => write!(f, "Prepare error: glyph texture atlas is full"),
+            Self::Decoration(error) => write!(f, "Prepare error: {error}"),
+        }
+    }
+}
+
+impl From<DecorationError> for PrepareError {
+    fn from(error: DecorationError) -> Self {
+        Self::Decoration(error)
     }
 }
 
@@ -600,6 +628,39 @@ mod tests {
         assert_eq!(
             validate_decorations(&[displaced]),
             Err(DecorationError::RingWithOffset)
+        );
+    }
+
+    /// A filtered decoration's mask is rendered from the undilated glyph, so
+    /// a spread on it would be accepted and then silently dropped.
+    #[test]
+    fn blur_with_spread_is_refused() {
+        let both = TextDecoration {
+            color: white(),
+            spread: 2.0,
+            offset: [0.0, 0.0],
+            blur: 3.0,
+            mode: DecorationMode::Solid,
+        };
+        assert_eq!(
+            validate_decorations(&[both]),
+            Err(DecorationError::BlurWithSpread)
+        );
+        assert_eq!(
+            validate_decorations(&[TextDecoration::blurred_shadow(white(), 1.0, 1.0, 3.0)]),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn ring_cannot_be_blurred() {
+        let blurred_ring = TextDecoration {
+            blur: 2.0,
+            ..TextDecoration::ring(white(), 1.0)
+        };
+        assert_eq!(
+            validate_decorations(&[blurred_ring]),
+            Err(DecorationError::RingWithBlur)
         );
     }
 

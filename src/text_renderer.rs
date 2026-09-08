@@ -47,11 +47,17 @@ struct CachedTextArea {
     decorations: Vec<PhysicalDecoration>,
     /// Culling envelope the cached candidate set was selected against.
     extents: DecorationExtents,
-    /// Per normal instance: whether a decoration covers it, i.e. whether it
-    /// is a monochrome vector glyph. Parallel to `instances`, in glyph order.
-    /// A Ring draw supplies the fill for exactly these, so they must then be
-    /// withheld from the normal pipeline - and the ones NOT covered (COLRv0
-    /// layers, COLRv1) must keep their position relative to them.
+    /// Per normal instance: whether it is a MONOCHROME VECTOR glyph, the only
+    /// kind a decoration covers. Parallel to `instances`, in glyph order.
+    ///
+    /// This records glyph kind, never whether the area happens to be
+    /// decorated right now: the vector is cached and survives placement
+    /// changes, so a presence flag would go stale the moment an area gains a
+    /// decoration without its text changing.
+    ///
+    /// A Ring draw supplies the fill for exactly these, so they are withheld
+    /// from the normal pipeline - and the ones NOT covered (COLRv0 layers,
+    /// COLRv1) must keep their position relative to them.
     decorated: Vec<bool>,
     atlas_generation: u32,
     instances: Vec<GlyphInstance>,
@@ -132,6 +138,7 @@ fn encode_blur_job(
     geometry: crate::blur::BlurGeometry,
     color: [f32; 4],
     resolution: crate::types::Resolution,
+    scroll: [f32; 2],
     flags: u32,
 ) -> crate::blur::BlurJob {
     let cache = atlas.cache();
@@ -157,9 +164,16 @@ fn encode_blur_job(
 
     // Per-job buffers, never reused: rewriting a shared buffer before submit
     // would let an already-encoded pass observe a later job's values.
+    // Mask-local space. `instance.screen_rect` is UNSCROLLED and vs_border
+    // adds params.scroll_offset, while `geometry.source` was measured in
+    // scrolled space by instance_bounds - so the viewport scroll has to be
+    // carried here too, or the mask is displaced by exactly -scroll.
     let params = crate::gpu_cache::Params {
         screen_size: [width as f32, height as f32],
-        scroll_offset: [-geometry.source[0], -geometry.source[1]],
+        scroll_offset: [
+            scroll[0] - geometry.source[0],
+            scroll[1] - geometry.source[1],
+        ],
         flags,
         _pad: 0,
     };
@@ -252,7 +266,7 @@ struct PendingBlur {
 }
 
 /// The area's clip rect in physical pixels, for clipping a shadow.
-fn plan_bounds(plan: &AreaPlan<'_>, resolution: crate::types::Resolution) -> [f32; 4] {
+fn plan_bounds(plan: &AreaPlan<'_>) -> [f32; 4] {
     let bounds = match plan {
         AreaPlan::Miss(area) => [
             area.bounds_min_x,
@@ -260,11 +274,7 @@ fn plan_bounds(plan: &AreaPlan<'_>, resolution: crate::types::Resolution) -> [f3
             area.bounds_max_x,
             area.bounds_max_y,
         ],
-        AreaPlan::ReCull { bounds, .. } => *bounds,
-        // A direct hit does not carry its bounds forward, and a shadow that
-        // covers the viewport is clipped correctly anyway by the scissor the
-        // caller already applies to the pass.
-        AreaPlan::HitDirect { .. } => [0, 0, resolution.width as i32, resolution.height as i32],
+        AreaPlan::ReCull { bounds, .. } | AreaPlan::HitDirect { bounds, .. } => *bounds,
     };
     [
         bounds[0] as f32,
@@ -419,6 +429,11 @@ enum AreaPlan<'a> {
     HitDirect {
         cache_key: TextAreaCacheKey,
         decorations: Vec<PhysicalDecoration>,
+        /// Carried so a blurred shadow is still clipped to its area. There is
+        /// no per-area scissor - one pass draws every area - so falling back
+        /// to the viewport would let a cached blur paint outside its bounds
+        /// on exactly the frames that hit the cache.
+        bounds: [i32; 4],
     },
     ReCull {
         cache_key: TextAreaCacheKey,
@@ -629,6 +644,10 @@ impl TextRenderer {
 
         // ===== Pass 1: classify areas, collect work items =====
         for text_area in text_areas {
+            // Enforced here, not left to the caller: these combinations are
+            // ones the execution model cannot draw, so accepting them would
+            // mean rendering something other than what was asked for.
+            crate::types::validate_decorations(text_area.decorations)?;
             let buffer_ptr = text_area.buffer as BufferPtr;
             let count = self.text_area_occurrences.entry(buffer_ptr).or_default();
             let cache_key = TextAreaCacheKey {
@@ -671,6 +690,7 @@ impl TextRenderer {
                             plans.push(AreaPlan::HitDirect {
                                 cache_key,
                                 decorations,
+                                bounds: clipped_bounds(text_area.bounds, resolution),
                             });
                             continue;
                         }
@@ -833,8 +853,14 @@ impl TextRenderer {
                 self.blur = Some(crate::blur::BlurResources::new(device));
             }
             let format = atlas.format();
+            let multisample = self.multisample;
+            let depth_stencil = self.depth_stencil.clone();
             let resources = self.blur.as_mut().expect("just created");
-            self.shadow_pipeline = Some(resources.shadow_pipeline(device, format).clone());
+            self.shadow_pipeline = Some(
+                resources
+                    .shadow_pipeline(device, format, multisample, depth_stencil)
+                    .clone(),
+            );
         }
         for plan in &plans {
             let normal_start = self.instances.len() as u32;
@@ -1118,10 +1144,12 @@ impl TextRenderer {
                             ppem: glyph.font_size * text_area.scale,
                         };
                         area_instances.push(fill_instance);
-                        // Parallel to the decoration stream below: true here
-                        // means a decoration instance is emitted for this
-                        // glyph, so a Ring draw would own its fill.
-                        area_decorated.push(!decorations.is_empty());
+                        // Glyph KIND, not "this area currently has
+                        // decorations". The flag is cached and survives a
+                        // re-cull, so recording presence would leave an area
+                        // that gained a Ring after being cached undecorated
+                        // treating its mono glyphs as ordinary fills.
+                        area_decorated.push(true);
                         if !decorations.is_empty() {
                             area_border_instances.push(GlyphInstance {
                                 glyph_offset: atlas
@@ -1174,66 +1202,65 @@ impl TextRenderer {
             // vertex shader, so N decorations cost N uniform rebinds rather
             // than N copies of the instance stream.
             //
-            // Iterated in REVERSE because the list is back-to-front like CSS
-            // text-shadow: the first entry must paint on top, so it is
-            // encoded last.
-            // Filtered decorations are encoded first and composited before
-            // the analytic ones, so within an area the painting order is
-            // still back-to-front across the whole list.
+            // ONE traversal in reverse, emitting whichever kind each entry
+            // is. The list is back-to-front like CSS text-shadow, so the
+            // first entry paints on top and is encoded last. Walking the
+            // filtered entries and the analytic ones as two separate groups
+            // would reorder them relative to each other: [blur, solid] must
+            // paint solid first, but two groups put the blur first.
+            //
+            // Every analytic decoration draws the SAME instance range -
+            // offset and dilation live in the uniform and are applied in the
+            // vertex shader - so N of them cost N uniform rebinds rather than
+            // N copies of the instance stream.
             if border_end > border_start {
-                let area_bounds = plan_bounds(plan, resolution);
-                for decoration in decorations.iter().rev().filter(|d| d.is_filtered()) {
-                    let instances =
-                        &self.border_instances[border_start as usize..border_end as usize];
-                    let Some(glyph_bounds) = instance_bounds(instances, scroll) else {
-                        continue;
-                    };
-                    let support = crate::types::blur_support(decoration.blur);
-                    let Some(geometry) = crate::blur::BlurGeometry::new(
-                        glyph_bounds,
-                        area_bounds,
-                        decoration.offset,
-                        decoration.blur,
-                        support,
-                    ) else {
-                        continue;
-                    };
-                    // Queued rather than encoded here: the atlas storage
-                    // buffer is not flushed until after this pass, and the
-                    // mask pass reads glyph data out of it.
-                    self.draws.push(OrderedDraw {
-                        stream: DrawStream::Shadow,
-                        range: pending_blurs.len() as u32..pending_blurs.len() as u32 + 1,
-                        mode: DrawMode::Underlay,
-                        uniform_offset: 0,
-                    });
-                    pending_blurs.push(PendingBlur {
-                        instances: border_start..border_end,
-                        geometry,
-                        color: decoration.color,
-                    });
-                }
-            }
-
-            if border_end > border_start {
-                // Skip index 0 when it is the ring: it is emitted below,
-                // interleaved with the COLR runs, so mono and COLR glyphs
-                // keep their relative order at the fill stage.
-                let solid_count = decorations.len() - usize::from(ring.is_some());
-                for decoration in decorations[decorations.len() - solid_count..]
-                    .iter()
-                    .rev()
-                    // Filtered decorations were encoded and composited above.
-                    .filter(|d| !d.is_filtered())
-                {
-                    let uniform_offset = border_uniforms.len() as u32;
-                    border_uniforms.push(BorderUniform::of(decoration));
-                    self.draws.push(OrderedDraw {
-                        stream: DrawStream::Border,
-                        range: border_start..border_end,
-                        mode: DrawMode::Underlay,
-                        uniform_offset,
-                    });
+                let area_bounds = plan_bounds(plan);
+                // Index 0 is skipped when it is the ring: that one is emitted
+                // below, interleaved with the COLR runs, so mono and COLR
+                // glyphs keep their relative order at the fill stage.
+                let analytic_end = decorations.len();
+                let analytic_start = usize::from(ring.is_some());
+                for decoration in decorations[analytic_start..analytic_end].iter().rev() {
+                    if decoration.is_filtered() {
+                        let instances =
+                            &self.border_instances[border_start as usize..border_end as usize];
+                        let Some(glyph_bounds) = instance_bounds(instances, scroll) else {
+                            continue;
+                        };
+                        let support = crate::types::blur_support(decoration.blur);
+                        let Some(geometry) = crate::blur::BlurGeometry::new(
+                            glyph_bounds,
+                            area_bounds,
+                            decoration.offset,
+                            decoration.blur,
+                            support,
+                        ) else {
+                            continue;
+                        };
+                        // Queued rather than encoded here: the atlas storage
+                        // buffer is not flushed until after this pass, and the
+                        // mask pass reads glyph data out of it.
+                        self.draws.push(OrderedDraw {
+                            stream: DrawStream::Shadow,
+                            range: pending_blurs.len() as u32..pending_blurs.len() as u32 + 1,
+                            mode: DrawMode::Underlay,
+                            uniform_offset: 0,
+                        });
+                        pending_blurs.push(PendingBlur {
+                            instances: border_start..border_end,
+                            geometry,
+                            color: decoration.color,
+                        });
+                    } else {
+                        let uniform_offset = border_uniforms.len() as u32;
+                        border_uniforms.push(BorderUniform::of(decoration));
+                        self.draws.push(OrderedDraw {
+                            stream: DrawStream::Border,
+                            range: border_start..border_end,
+                            mode: DrawMode::Underlay,
+                            uniform_offset,
+                        });
+                    }
                 }
             }
 
@@ -1306,6 +1333,7 @@ impl TextRenderer {
                 pending.geometry,
                 pending.color,
                 resolution,
+                scroll,
                 viewport.flags(),
             ));
         }
