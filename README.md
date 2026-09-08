@@ -1,4 +1,4 @@
-# sluggrs_skylines
+# sluggrs
 
 GPU vector text rendering using the [Slug algorithm](https://terathon.com/blog/decade-slug.html). Evaluates quadratic bezier curves per-pixel in fragment shaders - resolution-independent, no texture atlas needed.
 
@@ -35,6 +35,7 @@ Work in progress. The core rendering pipeline is functional and tested in produc
 - Retained prepared-text cache - skips glyph loop and GPU upload for unchanged text
 - cryoglyph-compatible API (Cache, TextAtlas, TextRenderer, Viewport)
 - Wired into iced's `text.rs` via [forked iced](https://github.com/folknor/iced/tree/sluggrs)
+- Supports text borders
 
 ## Performance
 
