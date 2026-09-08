@@ -3,6 +3,21 @@
 Generalize text borders into ordered text decorations: outline-only
 (hollow) text, hard offset shadows, and blurred shadows.
 
+## Status
+
+- DONE: the blob-capacity prerequisite (font-unit capacities, aggregated
+  independently, resolved once per key, lookup-only emission).
+- DONE: the decoration list and hard offset shadows. `TextArea` carries
+  `decorations: &[TextDecoration { color, spread, offset }]`; all of an
+  area's decorations share one instance range with a per-draw uniform;
+  order is back-to-front like CSS; culling uses directional extents.
+- TODO: outline-only (hollow) text - the combined ring+fill fragment.
+- TODO: blurred shadows - mask render plus separable blur, which needs
+  `prepare` to take `&mut CommandEncoder`.
+- TODO: `repos/iced` constructs `TextArea` without the decorations field
+  and has not compiled against sluggrs HEAD since the border feature
+  landed. It needs `decorations: &[]`.
+
 Do NOT run cargo or brokkr; the orchestrator runs all builds, tests, and
 formatting. Read and write code only. Do not commit. Do not touch
 `repos/`, `.review.toml`, or markdown files other than this one.

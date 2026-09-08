@@ -2,11 +2,15 @@
 // shader source, so the shared unpacking and quadratic root helpers above are
 // compiled from one source fragment by both pipelines.
 
+// One decoration's paint. `spread_px` dilates the glyph; `offset_px`
+// translates the quad, positive y downward, and deliberately does NOT enter
+// the glyph-space distance query - the nearest boundary to a fragment is
+// unchanged by moving the whole quad.
 struct BorderParams {
     color: vec4<f32>,
-    width_px: f32,
+    spread_px: f32,
     _pad0: f32,
-    _pad1: vec2<f32>,
+    offset_px: vec2<f32>,
 }
 
 @group(2) @binding(0) var<uniform> border: BorderParams;
@@ -30,9 +34,13 @@ fn vs_border(instance: GlyphInstance, @builtin(vertex_index) vid: u32) -> Border
         bitcast<f32>(atlas[fill_raw]), bitcast<f32>(atlas[fill_raw + 1u]),
         bitcast<f32>(atlas[fill_raw + 2u]), bitcast<f32>(atlas[fill_raw + 3u]),
     );
-    let dilation = border.width_px + 0.5;
+    let dilation = border.spread_px + 0.5;
     let base_pos = instance.screen_rect.xy + corner * instance.screen_rect.zw;
-    let screen_pos = base_pos + params.scroll_offset + normal * dilation;
+    // Offset translates the quad only. texcoord below is built from `corner`
+    // and `normal`, both relative to the quad, so the glyph-space mapping
+    // rides along unchanged and the distance query stays correct.
+    let screen_pos = base_pos + params.scroll_offset + border.offset_px
+        + normal * dilation;
     let ndc = vec2<f32>(
         screen_pos.x / params.screen_size.x * 2.0 - 1.0,
         -(screen_pos.y / params.screen_size.y * 2.0 - 1.0),
@@ -43,8 +51,13 @@ fn vs_border(instance: GlyphInstance, @builtin(vertex_index) vid: u32) -> Border
         mix(em_rect.w, em_rect.y, corner.y),
     );
     let em_size = vec2<f32>(em_rect.z - em_rect.x, em_rect.w - em_rect.y);
-    let safe_screen_size = select(instance.screen_rect.zw, vec2<f32>(1e-20), abs(instance.screen_rect.zw) < vec2<f32>(1e-20));
-    let ems_per_pixel = em_size / safe_screen_size;
+    // Same denominator as vs_main (simple_shader.wgsl): clamped to one pixel,
+    // NOT the raw dimension guarded near zero. A glyph dimension between 0
+    // and 1 px would otherwise give the decoration a different em-per-pixel
+    // scale than the fill, so their interpolated coordinates and derivatives
+    // would diverge - and a zero-spread decoration is specified to reproduce
+    // the glyph shape exactly.
+    let ems_per_pixel = em_size / max(instance.screen_rect.zw, vec2<f32>(1.0, 1.0));
     output.texcoord = base_uv
         + vec2<f32>(normal.x, -normal.y) * ems_per_pixel * dilation;
     output.descriptor = instance.glyph.x;
@@ -196,7 +209,7 @@ fn fs_border(input: BorderVertexOutput) -> @location(0) vec4<f32> {
         }
     }
     let signed_distance_px = select(distance, -distance, inside) * pixels_per_unit;
-    let coverage = clamp(border.width_px + 0.5 - signed_distance_px, 0.0, 1.0);
+    let coverage = clamp(border.spread_px + 0.5 - signed_distance_px, 0.0, 1.0);
     let alpha = border.color.a * coverage;
     let rgb = select(border.color.rgb, pow(border.color.rgb, vec3<f32>(2.2)), (params.flags & 2u) != 0u);
     return vec4<f32>(rgb * alpha, alpha);

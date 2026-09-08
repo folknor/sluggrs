@@ -50,5 +50,12 @@ fonts = [
     "examples/fonts/CaskaydiaCoveNerdFont-Regular.ttf",
 ]
 
+[[sluggrs.snapshot]]
+id = "decorations"
+description = "Outlines, hard and spread shadows, stacked paint order, and shared glyphs decorated at two sizes"
+fonts = [
+    "examples/fonts/InterVariable.ttf",
+]
+
 [test]
 debug = true

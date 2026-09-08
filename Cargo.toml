@@ -34,8 +34,8 @@ name = "demo2"
 path = "examples/demo2.rs"
 
 [[example]]
-name = "borders"
-path = "examples/borders.rs"
+name = "decorations"
+path = "examples/decorations.rs"
 
 [[example]]
 name = "hotpath"

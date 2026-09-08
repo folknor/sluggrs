@@ -8,8 +8,8 @@
 
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
 use sluggrs::{
-    Cache, Color, ColorMode, Resolution, SwashCache, TextArea, TextAtlas, TextBorder, TextBounds,
-    TextRenderer, Viewport,
+    Cache, Color, ColorMode, Resolution, SwashCache, TextArea, TextAtlas, TextBounds,
+    TextDecoration, TextRenderer, Viewport,
 };
 
 // ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ impl TestHarness {
             scale: 1.0,
             bounds,
             default_color: Color::rgb(255, 255, 255),
-            border: None,
+            decorations: &[],
         };
 
         self.renderer.prepare(
@@ -150,7 +150,7 @@ impl TestHarness {
                 bottom: 600,
             },
             default_color: Color::rgb(255, 255, 255),
-            border: None,
+            decorations: &[],
         };
 
         self.renderer.prepare_with_depth(
@@ -321,7 +321,7 @@ fn prepare_shared_buffer_frame(
         scale: 1.0,
         bounds,
         default_color: Color::rgb(255, 255, 255),
-        border: None,
+        decorations: &[],
     };
     h.renderer
         .prepare(
@@ -475,7 +475,7 @@ fn shared_buffer_distinct_placements_become_direct_hits() {
         scale: 1.0,
         bounds: full_bounds(),
         default_color: Color::rgb(255, 255, 255),
-        border: None,
+        decorations: &[],
     };
 
     let first = prepare_areas(&mut h, [area(0.0), area(100.0)]);
@@ -522,7 +522,7 @@ fn shared_buffer_order_swap_converges_after_recull() {
         scale: 1.0,
         bounds: full_bounds(),
         default_color: Color::rgb(255, 255, 255),
-        border: None,
+        decorations: &[],
     };
 
     let cold = prepare_areas(&mut h, [area(0.0), area(100.0)]);
@@ -563,7 +563,7 @@ fn shared_buffer_shrink_grow_discards_stale_occurrences() {
         scale: 1.0,
         bounds: full_bounds(),
         default_color: Color::rgb(255, 255, 255),
-        border: None,
+        decorations: &[],
     };
 
     prepare_areas(&mut h, [area(0.0), area(100.0)]);
@@ -636,7 +636,7 @@ fn shared_buffer_default_color_variants_become_direct_hits() {
                 scale: 1.0,
                 bounds: full_bounds(),
                 default_color: Color::rgb(255, 0, 0),
-                border: None,
+                decorations: &[],
             },
             TextArea {
                 buffer,
@@ -645,7 +645,7 @@ fn shared_buffer_default_color_variants_become_direct_hits() {
                 scale: 1.0,
                 bounds: full_bounds(),
                 default_color: Color::rgb(0, 255, 0),
-                border: None,
+                decorations: &[],
             },
         ]
     });
@@ -674,7 +674,7 @@ fn shared_buffer_scale_variants_become_direct_hits() {
                 scale: 1.0,
                 bounds: full_bounds(),
                 default_color: Color::rgb(255, 255, 255),
-                border: None,
+                decorations: &[],
             },
             TextArea {
                 buffer,
@@ -683,7 +683,7 @@ fn shared_buffer_scale_variants_become_direct_hits() {
                 scale: 1.5,
                 bounds: full_bounds(),
                 default_color: Color::rgb(255, 255, 255),
-                border: None,
+                decorations: &[],
             },
         ]
     });
@@ -701,7 +701,7 @@ fn shared_buffer_bounds_variants_become_direct_hits() {
                 scale: 1.0,
                 bounds: full_bounds(),
                 default_color: Color::rgb(255, 255, 255),
-                border: None,
+                decorations: &[],
             },
             TextArea {
                 buffer,
@@ -715,7 +715,7 @@ fn shared_buffer_bounds_variants_become_direct_hits() {
                     bottom: 600,
                 },
                 default_color: Color::rgb(255, 255, 255),
-                border: None,
+                decorations: &[],
             },
         ]
     });
@@ -727,19 +727,82 @@ fn border_color_change_is_a_direct_hit_and_preserves_instances() {
     let mut h = TestHarness::new();
     let mut buffer = h.make_buffer("Outlined");
     buffer.set_redraw(false);
-    let area = |color| TextArea {
+    let red = [TextDecoration::outline(Color::rgb(255, 0, 0), 2.0)];
+    let blue = [TextDecoration::outline(Color::rgb(0, 0, 255), 2.0)];
+    let area = |decorations: &'static [TextDecoration]| TextArea {
         buffer: &buffer,
         left: 20.0,
         top: 20.0,
         scale: 1.0,
         bounds: full_bounds(),
         default_color: Color::rgb(255, 255, 255),
-        border: Some(TextBorder { color, width: 2.0 }),
+        decorations,
     };
-    let first = prepare_areas(&mut h, [area(Color::rgb(255, 0, 0))]);
-    let second = prepare_areas(&mut h, [area(Color::rgb(0, 0, 255))]);
+    let red: &'static [TextDecoration] = Box::leak(Box::new(red));
+    let blue: &'static [TextDecoration] = Box::leak(Box::new(blue));
+    let first = prepare_areas(&mut h, [area(red)]);
+    let second = prepare_areas(&mut h, [area(blue)]);
     assert_instances_equal(&second, &first);
     assert_eq!(h.renderer.last_prepare_stats().direct_hits, 1);
+}
+
+/// Offsetting a shadow is geometry, not paint: it moves the culling
+/// envelope, so the cached candidate set must be re-selected.
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn shadow_offset_change_reculls() {
+    let mut h = TestHarness::new();
+    let mut buffer = h.make_buffer("Shadowed");
+    buffer.set_redraw(false);
+    let area = |decorations: &'static [TextDecoration]| TextArea {
+        buffer: &buffer,
+        left: 20.0,
+        top: 20.0,
+        scale: 1.0,
+        bounds: full_bounds(),
+        default_color: Color::rgb(255, 255, 255),
+        decorations,
+    };
+    let black = Color::rgb(0, 0, 0);
+    let near: &'static [TextDecoration] =
+        Box::leak(Box::new([TextDecoration::shadow(black, 2.0, 2.0)]));
+    let far: &'static [TextDecoration] =
+        Box::leak(Box::new([TextDecoration::shadow(black, 9.0, 9.0)]));
+    prepare_areas(&mut h, [area(near)]);
+    prepare_areas(&mut h, [area(far)]);
+    assert_eq!(h.renderer.last_prepare_stats().reculls, 1);
+}
+
+/// Two shadows of equal magnitude pointing opposite ways have DIFFERENT
+/// envelopes, so swapping one for the other cannot be a direct hit even
+/// though the maximum reach is unchanged.
+#[test]
+#[ignore = "Requires GPU or software renderer (wgpu adapter)"]
+fn flipping_shadow_direction_is_not_a_direct_hit() {
+    let mut h = TestHarness::new();
+    let mut buffer = h.make_buffer("Shadowed");
+    buffer.set_redraw(false);
+    let area = |decorations: &'static [TextDecoration]| TextArea {
+        buffer: &buffer,
+        left: 20.0,
+        top: 20.0,
+        scale: 1.0,
+        bounds: full_bounds(),
+        default_color: Color::rgb(255, 255, 255),
+        decorations,
+    };
+    let black = Color::rgb(0, 0, 0);
+    let right: &'static [TextDecoration] =
+        Box::leak(Box::new([TextDecoration::shadow(black, 6.0, 0.0)]));
+    let left: &'static [TextDecoration] =
+        Box::leak(Box::new([TextDecoration::shadow(black, -6.0, 0.0)]));
+    prepare_areas(&mut h, [area(right)]);
+    prepare_areas(&mut h, [area(left)]);
+    assert_eq!(
+        h.renderer.last_prepare_stats().direct_hits,
+        0,
+        "opposite offsets reach opposite sides and must re-select candidates"
+    );
 }
 
 #[test]
@@ -748,20 +811,22 @@ fn border_width_change_reculls() {
     let mut h = TestHarness::new();
     let mut buffer = h.make_buffer("Outlined");
     buffer.set_redraw(false);
-    let area = |width| TextArea {
+    let area = |decorations: &'static [TextDecoration]| TextArea {
         buffer: &buffer,
         left: 20.0,
         top: 20.0,
         scale: 1.0,
         bounds: full_bounds(),
         default_color: Color::rgb(255, 255, 255),
-        border: Some(TextBorder {
-            color: Color::rgb(0, 0, 0),
-            width,
-        }),
+        decorations,
     };
-    prepare_areas(&mut h, [area(1.0)]);
-    prepare_areas(&mut h, [area(8.0)]);
+    let black = Color::rgb(0, 0, 0);
+    let thin: &'static [TextDecoration] =
+        Box::leak(Box::new([TextDecoration::outline(black, 1.0)]));
+    let thick: &'static [TextDecoration] =
+        Box::leak(Box::new([TextDecoration::outline(black, 8.0)]));
+    prepare_areas(&mut h, [area(thin)]);
+    prepare_areas(&mut h, [area(thick)]);
     assert_eq!(h.renderer.last_prepare_stats().reculls, 1);
 }
 
@@ -771,23 +836,21 @@ fn removing_border_restores_never_bordered_instances() {
     let mut h = TestHarness::new();
     let mut buffer = h.make_buffer("Outlined");
     buffer.set_redraw(false);
-    let area = |border| TextArea {
+    let area = |decorations: &'static [TextDecoration]| TextArea {
         buffer: &buffer,
         left: 20.0,
         top: 20.0,
         scale: 1.0,
         bounds: full_bounds(),
         default_color: Color::rgb(255, 255, 255),
-        border,
+        decorations,
     };
-    let baseline = prepare_areas(&mut h, [area(None)]);
-    prepare_areas(
-        &mut h,
-        [area(Some(TextBorder {
-            color: Color::rgb(0, 0, 0),
-            width: 3.0,
-        }))],
-    );
-    let removed = prepare_areas(&mut h, [area(None)]);
+    let outlined: &'static [TextDecoration] = Box::leak(Box::new([TextDecoration::outline(
+        Color::rgb(0, 0, 0),
+        3.0,
+    )]));
+    let baseline = prepare_areas(&mut h, [area(&[])]);
+    prepare_areas(&mut h, [area(outlined)]);
+    let removed = prepare_areas(&mut h, [area(&[])]);
     assert_instances_equal(&removed, &baseline);
 }

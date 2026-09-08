@@ -30,7 +30,7 @@ pub use gpu_cache::Cache;
 pub use text_atlas::TextAtlas;
 pub use text_renderer::TextRenderer;
 pub use types::{
-    ColorMode, PrepareError, RenderError, Resolution, TextArea, TextBorder, TextBounds,
+    ColorMode, PrepareError, RenderError, Resolution, TextArea, TextBounds, TextDecoration,
 };
 pub use viewport::Viewport;
 
@@ -86,6 +86,26 @@ mod glyph_instance_tests {
         assert_eq!(
             super::ASSEMBLED_SIMPLE_SHADER_WGSL,
             super::SIMPLE_SHADER_WGSL
+        );
+    }
+
+    /// A zero-spread decoration is specified to reproduce the glyph shape
+    /// exactly, which holds only if both vertex shaders map screen pixels to
+    /// em space identically. The denominator is the place they can silently
+    /// disagree: clamping to one pixel versus guarding the raw dimension
+    /// near zero differ for any glyph dimension between 0 and 1 px, and the
+    /// divergence appears only on sub-pixel glyphs that no ordinary scene
+    /// renders.
+    #[test]
+    fn both_vertex_shaders_use_the_same_ems_per_pixel_denominator() {
+        const DENOMINATOR: &str = "em_size / max(instance.screen_rect.zw, vec2<f32>(1.0, 1.0))";
+        assert!(
+            super::SIMPLE_SHADER_WGSL.contains(DENOMINATOR),
+            "fill vertex shader changed its screen-to-em mapping"
+        );
+        assert!(
+            include_str!("border_shader.wgsl").contains(DENOMINATOR),
+            "decoration vertex shader must match the fill's screen-to-em mapping"
         );
     }
 }

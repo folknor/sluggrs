@@ -155,7 +155,7 @@ fn prepare(
                 bottom: 1080,
             },
             default_color: cosmic_text::Color::rgb(255, 255, 255),
-            border: None,
+            decorations: &[],
         }],
         swash_cache,
     )

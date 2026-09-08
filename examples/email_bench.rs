@@ -301,7 +301,7 @@ fn main() {
                     scale: area.scale,
                     bounds: area.bounds,
                     default_color: area.default_color,
-                    border: None,
+                    decorations: &[],
                 }
             })
             .collect();
@@ -454,7 +454,7 @@ fn layout_text_areas(buffers: &[Buffer]) -> Vec<TextArea<'_>> {
                     bottom: HEIGHT as i32,
                 },
                 default_color: cosmic_text::Color::rgb(230, 230, 230),
-                border: None,
+                decorations: &[],
             };
             top += height + gap;
             area

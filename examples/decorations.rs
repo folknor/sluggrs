@@ -1,15 +1,20 @@
-//! Border/outline showcase for the `TextArea::border` field.
+//! Decoration showcase for the `TextArea::decorations` list.
 //!
-//! Each line is its own text area with its own `TextBorder`, so the demo
-//! covers the axes that matter: width, color, font size, weight, and the
-//! glyph classes that are deliberately borderless (COLRv0/COLRv1 emoji).
+//! Each line is its own text area with its own decorations, so the demo
+//! covers the axes that matter: spread, offset, color, font size, weight,
+//! decoration count and order, and the glyph classes that are deliberately
+//! undecorated (COLRv0/COLRv1 emoji).
 //!
-//! Mouse wheel zooms (border width is logical, so zoom shows the physical
-//! scaling), B toggles all borders off for an A/B against the plain path,
-//! E toggles MSAA + stem darkening.
+//! A decoration is a solid morphological shape: the glyph dilated by
+//! `spread` and translated by `offset`. Spread alone is an outline, offset
+//! alone is a hard drop shadow, and both together is a spread shadow.
+//!
+//! Mouse wheel zooms (spread and offset are logical, so zoom shows the
+//! physical scaling), B toggles all decorations off for an A/B against the
+//! plain path, E toggles MSAA + stem darkening.
 
 use sluggrs::{
-    Cache, ColorMode, Resolution, TextArea, TextAtlas, TextBorder, TextBounds, TextRenderer,
+    Cache, ColorMode, Resolution, TextArea, TextAtlas, TextBounds, TextDecoration, TextRenderer,
     Viewport,
 };
 
@@ -35,7 +40,7 @@ struct TextLine {
     left: f32,
     top: f32,
     default_color: cosmic_text::Color,
-    border: Option<TextBorder>,
+    decorations: Vec<TextDecoration>,
 }
 
 struct RenderState {
@@ -74,7 +79,7 @@ fn make_line(
     top: f32,
     sf: f32,
     default_color: cosmic_text::Color,
-    border: Option<TextBorder>,
+    decorations: Vec<TextDecoration>,
 ) -> TextLine {
     let metrics = Metrics::new(font_size * sf, font_size * sf * 1.2);
     let mut buffer = Buffer::new(font_system, metrics);
@@ -86,7 +91,7 @@ fn make_line(
         left: left * sf,
         top: top * sf,
         default_color,
-        border,
+        decorations,
     }
 }
 
@@ -111,7 +116,8 @@ fn build_lines(font_system: &mut FontSystem, sf: f32) -> Vec<TextLine> {
     let noto_emoji = Family::Name("Noto Color Emoji");
     let w = |v: u16| Weight(v);
 
-    let border = |clr: cosmic_text::Color, width: f32| Some(TextBorder { color: clr, width });
+    let border = |clr: cosmic_text::Color, width: f32| vec![TextDecoration::outline(clr, width)];
+    let none = Vec::new;
 
     macro_rules! line {
         ($family:expr, $weight:expr, $text:expr, $size:expr, $color:expr, $border:expr) => {
@@ -132,7 +138,7 @@ fn build_lines(font_system: &mut FontSystem, sf: f32) -> Vec<TextLine> {
 
     macro_rules! caption {
         ($text:expr) => {
-            line!(inter, w(400), $text, 13.0, light_gray, None);
+            line!(inter, w(400), $text, 13.0, light_gray, none());
             y += 22.0;
         };
     }
@@ -232,15 +238,63 @@ fn build_lines(font_system: &mut FontSystem, sf: f32) -> Vec<TextLine> {
     );
     y += 66.0;
 
-    // --- A/B reference: identical line with no border at all ---
-    caption!("Reference: no border (the zero-cost normal path)");
+    // --- Hard drop shadows: offset, no dilation ---
+    caption!("Hard drop shadow (40px Inter Bold, spread 0, offset only)");
+    for (dx, dy) in [(2.0_f32, 2.0_f32), (4.0, 4.0), (-3.0, 3.0)] {
+        let text = format!("offset ({dx}, {dy}): shadow with no spread");
+        line!(
+            inter,
+            w(700),
+            &text,
+            40.0,
+            white,
+            vec![TextDecoration::shadow(black, dx, dy)]
+        );
+        y += 58.0;
+    }
+    y += 12.0;
+
+    // --- Spread plus offset on one decoration ---
+    caption!("Spread + offset together (40px, 2px spread, offset (3, 3))");
     line!(
         inter,
         w(700),
-        "36px Inter Bold, border: None",
+        "a dilated, displaced shadow",
+        40.0,
+        white,
+        vec![TextDecoration {
+            color: navy,
+            spread: 2.0,
+            offset: [3.0, 3.0],
+        }]
+    );
+    y += 62.0;
+
+    // --- Several decorations on one area, CSS back-to-front order ---
+    caption!("Three decorations, back-to-front like CSS: first entry on top");
+    line!(
+        inter,
+        w(700),
+        "outline over cyan over crimson",
+        44.0,
+        white,
+        vec![
+            TextDecoration::outline(black, 1.5),
+            TextDecoration::shadow(cyan, 4.0, 4.0),
+            TextDecoration::shadow(crimson, 8.0, 8.0),
+        ]
+    );
+    y += 70.0;
+
+    // --- A/B reference: identical line with no decoration at all ---
+    caption!("Reference: no decorations (the zero-cost normal path)");
+    line!(
+        inter,
+        w(700),
+        "36px Inter Bold, decorations: &[]",
         36.0,
         pink,
-        None
+        none()
     );
 
     lines
@@ -371,7 +425,7 @@ fn render(state: &mut RenderState) {
                 bottom: vp_h as i32,
             },
             default_color: line.default_color,
-            border: if borders_on { line.border } else { None },
+            decorations: if borders_on { &line.decorations } else { &[] },
         })
         .collect();
 

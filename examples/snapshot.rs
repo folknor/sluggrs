@@ -20,8 +20,8 @@ use std::io::BufWriter;
 
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Weight};
 use sluggrs::{
-    Cache, ColorMode, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
-    Viewport,
+    Cache, ColorMode, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextDecoration,
+    TextRenderer, Viewport,
 };
 
 const MARGIN: f32 = 24.0;
@@ -79,6 +79,7 @@ struct Block {
     size: f32,
     color: Color,
     text: &'static str,
+    decorations: Vec<TextDecoration>,
 }
 
 impl Block {
@@ -89,6 +90,7 @@ impl Block {
             size,
             color: Color::rgb(255, 255, 255),
             text,
+            decorations: Vec::new(),
         }
     }
 
@@ -99,6 +101,11 @@ impl Block {
 
     fn color(mut self, color: Color) -> Self {
         self.color = color;
+        self
+    }
+
+    fn decorate(mut self, decorations: Vec<TextDecoration>) -> Self {
+        self.decorations = decorations;
         self
     }
 }
@@ -173,6 +180,59 @@ fn scene(id: &str) -> Option<Vec<Block>> {
                 "let band = curves[i] >> 2; // 0x2E74 & 0x0101",
             ),
         ]),
+        // Decorations: outline, hard shadow, spread+offset together, and a
+        // stack whose paint order is observable. The 9px line exercises the
+        // small-size regime where a 1px outline can swallow the fill.
+        //
+        // Every decoration color here is SATURATED, never near-black: the
+        // scene renders on a black background, so a black outline would be
+        // invisible and the snapshot would witness nothing.
+        "decorations" => {
+            let gold = Color::rgb(242, 199, 51);
+            let cyan = Color::rgb(102, 217, 230);
+            let crimson = Color::rgb(196, 48, 64);
+            let green = Color::rgb(96, 208, 128);
+            Some(vec![
+                Block::new(inter, 36.0, "outline 2px")
+                    .weight(Weight::BOLD)
+                    .decorate(vec![TextDecoration::outline(gold, 2.0)]),
+                Block::new(inter, 36.0, "outline 0.5px, sub-pixel spread")
+                    .weight(Weight::BOLD)
+                    .decorate(vec![TextDecoration::outline(cyan, 0.5)]),
+                Block::new(inter, 36.0, "hard shadow, no spread")
+                    .weight(Weight::BOLD)
+                    .decorate(vec![TextDecoration::shadow(crimson, 3.0, 3.0)]),
+                Block::new(inter, 36.0, "shadow up and left")
+                    .weight(Weight::BOLD)
+                    .decorate(vec![TextDecoration::shadow(green, -3.0, -3.0)]),
+                Block::new(inter, 36.0, "spread 2 plus offset 3")
+                    .weight(Weight::BOLD)
+                    .decorate(vec![TextDecoration {
+                        color: gold,
+                        spread: 2.0,
+                        offset: [3.0, 3.0],
+                    }]),
+                // First entry paints on top, like CSS text-shadow: gold over
+                // cyan over the furthest crimson.
+                Block::new(inter, 40.0, "stacked: gold over cyan over crimson")
+                    .weight(Weight::BOLD)
+                    .decorate(vec![
+                        TextDecoration::outline(gold, 1.5),
+                        TextDecoration::shadow(cyan, 5.0, 5.0),
+                        TextDecoration::shadow(crimson, 10.0, 10.0),
+                    ]),
+                Block::new(inter, 9.0, PANGRAM).decorate(vec![TextDecoration::outline(gold, 1.0)]),
+                // Same glyphs at two sizes in one frame, both decorated:
+                // the blob capacity must satisfy the SMALLER ppem, which
+                // needs the larger radius in font units.
+                Block::new(inter, 12.0, "shared glyphs across sizes")
+                    .decorate(vec![TextDecoration::outline(cyan, 2.0)]),
+                Block::new(inter, 48.0, "shared glyphs across sizes")
+                    .decorate(vec![TextDecoration::outline(cyan, 2.0)]),
+                // Undecorated reference: the zero-cost normal path.
+                Block::new(inter, 36.0, "no decorations").weight(Weight::BOLD),
+            ])
+        }
         _ => None,
     }
 }
@@ -259,9 +319,9 @@ fn main() {
 
     // Lay the blocks out top to bottom, wrapping at the target width.
     let usable_width = args.width as f32 - MARGIN * 2.0;
-    let mut buffers: Vec<(Buffer, Color, f32)> = Vec::new();
+    let mut buffers: Vec<(Buffer, Color, f32, Vec<TextDecoration>)> = Vec::new();
     let mut cursor_y = MARGIN;
-    for block in &blocks {
+    for block in blocks {
         let line_height = (block.size * 1.3).ceil();
         let metrics = Metrics::new(block.size, line_height);
         let mut buffer = Buffer::new(&mut font_system, metrics);
@@ -274,8 +334,17 @@ fn main() {
         for run in buffer.layout_runs() {
             block_height = block_height.max(run.line_top + line_height);
         }
+        // Decorations paint outside the text box, so a shadow reaching down
+        // would otherwise overlap the next block and make the scene
+        // unreadable. Reserve the furthest downward reach.
+        let reach_down = block
+            .decorations
+            .iter()
+            .map(|d| d.spread + d.offset[1].max(0.0))
+            .fold(0.0_f32, f32::max);
+        block_height += reach_down;
 
-        buffers.push((buffer, block.color, cursor_y));
+        buffers.push((buffer, block.color, cursor_y, block.decorations));
         cursor_y += block_height + GAP;
     }
 
@@ -287,14 +356,14 @@ fn main() {
     };
     let areas: Vec<TextArea> = buffers
         .iter()
-        .map(|(buffer, color, top)| TextArea {
+        .map(|(buffer, color, top, decorations)| TextArea {
             buffer,
             left: MARGIN,
             top: *top,
             scale: 1.0,
             bounds,
             default_color: *color,
-            border: None,
+            decorations,
         })
         .collect();
 

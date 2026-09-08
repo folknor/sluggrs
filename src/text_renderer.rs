@@ -2,7 +2,7 @@ use crate::GlyphInstance;
 use crate::glyph_cache::GlyphKey;
 use crate::raster_text::{NonVectorGlyph, RasterVertex};
 use crate::text_atlas::TextAtlas;
-use crate::types::{PrepareError, RenderError, TextArea};
+use crate::types::{DecorationExtents, PhysicalDecoration, PrepareError, RenderError, TextArea};
 use crate::viewport::Viewport;
 
 use rustc_hash::FxHashMap;
@@ -39,7 +39,11 @@ struct CachedTextArea {
     scale: f32,
     bounds: TextBounds,
     default_color: cosmic_text::Color,
-    border_width: Option<f32>,
+    /// Resolved decorations, in input order. Color changes here are paint
+    /// only; spread and offset changes move `extents` and so are geometry.
+    decorations: Vec<PhysicalDecoration>,
+    /// Culling envelope the cached candidate set was selected against.
+    extents: DecorationExtents,
     atlas_generation: u32,
     instances: Vec<GlyphInstance>,
     border_instances: Vec<GlyphInstance>,
@@ -50,12 +54,16 @@ struct CachedTextArea {
     complete: bool,
 }
 
+/// Per-decoration-draw paint. 32 bytes, matching `BorderParams` in the
+/// border shader; the stride is padded to the device's dynamic-offset
+/// alignment at upload.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct BorderUniform {
     color: [f32; 4],
-    width: f32,
-    _pad: [f32; 3],
+    spread: f32,
+    _pad0: f32,
+    offset: [f32; 2],
 }
 
 #[derive(Clone, Copy)]
@@ -75,6 +83,23 @@ struct OrderedDraw {
     range: std::ops::Range<u32>,
     mode: DrawMode,
     uniform_offset: u32,
+}
+
+/// Antialiasing allowance the border shader adds to every dilation, in
+/// physical pixels. The same value drives quad dilation, the distance-grid
+/// radius, the fragment coverage threshold, and the CPU culling extents;
+/// they must agree or the fragment falloff is clipped at the quad edge.
+pub(crate) const DECORATION_AA: f32 = 0.5;
+
+/// The largest distance-query radius any of these decorations needs, or
+/// `None` when there is nothing to draw. Offset is excluded on purpose.
+fn widest_spread(decorations: &[PhysicalDecoration]) -> Option<f32> {
+    decorations
+        .iter()
+        .map(|d| d.spread + DECORATION_AA)
+        .fold(None, |acc: Option<f32>, r| {
+            Some(acc.map_or(r, |a| a.max(r)))
+        })
 }
 
 /// Find the border-eligible glyph key behind an emitted instance, with its
@@ -141,14 +166,15 @@ struct MissArea<'a> {
     bounds_max_y: i32,
     default_color: [f32; 4],
     all_runs_included: bool,
-    border_width: Option<f32>,
+    decorations: Vec<PhysicalDecoration>,
+    extents: DecorationExtents,
 }
 
 /// Plan record per text area produced by pass 1 and consumed by pass 3 in input order.
 enum AreaPlan<'a> {
     HitDirect {
         cache_key: TextAreaCacheKey,
-        border: Option<([f32; 4], f32)>,
+        decorations: Vec<PhysicalDecoration>,
     },
     ReCull {
         cache_key: TextAreaCacheKey,
@@ -158,10 +184,22 @@ enum AreaPlan<'a> {
         top: f32,
         bounds: [i32; 4],
         scroll: [f32; 2],
-        border_width: Option<f32>,
-        border_color: Option<[f32; 4]>,
+        decorations: Vec<PhysicalDecoration>,
+        extents: DecorationExtents,
     },
     Miss(MissArea<'a>),
+}
+
+impl AreaPlan<'_> {
+    /// The area's decorations, whatever the plan kind.
+    fn decorations(&self) -> &[PhysicalDecoration] {
+        match self {
+            AreaPlan::HitDirect { decorations, .. } | AreaPlan::ReCull { decorations, .. } => {
+                decorations
+            }
+            AreaPlan::Miss(area) => &area.decorations,
+        }
+    }
 }
 
 /// How a cached area relates to the requested placement (`left`, `top`,
@@ -345,12 +383,17 @@ impl TextRenderer {
                 if glyphs_valid {
                     let dx = text_area.left - cached.left;
                     let dy = text_area.top - cached.top;
-                    let border_width = text_area.physical_border_width();
-                    let border_width_matches = cached.border_width == border_width;
+                    let decorations = text_area.physical_decorations();
+                    let extents = DecorationExtents::of(&decorations, DECORATION_AA);
+                    // Color is paint only - it rides in the uniform and never
+                    // moves a candidate. Spread and offset are geometry, and
+                    // they are exactly what `extents` summarizes, so the
+                    // envelope is the placement-validity test.
+                    let extents_match = cached.extents == extents;
                     match classify_placement(
                         dx,
                         dy,
-                        cached.scroll == scroll && border_width_matches,
+                        cached.scroll == scroll && extents_match,
                         cached.complete,
                         !cached.non_vector_glyphs.is_empty(),
                     ) {
@@ -358,14 +401,7 @@ impl TextRenderer {
                             prepare_stats.direct_hits += 1;
                             plans.push(AreaPlan::HitDirect {
                                 cache_key,
-                                border: border_width.map(|width| {
-                                    (
-                                        color_to_f32(
-                                            text_area.border.expect("validated border").color,
-                                        ),
-                                        width,
-                                    )
-                                }),
+                                decorations,
                             });
                             continue;
                         }
@@ -380,10 +416,8 @@ impl TextRenderer {
                                 top: text_area.top,
                                 bounds: clipped_bounds(text_area.bounds, resolution),
                                 scroll,
-                                border_width,
-                                border_color: border_width.map(|_| {
-                                    color_to_f32(text_area.border.expect("validated border").color)
-                                }),
+                                decorations,
+                                extents,
                             });
                             continue;
                         }
@@ -399,7 +433,8 @@ impl TextRenderer {
                 clipped_bounds(text_area.bounds, resolution);
 
             let default_color = color_to_f32(text_area.default_color);
-            let border_width = text_area.physical_border_width();
+            let decorations = text_area.physical_decorations();
+            let extents = DecorationExtents::of(&decorations, DECORATION_AA);
             let work_start = work.len();
 
             let mut all_runs_included = true;
@@ -412,7 +447,7 @@ impl TextRenderer {
                     &run,
                     bounds_min_y,
                     bounds_max_y,
-                    border_width.unwrap_or(0.0),
+                    extents,
                 ) {
                     all_runs_included = false;
                     if started_visible_range {
@@ -443,7 +478,8 @@ impl TextRenderer {
                 bounds_max_y,
                 default_color,
                 all_runs_included,
-                border_width,
+                decorations,
+                extents,
             }));
         }
 
@@ -469,13 +505,17 @@ impl TextRenderer {
         // same glyph drawn at a smaller size in the same frame is
         // under-provisioned - which forced a rebuild during emission, the
         // exact supersession this pre-pass exists to prevent.
+        // One blob per glyph serves EVERY decoration of every area, so the
+        // requirement is the widest spread any of them asks for. Offset is
+        // deliberately absent: it translates the quad, it does not change
+        // which boundary is nearest a fragment in glyph space.
         let mut border_requirements: FxHashMap<GlyphKey, BorderCapacity> = FxHashMap::default();
         for plan in &plans {
+            let Some(radius_px) = widest_spread(plan.decorations()) else {
+                continue;
+            };
             match plan {
-                AreaPlan::HitDirect {
-                    cache_key,
-                    border: Some((_, width)),
-                } => {
+                AreaPlan::HitDirect { cache_key, .. } | AreaPlan::ReCull { cache_key, .. } => {
                     let cached = &self.text_area_cache[cache_key];
                     for instance in &cached.instances {
                         if let Some((key, units_per_em)) =
@@ -483,48 +523,27 @@ impl TextRenderer {
                         {
                             border_requirements.entry(key).or_default().extend(
                                 instance.ppem,
-                                *width + 0.5,
+                                radius_px,
                                 units_per_em,
                             );
                         }
                     }
                 }
                 AreaPlan::Miss(area) => {
-                    if let Some(width) = area.border_width {
-                        for wi in &work[area.work_start..area.work_end] {
-                            let entry = atlas.glyph(&wi.key).expect("glyph resolved");
-                            if !entry.is_non_vector()
-                                && !entry.is_color_vector()
-                                && !entry.is_color_v1_vector()
-                            {
-                                border_requirements.entry(wi.key).or_default().extend(
-                                    wi.glyph.font_size * area.text_area.scale,
-                                    width + 0.5,
-                                    entry.units_per_em,
-                                );
-                            }
-                        }
-                    }
-                }
-                AreaPlan::ReCull {
-                    cache_key,
-                    border_width: Some(width),
-                    ..
-                } => {
-                    let cached = &self.text_area_cache[cache_key];
-                    for instance in &cached.instances {
-                        if let Some((key, units_per_em)) =
-                            bordered_key_for(atlas, &cached.distinct_keys, instance.glyph_offset)
+                    for wi in &work[area.work_start..area.work_end] {
+                        let entry = atlas.glyph(&wi.key).expect("glyph resolved");
+                        if !entry.is_non_vector()
+                            && !entry.is_color_vector()
+                            && !entry.is_color_v1_vector()
                         {
-                            border_requirements.entry(key).or_default().extend(
-                                instance.ppem,
-                                *width + 0.5,
-                                units_per_em,
+                            border_requirements.entry(wi.key).or_default().extend(
+                                wi.glyph.font_size * area.text_area.scale,
+                                radius_px,
+                                entry.units_per_em,
                             );
                         }
                     }
                 }
-                _ => {}
             }
         }
         for (key, capacity) in border_requirements {
@@ -532,23 +551,20 @@ impl TextRenderer {
         }
 
         // ===== Pass 3: emit instances per area in input order =====
-        let bordered_frame = plans.iter().any(|plan| match plan {
-            AreaPlan::HitDirect { border, .. } => border.is_some(),
-            AreaPlan::ReCull { border_width, .. } => border_width.is_some(),
-            AreaPlan::Miss(area) => area.border_width.is_some(),
-        });
+        let bordered_frame = plans.iter().any(|plan| !plan.decorations().is_empty());
         let mut border_uniforms = Vec::new();
         for plan in &plans {
             let normal_start = self.instances.len() as u32;
             let border_start = self.border_instances.len() as u32;
-            let border_paint = match plan {
-                AreaPlan::HitDirect { cache_key, border } => {
+            let decorations = plan.decorations();
+            match plan {
+                AreaPlan::HitDirect { cache_key, .. } => {
                     let cached = self
                         .text_area_cache
                         .get_mut(cache_key)
                         .expect("direct-hit cache entry exists");
                     self.instances.extend_from_slice(&cached.instances);
-                    if border.is_some() {
+                    if !decorations.is_empty() {
                         let mut refreshed = Vec::new();
                         for instance in &cached.instances {
                             if let Some((key, _)) = bordered_key_for(
@@ -569,7 +585,7 @@ impl TextRenderer {
                     self.border_instances
                         .extend_from_slice(&cached.border_instances);
                     non_vector_collector.extend_from_slice(&cached.non_vector_glyphs);
-                    *border
+                    cached.decorations = decorations.to_vec();
                 }
                 AreaPlan::ReCull {
                     cache_key,
@@ -579,8 +595,8 @@ impl TextRenderer {
                     top,
                     bounds,
                     scroll,
-                    border_width,
-                    border_color,
+                    extents,
+                    ..
                 } => {
                     let cached = self
                         .text_area_cache
@@ -593,12 +609,12 @@ impl TextRenderer {
                         *dy,
                         *scroll,
                         *bounds,
-                        border_width.unwrap_or(0.0),
+                        *extents,
                     );
                     non_vector_collector.extend_from_slice(&cached.non_vector_glyphs);
                     self.instances.extend_from_slice(&instances);
                     let mut border_instances = Vec::new();
-                    if border_width.is_some() {
+                    if !decorations.is_empty() {
                         for instance in &instances {
                             if let Some((key, _)) = bordered_key_for(
                                 atlas,
@@ -618,11 +634,11 @@ impl TextRenderer {
                     cached.left = *left;
                     cached.top = *top;
                     cached.scroll = *scroll;
-                    cached.border_width = *border_width;
+                    cached.decorations = decorations.to_vec();
+                    cached.extents = *extents;
                     cached.instances = instances;
                     cached.border_instances = border_instances;
                     cached.complete = complete;
-                    (*border_color).zip(*border_width)
                 }
                 AreaPlan::Miss(area) => {
                     let mut area_instances: Vec<GlyphInstance> = Vec::new();
@@ -681,7 +697,12 @@ impl TextRenderer {
                                 let screen_h = (max_y - min_y) * scale;
 
                                 let screen_rect = [screen_x, screen_y, screen_w, screen_h];
-                                if vector_rect_visible(screen_rect, scroll, bounds, 0.0) {
+                                if vector_rect_visible(
+                                    screen_rect,
+                                    scroll,
+                                    bounds,
+                                    DecorationExtents::default(),
+                                ) {
                                     area_instances.push(GlyphInstance {
                                         screen_rect,
                                         color: match glyph.color_opt {
@@ -728,7 +749,12 @@ impl TextRenderer {
                                     let screen_h = (max_y - min_y) * scale;
 
                                     let screen_rect = [screen_x, screen_y, screen_w, screen_h];
-                                    if !vector_rect_visible(screen_rect, scroll, bounds, 0.0) {
+                                    if !vector_rect_visible(
+                                        screen_rect,
+                                        scroll,
+                                        bounds,
+                                        DecorationExtents::default(),
+                                    ) {
                                         complete = false;
                                         continue;
                                     }
@@ -767,12 +793,7 @@ impl TextRenderer {
                         let screen_h = (max_y - min_y) * scale;
 
                         let screen_rect = [screen_x, screen_y, screen_w, screen_h];
-                        if !vector_rect_visible(
-                            screen_rect,
-                            scroll,
-                            bounds,
-                            area.border_width.unwrap_or(0.0),
-                        ) {
+                        if !vector_rect_visible(screen_rect, scroll, bounds, area.extents) {
                             complete = false;
                             continue;
                         }
@@ -791,7 +812,7 @@ impl TextRenderer {
                             ppem: glyph.font_size * text_area.scale,
                         };
                         area_instances.push(fill_instance);
-                        if area.border_width.is_some() {
+                        if !decorations.is_empty() {
                             area_border_instances.push(GlyphInstance {
                                 glyph_offset: atlas
                                     .border_descriptor(&wi.key)
@@ -817,7 +838,8 @@ impl TextRenderer {
                             scale: text_area.scale,
                             bounds: text_area.bounds,
                             default_color: text_area.default_color,
-                            border_width: area.border_width,
+                            decorations: decorations.to_vec(),
+                            extents: area.extents,
                             atlas_generation: atlas_gen,
                             instances: area_instances,
                             border_instances: area_border_instances,
@@ -827,30 +849,34 @@ impl TextRenderer {
                             complete,
                         },
                     );
-                    area.border_width.map(|width| {
-                        (
-                            color_to_f32(text_area.border.expect("validated border").color),
-                            width,
-                        )
-                    })
                 }
-            };
+            }
             let normal_end = self.instances.len() as u32;
             let border_end = self.border_instances.len() as u32;
+            // Every decoration of this area draws the SAME instance range -
+            // offset and dilation live in the uniform and are applied in the
+            // vertex shader, so N decorations cost N uniform rebinds rather
+            // than N copies of the instance stream.
+            //
+            // Iterated in REVERSE because the list is back-to-front like CSS
+            // text-shadow: the first entry must paint on top, so it is
+            // encoded last.
             if border_end > border_start {
-                let (color, width) = border_paint.expect("border instances have paint");
-                let uniform_offset = border_uniforms.len() as u32;
-                border_uniforms.push(BorderUniform {
-                    color,
-                    width,
-                    _pad: [0.0; 3],
-                });
-                self.draws.push(OrderedDraw {
-                    stream: DrawStream::Border,
-                    range: border_start..border_end,
-                    mode: DrawMode::Underlay,
-                    uniform_offset,
-                });
+                for decoration in decorations.iter().rev() {
+                    let uniform_offset = border_uniforms.len() as u32;
+                    border_uniforms.push(BorderUniform {
+                        color: decoration.color,
+                        spread: decoration.spread,
+                        _pad0: 0.0,
+                        offset: decoration.offset,
+                    });
+                    self.draws.push(OrderedDraw {
+                        stream: DrawStream::Border,
+                        range: border_start..border_end,
+                        mode: DrawMode::Underlay,
+                        uniform_offset,
+                    });
+                }
             }
             if bordered_frame && normal_end > normal_start {
                 self.draws.push(OrderedDraw {
@@ -1173,6 +1199,10 @@ fn clipped_bounds(bounds: TextBounds, resolution: crate::types::Resolution) -> [
     ]
 }
 
+/// A run whose own box is outside the bounds can still be needed: its
+/// decorations reach further. `extents.top` widens the top edge and
+/// `extents.bottom` the bottom, independently - a downward shadow must not
+/// resurrect a run above the viewport.
 fn run_is_visible(
     top: f32,
     scale: f32,
@@ -1180,27 +1210,29 @@ fn run_is_visible(
     run: &cosmic_text::LayoutRun,
     bounds_min_y: i32,
     bounds_max_y: i32,
-    border_margin: f32,
+    extents: DecorationExtents,
 ) -> bool {
     let start_y = top + run.line_top * scale + scroll_y;
     let end_y = start_y + run.line_height * scale;
-    start_y - border_margin <= bounds_max_y as f32 && bounds_min_y as f32 <= end_y + border_margin
+    start_y - extents.top <= bounds_max_y as f32 && bounds_min_y as f32 <= end_y + extents.bottom
 }
 
 fn vector_rect_visible(
     screen_rect: [f32; 4],
     scroll: [f32; 2],
     bounds: [i32; 4],
-    border_margin: f32,
+    extents: DecorationExtents,
 ) -> bool {
     let [x, y, width, height] = screen_rect;
     let x = x + scroll[0];
     let y = y + scroll[1];
-    let margin = border_margin + 1.0;
-    x + width + margin >= bounds[0] as f32
-        && x - margin <= bounds[2] as f32
-        && y + height + margin >= bounds[1] as f32
-        && y - margin <= bounds[3] as f32
+    // The extra pixel is the long-standing conservative slack on the fill
+    // rect itself; decoration reach is added per side on top of it.
+    const SLACK: f32 = 1.0;
+    x + width + extents.right + SLACK >= bounds[0] as f32
+        && x - extents.left - SLACK <= bounds[2] as f32
+        && y + height + extents.bottom + SLACK >= bounds[1] as f32
+        && y - extents.top - SLACK <= bounds[3] as f32
 }
 
 /// Classify a placement-valid cache hit. `Direct` when nothing about the
@@ -1231,7 +1263,7 @@ fn re_cull_vector_instances(
     dy: f32,
     scroll: [f32; 2],
     bounds: [i32; 4],
-    border_margin: f32,
+    extents: DecorationExtents,
 ) -> (Vec<GlyphInstance>, bool) {
     let mut visible = Vec::with_capacity(instances.len());
     let mut complete = complete;
@@ -1239,7 +1271,7 @@ fn re_cull_vector_instances(
         let mut adjusted = *instance;
         adjusted.screen_rect[0] += dx;
         adjusted.screen_rect[1] += dy;
-        if vector_rect_visible(adjusted.screen_rect, scroll, bounds, border_margin) {
+        if vector_rect_visible(adjusted.screen_rect, scroll, bounds, extents) {
             visible.push(adjusted);
         } else {
             complete = false;
@@ -1249,7 +1281,7 @@ fn re_cull_vector_instances(
 }
 
 /// Convert a cosmic_text Color to normalized [f32; 4].
-fn color_to_f32(c: cosmic_text::Color) -> [f32; 4] {
+pub(crate) fn color_to_f32(c: cosmic_text::Color) -> [f32; 4] {
     [
         c.r() as f32 / 255.0,
         c.g() as f32 / 255.0,
@@ -1330,25 +1362,73 @@ mod tests {
         }
     }
 
+    fn no_extents() -> DecorationExtents {
+        DecorationExtents::default()
+    }
+
     #[test]
     fn run_visibility_applies_fractional_and_negative_scroll_at_inclusive_edges() {
         let layout_run = run(10.0, 5.0);
-        assert!(run_is_visible(0.0, 1.0, -15.0, &layout_run, 0, 10, 0.0));
-        assert!(run_is_visible(0.5, 1.0, -10.5, &layout_run, 0, 5, 0.0));
-        assert!(!run_is_visible(0.0, 1.0, -15.1, &layout_run, 0, 10, 0.0));
+        let e = no_extents();
+        assert!(run_is_visible(0.0, 1.0, -15.0, &layout_run, 0, 10, e));
+        assert!(run_is_visible(0.5, 1.0, -10.5, &layout_run, 0, 5, e));
+        assert!(!run_is_visible(0.0, 1.0, -15.1, &layout_run, 0, 10, e));
+    }
+
+    /// A run pushed off the top by scroll must be revived by an UPWARD
+    /// decoration reach, not by a downward one. A single scalar margin
+    /// cannot tell those apart.
+    #[test]
+    fn run_visibility_uses_the_side_the_decoration_actually_reaches() {
+        let layout_run = run(10.0, 5.0);
+        let up = DecorationExtents {
+            bottom: 4.0,
+            ..DecorationExtents::default()
+        };
+        let down = DecorationExtents {
+            top: 4.0,
+            ..DecorationExtents::default()
+        };
+        // Run sits just above the bounds: only `bottom` reach can save it.
+        assert!(!run_is_visible(0.0, 1.0, -17.0, &layout_run, 0, 10, down));
+        assert!(run_is_visible(0.0, 1.0, -17.0, &layout_run, 0, 10, up));
     }
 
     #[test]
     fn vector_culling_uses_scroll_and_one_pixel_margin() {
         let rect = [10.0, 10.0, 5.0, 5.0];
-        assert!(vector_rect_visible(rect, [-16.0, 0.0], [0, 0, 10, 20], 0.0));
-        assert!(!vector_rect_visible(
+        let e = no_extents();
+        assert!(vector_rect_visible(rect, [-16.0, 0.0], [0, 0, 10, 20], e));
+        assert!(!vector_rect_visible(rect, [-16.1, 0.0], [0, 0, 10, 20], e));
+        let right = DecorationExtents {
+            right: 2.0,
+            ..DecorationExtents::default()
+        };
+        assert!(vector_rect_visible(
             rect,
-            [-16.1, 0.0],
+            [-18.0, 0.0],
             [0, 0, 10, 20],
-            0.0
+            right
         ));
-        assert!(vector_rect_visible(rect, [-18.0, 0.0], [0, 0, 10, 20], 2.0));
+    }
+
+    /// The rect is off the LEFT of the bounds, so only rightward reach can
+    /// bring it back. Equal-magnitude leftward reach must not.
+    #[test]
+    fn vector_culling_extents_are_directional() {
+        let rect = [10.0, 10.0, 5.0, 5.0];
+        let bounds = [0, 0, 10, 20];
+        let scroll = [-18.0, 0.0];
+        let right = DecorationExtents {
+            right: 2.0,
+            ..DecorationExtents::default()
+        };
+        let left = DecorationExtents {
+            left: 2.0,
+            ..DecorationExtents::default()
+        };
+        assert!(vector_rect_visible(rect, scroll, bounds, right));
+        assert!(!vector_rect_visible(rect, scroll, bounds, left));
     }
 
     #[test]
@@ -1402,7 +1482,7 @@ mod tests {
             -0.5,
             [0.0, 0.0],
             [0, 0, 10, 10],
-            0.0,
+            no_extents(),
         );
         assert!(complete);
         assert_eq!(visible[0].screen_rect[..2], [3.5, 1.5]);
@@ -1414,7 +1494,7 @@ mod tests {
             0.0,
             [0.0, 0.0],
             [0, 0, 10, 10],
-            0.0,
+            no_extents(),
         );
         assert!(visible.is_empty());
         assert!(!complete);
