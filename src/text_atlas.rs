@@ -193,24 +193,32 @@ impl TextAtlas {
         key: GlyphKey,
         outline: &crate::outline::GlyphOutline,
         ppem: f32,
-        radius_px: f32,
+        radius_units: f32,
     ) -> Result<u32, crate::types::PrepareError> {
         let entry = self
             .glyphs
             .get(&key)
             .ok_or(crate::types::PrepareError::AtlasFull)?;
-        let wanted_bucket = 2.0_f32.powf(radius_px.max(f32::MIN_POSITIVE).log2().ceil());
+        // The two capacities are independent: ppem bounds the boundary
+        // approximation's error, radius_units bounds the distance query.
+        let mut ppem = ppem;
+        let mut radius_units = radius_units;
         if let Some(border) = self
             .resident_blobs
             .get(&key)
             .and_then(|blob| blob.border.as_ref())
         {
-            let required_units = wanted_bucket * entry.units_per_em / ppem.max(f32::MIN_POSITIVE);
-            if border.radius_bucket >= wanted_bucket
-                && border.ppem_ceiling >= ppem
-                && border.grid_radius_units >= required_units
-            {
+            if border.ppem_ceiling >= ppem && border.grid_radius_units >= radius_units {
                 return Ok(border.start_texel);
+            }
+            // Growth only: a rebuild triggered by one capacity must not
+            // shrink the other below what an existing descriptor promised.
+            // The builder derives its ceiling as next_pow2(2 * ppem), so
+            // feeding the old ceiling back in would double it every
+            // rebuild; half of it reproduces exactly the old ceiling.
+            ppem = ppem.max(border.ppem_ceiling / 2.0);
+            if border.grid_radius_units.is_finite() {
+                radius_units = radius_units.max(border.grid_radius_units);
             }
         }
         let prepared = crate::border::prepare_border(
@@ -218,7 +226,7 @@ impl TextAtlas {
             entry.glyph_offset,
             entry.units_per_em,
             ppem,
-            radius_px,
+            radius_units,
         )?;
         let start = self.buffer_cursor;
         self.buffer_cursor = self.checked_buffer_end(prepared.texel_len)?;
@@ -230,9 +238,8 @@ impl TextAtlas {
         let replaced = resident.border.replace(ResidentBorderBlob {
             start_texel: start,
             texel_len: prepared.texel_len,
-            radius_bucket: prepared.descriptor.radius_bucket,
             ppem_ceiling: prepared.descriptor.ppem_ceiling,
-            grid_radius_units: prepared.grid.radius,
+            grid_radius_units: prepared.descriptor.grid_radius_units,
         });
         if let Some(old) = replaced {
             self.reclaimable_border_spans
@@ -241,11 +248,22 @@ impl TextAtlas {
         Ok(start)
     }
 
+    /// Look up an already-resolved border descriptor. Instance emission
+    /// uses this: every capacity must be resolved in one pre-pass before
+    /// any descriptor is emitted, or a later, larger use in the same frame
+    /// supersedes a blob an earlier instance already named.
+    pub(crate) fn border_descriptor(&self, key: &GlyphKey) -> Option<u32> {
+        self.resident_blobs
+            .get(key)
+            .and_then(|blob| blob.border.as_ref())
+            .map(|border| border.start_texel)
+    }
+
     pub(crate) fn resolve_border_glyph(
         &mut self,
         key: GlyphKey,
         ppem: f32,
-        radius_px: f32,
+        radius_units: f32,
     ) -> Result<u32, crate::types::PrepareError> {
         let weight = cosmic_text::Weight(key.font_weight);
         let cached = self
@@ -269,7 +287,7 @@ impl TextAtlas {
         {
             apply_italic_shear(&mut outline);
         }
-        self.resolve_border_blob(key, &outline, ppem, radius_px)
+        self.resolve_border_blob(key, &outline, ppem, radius_units)
     }
 
     pub(crate) fn color_glyph(&self, key: &GlyphKey) -> Option<&ColorGlyphEntry> {
@@ -455,7 +473,6 @@ impl TextAtlas {
                         CachedBorderBlob {
                             relative_offset: blob.texel_len,
                             texel_len: border.texel_len,
-                            radius_bucket: border.radius_bucket,
                             ppem_ceiling: border.ppem_ceiling,
                             grid_radius_units: border.grid_radius_units,
                         },
@@ -787,7 +804,6 @@ impl TextAtlas {
         let resident_border = blob.border.as_ref().map(|border| ResidentBorderBlob {
             start_texel: start + border.relative_offset,
             texel_len: border.texel_len,
-            radius_bucket: border.radius_bucket,
             ppem_ceiling: border.ppem_ceiling,
             grid_radius_units: border.grid_radius_units,
         });

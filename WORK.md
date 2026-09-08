@@ -1,6 +1,7 @@
 # WORK
 
-Implement text border/outline support with a zero-cost normal path.
+Generalize text borders into ordered text decorations: outline-only
+(hollow) text, hard offset shadows, and blurred shadows.
 
 Do NOT run cargo or brokkr; the orchestrator runs all builds, tests, and
 formatting. Read and write code only. Do not commit. Do not touch
@@ -8,192 +9,260 @@ formatting. Read and write code only. Do not commit. Do not touch
 
 ## Background
 
-PR #1 (diff saved at `notes/pr1.diff`, reference only - do NOT apply it)
-added borders by growing `GlyphInstance` to 68 bytes and threading a
-signed-distance path through the hot shader. We are reimplementing the
-feature natively on the pinned deps (wgpu 29, skrifa 0.40 - do not bump
-anything) under a hard requirement: text without borders must render
-through byte-for-byte identical GPU state - same 48-byte `GlyphInstance`,
-same shader module source, same pipeline descriptor, same single draw.
+`TextArea` currently carries `Option<TextBorder { color, width }>`. The
+border is drawn as a solid dilated underlay of each eligible monochrome
+vector glyph, in border color, before that area's fills; see the shipped
+design notes in git history for the blob and certification details.
 
-## Agreed design (settled; do not relitigate)
+We are adding the three text-decoration features CSS authors actually
+use, in this order:
 
-### API (`types.rs`)
-- `pub struct TextBorder { pub color: cosmic_text::Color, pub width: f32 }`
-- `TextArea` gains `pub border: Option<TextBorder>`.
-- `width` is in logical pixels, multiplied by `TextArea.scale` exactly
-  once on the CPU into physical pixels. Validate the PHYSICAL result:
-  non-finite, zero, negative, or overflowed => treated as `None`.
-  Physical border width is constant across font sizes (CSS-outline-like).
+1. Outline-only (hollow) text: a fill that does not paint, so only the
+   outline shows. The CSS `-webkit-text-fill-color` effect.
+2. Hard offset shadow: color plus `dx`/`dy`, no blur.
+3. Blurred shadow: the real CSS `text-shadow`.
 
-### Scope contract
-- Borders apply to monochrome vector glyphs only. COLRv0 layer
-  instances, COLRv1 glyphs, and raster-fallback glyphs render exactly as
-  today, borderless. Eligibility is decided per RESOLVED glyph before
-  flattening into instances (note: COLRv0 layers currently flatten into
-  ordinary-looking instances with `cmd_texel_count == 0`; that field
-  cannot carry eligibility - track it explicitly).
+Deps stay pinned (wgpu 29, skrifa 0.40, cosmic-text 0.19). Pre-1.0:
+breaking the public surface, including the iced-facing `prepare`
+signature, is acceptable where it is the right shape.
 
-### Compositing semantic
-- Per area: draw a dilated UNDERLAY of each eligible glyph in the border
-  color (full dilated coverage, not an exterior ring), then draw the
-  area's fills over it with the existing normal pipeline. Underlay
-  coverage = winding-inside OR distance <= physical width (AA over the
-  half-pixel edge). Translucent fills show the underlay through; that is
-  the defined semantic. Complete each area's underlay phase before its
-  fill phase; preserve area order; never let one area's underlay land
-  over an earlier area's fill, and do not regress the current intra-area
-  ordering of fills including excluded color/raster glyphs (beware the
-  current global raster tail in `render()`).
-- Border (underlay) pass: depth test without depth write; no duplicated
-  stencil side effects. Distinct dynamic-uniform offsets per draw -
-  never rewrite one uniform slot between encoded draws.
+## Prerequisite bug: border blob capacity aggregation
 
-### GPU structure
-- `GlyphInstance` stays exactly 48 bytes; restore the ABI test.
-- Normal instances stay input-ordered in the existing stream; an
-  all-normal frame must produce the exact current single draw.
-- Bordered glyphs additionally emit into a SEPARATE border instance
-  stream (separate vertex buffer) using the SAME 48-byte layout, whose
-  `glyph_offset` field references the glyph's border descriptor instead
-  of the fill blob. Draw metadata is an ordered list of
-  {stream, instance range, mode, uniform offset}.
-- Border shader lives in a SEPARATE, lazily created WGSL module.
-  Shared functions (curve evaluator, root solver, unpack helpers) live
-  in one source fragment concatenated into both module strings at build
-  time; the assembled normal module must be byte-identical to today's
-  `simple_shader.wgsl`. Verify with a unit test comparing the assembled
-  string to the current file content.
-- Border pipeline: lazily created in `gpu_cache.rs` (extend the cache
-  key), own pipeline layout adding a dynamic-offset uniform bind group
-  (border color + physical width; mind the 32-byte struct size and
-  `min_uniform_buffer_offset_alignment` spacing, one lazily allocated
-  buffer + one bind group). The NORMAL pipeline layout, entrypoints,
-  and descriptor must remain untouched.
-- Border vertex shader dilates the quad by the physical border width
-  plus AA allowance; the same single physical width value drives quad
-  dilation, candidate radius, fragment threshold, and CPU culling
-  margins. Never clamp dilation or thresholds (the radius cap below
-  changes lookup strategy only).
+`text_renderer.rs` builds `border_requirements: FxHashMap<GlyphKey,
+(f32, f32)>` by maximizing ppem and pixel radius INDEPENDENTLY and then
+resolving that pair. `text_atlas::resolve_border_blob` derives
+`required_units = wanted_bucket * units_per_em / ppem`, so pairing the
+maximum ppem with the maximum pixel radius yields the SMALLEST unit
+radius. A glyph appearing in one frame at two bordered sizes therefore
+gets a pre-pass blob that is under-provisioned for the smaller size.
 
-### Per-glyph border blob (in the shared atlas)
-Built lazily on first bordered use of a glyph; contains:
-1. A descriptor pointing at the fill blob and the blob's own sections.
-2. BORDER-CORRECTED ray bands for winding: same builder as `band.rs`
-   but membership includes boundary-touching curves (no
-   `BAND_EPSILON` upper-extent exclusion), consistent half-open
-   endpoint ownership at shared vertices, built from the same quantized
-   curves the shader evaluates. The border entrypoint uses ONLY these
-   bands; normal bands are untouched. Render-time inside test is
-   NONZERO winding (not parity): accumulate the existing signed root
-   contributions as integer crossings (no AA clamp), counting an
-   intersection only strictly along the selected ray direction; left
-   and right rays may flip the sign, `winding != 0` is invariant.
-   Full corrected contours (including canceled ones) stay in the
-   winding bands - they sum to zero and are harmless there.
-3. A 2D distance grid over FILLED-SET BOUNDARY pieces only, with
-   conservative per-cell candidate lists satisfying: for every point p
-   in cell C, every boundary piece within the supported radius R of p is
-   in candidates(C). False positives allowed; deduplicate at prep.
-   Explicit lookup rule for queries outside the represented domain.
-   R must cover physical width + AA allowance via the actual
-   glyph-to-screen mapping ("em-space" shader coords are font units;
-   convert through units_per_em). Radius capacity grows lazily in
-   power-of-two buckets; above a hard cap (~1 em) the fragment falls
-   back to brute-force distance over all boundary pieces (also
-   selectable when the candidate list degenerates to everything).
-   Collect the frame's max radius requirement per glyph before emitting
-   references. The blob records a ppem validity ceiling for its
-   boundary approximation; use above the ceiling triggers rebuild.
-4. Boundary extraction (CPU, prep): remove geometry that does not bound
-   the nonzero-filled set, so canceled or covered contours produce no
-   phantom borders. Method: CERTIFIED SUBDIVISION, not sample
-   agreement - samples only SUGGEST classifications; conservative curve
-   bounds and recursive Bezier subdivision must certify an interval has
-   no possible classification transition before keeping/dropping it;
-   unresolved events are isolated spatially until the boundary
-   approximation meets a declared SCREEN-SPACE error budget at the
-   blob's max supported ppem; coincident spans handled explicitly
-   (identical equally-oriented traces remain boundary; opposite
-   orientation cancels); conservative arithmetic for separation tests.
-   No closed-form curve intersections required. Never discard an
-   interval solely because finitely many samples agree; a small
-   surviving component is not droppable by diameter alone (dilation
-   magnifies it).
-5. Distance evaluation in-shader: unsigned distance to candidate pieces
-   (`sd_bezier`-style analytic solve) with an exactly-linear /
-   near-linear segment fallback gated by a screen-space error tolerance
-   (collinearity alone insufficient - a quadratic can overshoot and
-   return), scale-aware degeneracy thresholds, sign from the winding
-   test only. The border fragment does NOT reproduce fill AA coverage.
-- Blob participates fully in atlas residency, relocation, compaction,
-  eviction, and prepared-reference invalidation (`text_atlas.rs`
-  currently tracks one resident blob per glyph key - extend it).
+Emission then calls `resolve_border_glyph` again per instance at that
+instance's real ppem, the `grid_radius_units` check fails, and the blob
+is rebuilt - the same-frame supersession the pre-pass comment says it
+exists to prevent.
 
-### Renderer / retained cache (`text_renderer.rs`)
-- `prepare` partitions per area into underlay range(s) + fill range(s);
-  fills use the normal pipeline and existing stream.
-- Cache semantics: border color is paint-only (uniform update, no
-  instance rebuild, no cache miss). Border width and presence affect
-  geometry: they enter culling margins, draw-range selection, and
-  placement validity; width growth can expose glyphs absent from an
-  incomplete cached candidate set and must force a fresh walk.
-  Eligibility and original glyph identity must survive caching.
-- Every visibility layer learns the border margin: run selection
-  (`run_is_visible`), `vector_rect_visible`, and
-  `re_cull_vector_instances` - a glyph whose fill is out of bounds but
-  whose border enters them must not disappear.
-- The direct-hit fast path (skip vertex upload) stays valid for
-  unchanged instances, but border uniforms and ordered draw ranges are
-  rebuilt or proven unchanged independently.
-- `render()` walks the ordered draw metadata; all-normal frames take
-  the existing two-branch path (vector draw + raster tail) unchanged.
+Consequence, stated precisely: each emitted instance still receives a
+descriptor that satisfied its own request at emission time, and replaced
+blobs stay resident in retained texels, so no undersized grid is ever
+sampled and outlines do not truncate. The damage is repeated
+preparation, duplicate atlas storage, rebuilds recurring every frame,
+and premature `AtlasFull`.
 
-### Tests to add
-- Assembled normal shader source is byte-identical to the previous
-  `simple_shader.wgsl` content.
-- `GlyphInstance` ABI test restored at 48 bytes.
-- Boundary extraction: canceled opposite-winding contour pair yields no
-  candidates; identical equally-oriented pair keeps its trace; covered
-  stroke with a short exposed arc keeps only the arc (within budget).
-- Winding: band-boundary endpoint crossing case (upward segment ending
-  exactly on a band boundary) counted exactly once.
-- Width validation: NaN/inf/negative/zero and scale-overflow => None.
-- Cache: border color change invalidates nothing but the uniform; width
-  change re-culls; bordered->unbordered returns identical instances to
-  a never-bordered prepare.
-- CPU-only prep tests for the grid invariant on a few real glyphs
-  (every cell's candidate list covers a dense point sample of the cell
-  at radius R).
+Fix, and do this FIRST because the decoration work builds on it:
 
-### Boundary certification (as shipped)
+- Aggregate two independent capacities per `GlyphKey`: the maximum ppem
+  needed for boundary accuracy, and the maximum required radius IN FONT
+  UNITS for distance queries (fold the existing pixel-radius bucketing
+  into the unit-radius computation, or drop that redundant metadata
+  consistently).
+- Resolve once per key from those two independent capacities. The blob
+  builder must accept them independently instead of deriving both from
+  one `(ppem, radius_px)` pair.
+- Emission becomes lookup-only. Delete the per-instance re-resolution at
+  the three call sites.
+- One blob per key is sufficient: a boundary refined at the maximum ppem
+  is valid at every lower ppem, and a grid covering the maximum unit
+  radius covers every smaller query. Replacement is growth-only -
+  preserve existing capacities.
 
-The certified-subdivision requirement in item 4 above is implemented in
-`border.rs` as follows, sign-off by deep review:
-- Coincident spans are handled EXPLICITLY and EXACTLY before
-  certification: all coincidence decisions run in exact integer
-  arithmetic over the 4x-scaled quarter-unit quantized grid (i64 cross
-  products and line scalars for segments; i128 blossom polynomial
-  identity over rationalized parameters for quads, float arithmetic
-  only generating candidates). Discovery is pairwise and bidirectional
-  with exact rational inversion, so grouping is a true equivalence
-  relation; spans, cuts, containment, net multiplicity, and min-index
-  ownership stay exact rationals.
-- `certify_piece` keeps/drops whole intervals only under a
-  probe-pair-plus-separation certificate (recursive AABB clearance
-  against subdivided other-curve hulls); degenerate-line quads have
-  exact zero flatness.
-- Unresolved sub-tolerance pieces are retained only with a nonzero
-  winding witness within the probe radius (piece then lies within
-  probe + diameter <= tol of the filled set); with no witness, and at
-  the subdivision depth limit, certification fails conservatively with
-  `AtlasFull` - never a silent drop, because dilation magnifies both
-  phantom and deleted components beyond any screen-space budget.
-- A hard 65536-piece budget bounds the final refined boundary vector
-  (and hence the blob); exceeding it is the same conservative failure.
+## Agreed design
 
-## Not in scope
-- COLR/raster borders (documented exclusion), the PR's dep bumps, any
-  change to `prepare()`'s public signature beyond adding the field to
-  `TextArea`, shader comment removal (keep existing comments intact;
-  comment new shader code in the same style).
+Settled by spar; do not relitigate the mechanism. Correctness gaps in
+the mechanism are still worth raising.
+
+### Two execution kinds, not one primitive
+
+A signed-distance field supports morphological effects (dilation,
+erosion, rings) but NOT convolution. A Gaussian shadow is a convolution
+of the glyph mask; a falloff over nearest-boundary distance is a
+feathered dilation and differs visibly on real glyphs: counters in `e`,
+`a`, `8`, `@` haze shut under a true blur but not under an SDF; thin
+stems and small punctuation lose peak opacity under a true blur and do
+not under an SDF; energy accumulates in the concavities of `V`, `W`,
+`M`; and tightly kerned or overlapping glyphs blur as one combined mask
+rather than as independent per-glyph shadows. Substituting a
+Gaussian-shaped falloff `exp(-d^2/2s^2)` does not fix this - it is still
+a function of one nearest distance, not an integral over coverage.
+
+So the decoration list holds two kinds of entry:
+
+- **Analytic decorations** (solid dilation, hard offset shadow, ring),
+  which reuse the existing border blob and border pipeline.
+- **Filtered shadows** (blur), which are a mask-render plus separable
+  blur at AREA granularity.
+
+### API shape (`types.rs`)
+
+`TextArea` carries an ordered decoration list replacing
+`Option<TextBorder>`. Analytic entries carry `{ color, offset: [f32; 2],
+spread: f32, mode: Solid | Ring }`; filtered entries carry
+`{ color, offset: [f32; 2], sigma: f32 }`.
+
+- Today's border is `{ Solid, offset 0, spread: width }` and must render
+  unchanged.
+- Widths, offsets and sigma are LOGICAL pixels, multiplied by
+  `TextArea::scale` exactly once on the CPU, validated on the physical
+  result (non-finite, negative => that decoration is dropped).
+- **Order is back-to-front, matching CSS**: the FIRST entry in a CSS
+  `text-shadow` list paints on TOP of later ones. Define the list
+  explicitly so authors do not get the reverse of what they expect.
+- Negative `spread` (erosion) is NOT supported in this pass. Reject it
+  in validation rather than leaving it to the dilation formula, which
+  only handles positive growth and would need different quad
+  construction.
+- Fill color semantics must be stated explicitly: whether it overrides
+  per-glyph rich-text colors, only replaces `default_color`, recolors
+  `use_foreground` COLR layers, or applies to monochrome vector glyphs
+  only. A transparent fill cannot make a COLRv1 emoji hollow and the
+  ring path cannot decorate one.
+
+### Hollow text: one combined fragment, not two draws
+
+Ring coverage subtracted from outer coverage does NOT compose correctly
+under source-over. With `o` outer, `f` fill, ring `r = o - f`, drawn
+ring-then-fill, the composite alpha is `f + (o-f)(1-f) = o - f(o-f)`,
+which equals `o` only when `f = 0` or `f = o`. At an inner edge with
+`o = 1, f = 0.5` it gives `0.75`: a coverage deficit. Exactness in `f`
+moves the error, it does not remove it.
+
+A compensated two-draw form exists (underlay alpha
+`q = b(o-f)/(1-a*f)`, then fill at `a*f`) and is algebraically valid,
+but it makes the underlay depend on the specific fill that follows it,
+and the area-wide underlay phase lets another glyph's fill intervene.
+Rejected.
+
+**Therefore**: ring and fill are emitted by ONE fragment that computes
+both contributions and returns the disjoint partition
+
+```
+premultiplied rgb = fill_rgb * a*f + ring_rgb * b*(o-f)
+alpha             = a*f + b*(o-f)
+```
+
+and the ordinary fill draw OMITS those glyphs. This supports translucent
+fill rather than refusing it. Requirements:
+
+- The border module already concatenates the whole normal shader
+  (`lib.rs`), so `render_single` and the banding helpers are compiled in
+  and reachable - no shared-source refactor needed. What is missing is
+  that `vs_border` does not emit the fill-side varyings and `fs_border`
+  never calls the evaluator.
+- Matching the fill's coverage means matching its whole policy: the
+  extra sampling below 16 ppem and the brightness-dependent stem
+  darkening below 48 ppem, with fill color as an input.
+- There is a real coordinate mismatch to reproduce: `vs_main` divides
+  its half-pixel UV expansion by `max(screen_rect.zw, 1)` while
+  `vs_border` divides by the actual dimensions with a near-zero guard,
+  so sub-pixel glyph dimensions get different interpolated coordinates
+  and derivatives.
+- `f <= o` is NOT guaranteed at small spread with stem darkening. Apply
+  an explicit nesting rule `effective_outer = max(sdf_outer, f)`,
+  accepting that it can enlarge the effective outer edge.
+- For an OPAQUE fill the shipped solid underlay is already exactly
+  right; Ring is only required for zero-alpha or translucent fills.
+- A zero-alpha normal draw should be omitted rather than emitted, since
+  zero color output does not disable depth or stencil side effects.
+
+### Offset shadows
+
+- Offset MUST NOT enter the blob radius requirement. It translates the
+  quad; it does not change which glyph-space boundary is nearest. The
+  radius requirement stays `spread + AA support`.
+- `vs_border` currently dilates by exactly `width_px + 0.5`. The quad
+  dilation and texcoord expansion must use the decoration's COMPLETE
+  finite support or the fragment falloff is clipped at the quad edge.
+- Because border instances carry the same `screen_rect` as the fill and
+  dilate in the vertex shader, moving offset and dilation into the
+  per-draw uniform lets ALL analytic decorations of an area draw the
+  SAME instance range with only a uniform rebind. Do not duplicate the
+  instance stream per decoration.
+
+### Blur: encoding phase
+
+There is currently nowhere to encode blur passes: `prepare_with_depth`
+takes `&CommandEncoder` (immutable, unused) and `render` takes
+`&mut RenderPass`. A pass cannot begin on a shared encoder, nor inside
+an active pass.
+
+**Change `prepare` and `prepare_with_depth` to take
+`&mut CommandEncoder`**, and encode the mask and blur passes there,
+after preparation and resource uploads complete. `render` then
+composites the prepared shadow texture inside the caller's pass. This
+keeps the existing division (preparation produces what rendering
+consumes) and leaves submission ordering with the caller. Creating a
+private encoder inside `prepare` is possible but forfeits that ordering
+against unsubmitted caller work; rejected.
+
+The iced fork in `repos/iced/` calls this surface and must be updated to
+match. It is a path dependency, so no rev bump is involved.
+
+Correctness details:
+
+- Build the mask from every source glyph that can contribute THROUGH the
+  kernel, including sources outside the area bounds. Clip the final
+  shadow to the area bounds; clipping the source mask first cuts off
+  contributions near the edge.
+- A Gaussian has infinite support. Define an explicit finite-support
+  cutoff proportional to sigma; culling, texture sizing, and allocation
+  all derive from it.
+- Intermediate textures and their inputs must stay valid until the
+  encoded work executes; a second `prepare` before submission must not
+  reuse that storage or overwrite those uniforms.
+- Per-glyph blur is a DIFFERENT semantic and cannot silently substitute:
+  independently blurred glyphs composited source-over do not equal a
+  blur of the combined mask.
+
+### Culling and the retained cache
+
+- Culling needs DIRECTIONAL extents, not one scalar margin. For a
+  decoration with offset `(dx, dy)` and support radius `r`:
+  `left = max(0, r - dx)`, `right = max(0, r + dx)`,
+  `top = max(0, r - dy)`, `bottom = max(0, r + dy)` (positive `dy`
+  down), unioned component-wise across the list. A scalar
+  `r + max(|dx|, |dy|)` is conservative but wrong as the cache
+  invariant: flipping offset DIRECTION at constant magnitude reveals
+  candidates on the opposite side.
+- `run_is_visible` takes a symmetric vertical margin today and must take
+  top and bottom extents separately; `vector_rect_visible` and
+  `re_cull_vector_instances` need all four.
+- Keep candidate-envelope validity and blob-capacity validity as
+  SEPARATE checks. An unchanged envelope does not prove descriptor
+  validity: a far-offset narrow decoration and a centered wide one can
+  share an envelope while needing different grid radii. Conversely a
+  changed envelope only forces a fresh walk when the retained candidates
+  cannot prove coverage of the new envelope - a complete cache can be
+  re-culled.
+- Fill color is NOT paint-only. `fs_main` derives stem darkening from
+  fill RGB brightness, so changing fill color can change COVERAGE, not
+  just paint. Any cache path treating color as a uniform-only update is
+  wrong.
+- Decoration order and uniform order are part of the rebuilt draw
+  metadata even when no vertex upload happens.
+- Depth: analytic decoration draws test depth without writing. Multiple
+  draws at one glyph depth interact with earlier area fills and
+  caller-owned depth. A filtered-shadow composite has no unique
+  source-glyph depth once masks overlap; state its depth semantic
+  explicitly.
+
+### Known pre-existing hole: the global raster tail
+
+`render()` collects every area's raster-fallback glyphs and draws them
+AFTER all vector draws, so area A's bitmap glyph already lands over area
+B's fill. Decorations widen the consequences (area B's shadow cannot sit
+beneath area B's raster glyph while respecting A/B order) but do not
+create the bug. Fixing it means per-area raster ranges inside the same
+ordered draw graph. If decorations stay monochrome-vector-only, say so
+in the API docs; that still does not repair cross-area raster ordering.
+Record it; do not silently rely on the current ordering.
+
+## Recorded, not fixed
+
+The solid underlay is not an exact disjoint partition where BOTH
+coverages are partial: `f + o(1-f)` can exceed `o`. Under an idealized
+shared distance ramp, `spread >= 1` physical pixel guarantees `o = 1`
+wherever `f > 0` and the artifact vanishes. That bound does NOT transfer
+strictly to the shipped shaders, which use analytic ray coverage plus
+optional extra samples on one side and an approximate Euclidean boundary
+distance on the other. The honest statement: the artifact is
+concentrated at narrow borders and the ideal threshold is one physical
+pixel, times `TextArea::scale`.

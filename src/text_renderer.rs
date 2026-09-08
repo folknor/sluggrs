@@ -77,6 +77,47 @@ struct OrderedDraw {
     uniform_offset: u32,
 }
 
+/// Find the border-eligible glyph key behind an emitted instance, with its
+/// units-per-em. Monochrome vector glyphs only: COLRv0 layers flatten into
+/// ordinary-looking instances, so eligibility is checked on the entry.
+fn bordered_key_for(
+    atlas: &TextAtlas,
+    distinct_keys: &[GlyphKey],
+    glyph_offset: u32,
+) -> Option<(GlyphKey, f32)> {
+    distinct_keys.iter().find_map(|key| {
+        atlas.glyph(key).and_then(|entry| {
+            (!entry.is_non_vector()
+                && !entry.is_color_vector()
+                && !entry.is_color_v1_vector()
+                && entry.glyph_offset == glyph_offset)
+                .then_some((*key, entry.units_per_em))
+        })
+    })
+}
+
+/// The two independent capacities one border blob must satisfy across
+/// every use of its glyph in a frame. See the aggregation pre-pass in
+/// `prepare_with_depth`.
+#[derive(Clone, Copy, Default)]
+struct BorderCapacity {
+    /// Largest ppem the glyph is drawn at, bounding boundary accuracy.
+    ppem: f32,
+    /// Largest distance-query radius in FONT UNITS. A pixel radius cannot
+    /// be compared across ppems, which is the whole point of this type.
+    radius_units: f32,
+}
+
+impl BorderCapacity {
+    /// Fold in one use of the glyph: `radius_px` at `ppem`, given the
+    /// glyph's units-per-em.
+    fn extend(&mut self, ppem: f32, radius_px: f32, units_per_em: f32) {
+        self.ppem = self.ppem.max(ppem);
+        let units = radius_px * units_per_em / ppem.max(f32::MIN_POSITIVE);
+        self.radius_units = self.radius_units.max(units);
+    }
+}
+
 fn instance_stream_unchanged(current: &[GlyphInstance], previous: &[GlyphInstance]) -> bool {
     bytemuck::cast_slice::<_, u8>(current) == bytemuck::cast_slice::<_, u8>(previous)
 }
@@ -419,7 +460,16 @@ impl TextRenderer {
         // Resolve each glyph's largest requirement for this frame before any
         // descriptor is emitted. This prevents an early instance from naming
         // a border blob superseded by a later, larger use in the same frame.
-        let mut border_requirements: FxHashMap<GlyphKey, (f32, f32)> = FxHashMap::default();
+        //
+        // The two capacities are tracked INDEPENDENTLY. Maximizing ppem and
+        // pixel radius separately and then resolving that pair does not
+        // work: the required grid radius in font units is
+        // radius_px * units_per_em / ppem, so pairing the largest ppem with
+        // the largest pixel radius yields the SMALLEST unit radius, and the
+        // same glyph drawn at a smaller size in the same frame is
+        // under-provisioned - which forced a rebuild during emission, the
+        // exact supersession this pre-pass exists to prevent.
+        let mut border_requirements: FxHashMap<GlyphKey, BorderCapacity> = FxHashMap::default();
         for plan in &plans {
             match plan {
                 AreaPlan::HitDirect {
@@ -428,17 +478,14 @@ impl TextRenderer {
                 } => {
                     let cached = &self.text_area_cache[cache_key];
                     for instance in &cached.instances {
-                        if let Some(key) = cached.distinct_keys.iter().copied().find(|key| {
-                            atlas.glyph(key).is_some_and(|entry| {
-                                !entry.is_non_vector()
-                                    && !entry.is_color_vector()
-                                    && !entry.is_color_v1_vector()
-                                    && entry.glyph_offset == instance.glyph_offset
-                            })
-                        }) {
-                            let requirement = border_requirements.entry(key).or_insert((0.0, 0.0));
-                            requirement.0 = requirement.0.max(instance.ppem);
-                            requirement.1 = requirement.1.max(*width + 0.5);
+                        if let Some((key, units_per_em)) =
+                            bordered_key_for(atlas, &cached.distinct_keys, instance.glyph_offset)
+                        {
+                            border_requirements.entry(key).or_default().extend(
+                                instance.ppem,
+                                *width + 0.5,
+                                units_per_em,
+                            );
                         }
                     }
                 }
@@ -450,11 +497,11 @@ impl TextRenderer {
                                 && !entry.is_color_vector()
                                 && !entry.is_color_v1_vector()
                             {
-                                let requirement =
-                                    border_requirements.entry(wi.key).or_insert((0.0, 0.0));
-                                requirement.0 =
-                                    requirement.0.max(wi.glyph.font_size * area.text_area.scale);
-                                requirement.1 = requirement.1.max(width + 0.5);
+                                border_requirements.entry(wi.key).or_default().extend(
+                                    wi.glyph.font_size * area.text_area.scale,
+                                    width + 0.5,
+                                    entry.units_per_em,
+                                );
                             }
                         }
                     }
@@ -466,25 +513,22 @@ impl TextRenderer {
                 } => {
                     let cached = &self.text_area_cache[cache_key];
                     for instance in &cached.instances {
-                        if let Some(key) = cached.distinct_keys.iter().copied().find(|key| {
-                            atlas.glyph(key).is_some_and(|entry| {
-                                !entry.is_non_vector()
-                                    && !entry.is_color_vector()
-                                    && !entry.is_color_v1_vector()
-                                    && entry.glyph_offset == instance.glyph_offset
-                            })
-                        }) {
-                            let requirement = border_requirements.entry(key).or_insert((0.0, 0.0));
-                            requirement.0 = requirement.0.max(instance.ppem);
-                            requirement.1 = requirement.1.max(*width + 0.5);
+                        if let Some((key, units_per_em)) =
+                            bordered_key_for(atlas, &cached.distinct_keys, instance.glyph_offset)
+                        {
+                            border_requirements.entry(key).or_default().extend(
+                                instance.ppem,
+                                *width + 0.5,
+                                units_per_em,
+                            );
                         }
                     }
                 }
                 _ => {}
             }
         }
-        for (key, (ppem, radius)) in border_requirements {
-            atlas.resolve_border_glyph(key, ppem, radius)?;
+        for (key, capacity) in border_requirements {
+            atlas.resolve_border_glyph(key, capacity.ppem, capacity.radius_units)?;
         }
 
         // ===== Pass 3: emit instances per area in input order =====
@@ -504,23 +548,18 @@ impl TextRenderer {
                         .get_mut(cache_key)
                         .expect("direct-hit cache entry exists");
                     self.instances.extend_from_slice(&cached.instances);
-                    if let Some((_, width)) = border {
+                    if border.is_some() {
                         let mut refreshed = Vec::new();
                         for instance in &cached.instances {
-                            if let Some(key) = cached.distinct_keys.iter().copied().find(|key| {
-                                atlas.glyph(key).is_some_and(|entry| {
-                                    !entry.is_non_vector()
-                                        && !entry.is_color_vector()
-                                        && !entry.is_color_v1_vector()
-                                        && entry.glyph_offset == instance.glyph_offset
-                                })
-                            }) {
+                            if let Some((key, _)) = bordered_key_for(
+                                atlas,
+                                &cached.distinct_keys,
+                                instance.glyph_offset,
+                            ) {
                                 refreshed.push(GlyphInstance {
-                                    glyph_offset: atlas.resolve_border_glyph(
-                                        key,
-                                        instance.ppem,
-                                        *width + 0.5,
-                                    )?,
+                                    glyph_offset: atlas
+                                        .border_descriptor(&key)
+                                        .expect("border capacity resolved in the pre-pass"),
                                     ..*instance
                                 });
                             }
@@ -559,21 +598,17 @@ impl TextRenderer {
                     non_vector_collector.extend_from_slice(&cached.non_vector_glyphs);
                     self.instances.extend_from_slice(&instances);
                     let mut border_instances = Vec::new();
-                    if let Some(width) = *border_width {
+                    if border_width.is_some() {
                         for instance in &instances {
-                            let key = cached.distinct_keys.iter().copied().find(|key| {
-                                atlas.glyph(key).is_some_and(|entry| {
-                                    !entry.is_non_vector()
-                                        && !entry.is_color_vector()
-                                        && !entry.is_color_v1_vector()
-                                        && entry.glyph_offset == instance.glyph_offset
-                                })
-                            });
-                            if let Some(key) = key {
-                                let descriptor =
-                                    atlas.resolve_border_glyph(key, instance.ppem, width + 0.5)?;
+                            if let Some((key, _)) = bordered_key_for(
+                                atlas,
+                                &cached.distinct_keys,
+                                instance.glyph_offset,
+                            ) {
                                 border_instances.push(GlyphInstance {
-                                    glyph_offset: descriptor,
+                                    glyph_offset: atlas
+                                        .border_descriptor(&key)
+                                        .expect("border capacity resolved in the pre-pass"),
                                     ..*instance
                                 });
                             }
@@ -756,14 +791,11 @@ impl TextRenderer {
                             ppem: glyph.font_size * text_area.scale,
                         };
                         area_instances.push(fill_instance);
-                        if let Some(width) = area.border_width {
-                            let descriptor = atlas.resolve_border_glyph(
-                                wi.key,
-                                fill_instance.ppem,
-                                width + 0.5,
-                            )?;
+                        if area.border_width.is_some() {
                             area_border_instances.push(GlyphInstance {
-                                glyph_offset: descriptor,
+                                glyph_offset: atlas
+                                    .border_descriptor(&wi.key)
+                                    .expect("border capacity resolved in the pre-pass"),
                                 ..fill_instance
                             });
                         }
@@ -1238,6 +1270,33 @@ fn zero_depth(_: usize) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The aggregation bug this type exists to prevent: one glyph drawn at
+    /// two sizes in one frame, same border width. The required grid radius
+    /// in font units is radius_px * units_per_em / ppem, so the SMALLER
+    /// ppem sets the larger requirement. Maximizing ppem and pixel radius
+    /// separately and pairing them picks the largest ppem, which yields the
+    /// smallest unit radius and under-provisions the small-size use.
+    #[test]
+    fn border_capacity_takes_unit_radius_from_the_smallest_ppem() {
+        let mut capacity = BorderCapacity::default();
+        capacity.extend(48.0, 4.5, 1000.0);
+        capacity.extend(12.0, 4.5, 1000.0);
+
+        assert_eq!(capacity.ppem, 48.0, "boundary accuracy follows max ppem");
+        assert_eq!(
+            capacity.radius_units, 375.0,
+            "4.5px at 12ppem needs 375 units, not the 93.75 the 48ppem use needs"
+        );
+    }
+
+    #[test]
+    fn border_capacity_takes_the_widest_decoration_at_each_size() {
+        let mut capacity = BorderCapacity::default();
+        capacity.extend(24.0, 1.0, 2048.0);
+        capacity.extend(24.0, 6.0, 2048.0);
+        assert_eq!(capacity.radius_units, 512.0);
+    }
 
     #[test]
     fn order_changed_direct_hit_stream_requires_upload() {

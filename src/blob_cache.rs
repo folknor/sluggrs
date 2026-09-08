@@ -13,7 +13,10 @@ pub(crate) struct ResidentBlob {
 pub(crate) struct ResidentBorderBlob {
     pub start_texel: u32,
     pub texel_len: u32,
-    pub radius_bucket: f32,
+    /// The blob's two INDEPENDENT capacities: `ppem_ceiling` bounds the
+    /// boundary approximation's error, `grid_radius_units` bounds the
+    /// distance query. Font units, so one capacity serves every ppem the
+    /// glyph is drawn at; a pixel radius would not.
     pub ppem_ceiling: f32,
     pub grid_radius_units: f32,
 }
@@ -30,7 +33,6 @@ pub(crate) struct CachedBlob {
 pub(crate) struct CachedBorderBlob {
     pub relative_offset: u32,
     pub texel_len: u32,
-    pub radius_bucket: f32,
     pub ppem_ceiling: f32,
     pub grid_radius_units: f32,
 }

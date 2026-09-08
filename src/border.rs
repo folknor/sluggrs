@@ -69,7 +69,12 @@ pub struct BorderDescriptor {
     pub grid_offset: u32,
     pub boundary_offset: u32,
     pub boundary_count: u32,
-    pub radius_bucket: f32,
+    /// Distance-query capacity in FONT UNITS. Infinite for a brute-force
+    /// blob, which loops every boundary piece and so serves any radius.
+    /// Font units, not pixels: the same pixel radius needs a larger unit
+    /// radius at a smaller ppem, so a pixel capacity cannot be compared
+    /// across the sizes one glyph is drawn at within a single frame.
+    pub grid_radius_units: f32,
     pub ppem_ceiling: f32,
 }
 
@@ -890,17 +895,22 @@ pub fn build_distance_grid(
 }
 
 /// Prepare and pack the CPU border blob. `radius_px` includes the AA allowance.
+/// `ppem` sizes the boundary approximation's error budget; `radius_units`
+/// sizes the distance grid. They are INDEPENDENT capacities and must be
+/// passed as such: deriving the unit radius from a pixel radius at one
+/// ppem under-provisions every smaller ppem the same glyph is drawn at.
 pub fn prepare_border(
     outline: &GlyphOutline,
     fill_offset: u32,
     units_per_em: f32,
     ppem: f32,
-    radius_px: f32,
+    radius_units: f32,
 ) -> Result<PreparedBorder, crate::types::PrepareError> {
-    let bucket_px = next_power_of_two_f32(radius_px.max(1.0));
     let safe_ppem = ppem.max(f32::MIN_POSITIVE);
     let ppem_ceiling = next_power_of_two_f32(safe_ppem * 2.0);
-    let radius_units = bucket_px * units_per_em / safe_ppem;
+    // Floor the grid at one physical pixel's worth of font units, matching
+    // the AA allowance every border query carries.
+    let radius_units = radius_units.max(units_per_em / safe_ppem);
     let quantized = quantized_outline(outline);
     // Curve locations are i*2, so a large-enough curve count alone overflows
     // the u16 offset encoding; reject before the expensive boundary pass.
@@ -945,13 +955,21 @@ pub fn prepare_border(
     }
     let grid_texels = grid.offsets.len() as u32 + grid.candidates.len() as u32;
     let boundary_offset = grid_offset + grid_texels;
+    // A brute-force grid loops every boundary piece, so it answers any
+    // query radius; record that as unlimited capacity rather than the
+    // radius that happened to trigger the fallback.
+    let grid_radius_units = if grid.brute_force {
+        f32::INFINITY
+    } else {
+        grid.radius
+    };
     let descriptor = BorderDescriptor {
         fill_offset,
         winding_offset,
         grid_offset,
         boundary_offset,
         boundary_count: boundary.len() as u32,
-        radius_bucket: bucket_px,
+        grid_radius_units,
         ppem_ceiling,
     };
     let mut data = vec![
@@ -960,7 +978,8 @@ pub fn prepare_border(
         grid_offset as i32,
         boundary_offset as i32,
         boundary.len() as i32,
-        bucket_px.to_bits() as i32,
+        // Slot 5 is CPU bookkeeping; the shader reads units_per_em at 6.
+        grid.radius.to_bits() as i32,
         units_per_em.to_bits() as i32,
         if grid.brute_force { 1 } else { 0 },
         quantized.bounds[0].to_bits() as i32,

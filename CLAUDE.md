@@ -167,10 +167,15 @@ fork after a rebase; reset to `fork/sluggrs` instead.
 
 Profiles are tiers, not roles - any archetype can take any profile:
 
-- `--profile deep` = gpt-5.6-sol, xhigh effort, read-only sandbox. Spec
+- `--profile deep` = gpt-5.6-sol, low effort, read-only sandbox. Spec
   critique and planning.
-- `--profile build` = gpt-5.6-terra, medium effort, workspace-write
+- `--profile build` = gpt-5.6-sol, low effort, workspace-write
   sandbox. Implementation.
+
+Both profiles are defined per host in `.review.toml`
+(`[<host>.codex.<profile>]`); a host without entries silently supplies
+nothing, so check the file rather than trusting this summary if a run
+behaves oddly.
 
 Usage: `echo "prompt" | review bare --profile deep`. The session ID is
 printed above the response; follow up with `--session <ID>`.
