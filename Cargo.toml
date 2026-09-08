@@ -34,6 +34,10 @@ name = "demo2"
 path = "examples/demo2.rs"
 
 [[example]]
+name = "borders"
+path = "examples/borders.rs"
+
+[[example]]
 name = "hotpath"
 path = "examples/hotpath.rs"
 
