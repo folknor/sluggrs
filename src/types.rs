@@ -61,12 +61,23 @@ pub struct TextDecoration {
 /// support or the shadow will be clipped somewhere in the chain.
 pub const BLUR_SUPPORT_SIGMAS: f32 = 4.0;
 
+/// Largest physical sigma that will be drawn.
+///
+/// This is a resource bound, not a style choice. Support is `4 * sigma` on
+/// every side, the mask texture is the shadow's rect grown by it, and the
+/// fragment loops `2 * support + 1` times per pixel in each of two passes.
+/// Sigma 64 already means a 512px border on every side and a 513-tap kernel;
+/// an unbounded value produces a texture past `max_texture_dimension_2d` and
+/// a loop long enough to trip the GPU watchdog. Three such textures are built
+/// per job, every frame, with no pooling.
+pub const MAX_BLUR_SIGMA: f32 = 64.0;
+
 /// Kernel support in physical pixels for a physical sigma.
 pub(crate) fn blur_support(sigma: f32) -> f32 {
     if sigma <= 0.0 {
         return 0.0;
     }
-    (sigma * BLUR_SUPPORT_SIGMAS).ceil()
+    (sigma.min(MAX_BLUR_SIGMA) * BLUR_SUPPORT_SIGMAS).ceil()
 }
 
 /// What a decoration paints.
@@ -110,6 +121,10 @@ pub enum DecorationError {
     /// A filtered decoration's mask is rendered from the undilated glyph, so a
     /// spread on it would be silently dropped. Reject rather than mis-render.
     BlurWithSpread,
+    /// Sigma past [`MAX_BLUR_SIGMA`] in physical pixels. Support scales with
+    /// it in both texture size and per-fragment tap count, so an unbounded
+    /// value is a resource hazard rather than a slow frame.
+    BlurTooLarge,
 }
 
 impl std::fmt::Display for DecorationError {
@@ -124,6 +139,7 @@ impl std::fmt::Display for DecorationError {
             Self::BlurWithSpread => {
                 write!(f, "a blurred decoration cannot also carry a spread")
             }
+            Self::BlurTooLarge => write!(f, "blur sigma exceeds {MAX_BLUR_SIGMA} physical pixels"),
         }
     }
 }
@@ -132,17 +148,37 @@ impl std::error::Error for DecorationError {}
 
 /// Check the constraints the execution model imposes on a decoration list.
 ///
-/// `prepare` calls this on every area, so an invalid list is refused rather
-/// than drawn wrongly. It is public so callers can check ahead of time.
+/// Convenience wrapper for callers who want to check ahead of time; `prepare`
+/// validates the RESOLVED list instead, via [`validate_physical`].
 pub fn validate_decorations(decorations: &[TextDecoration]) -> Result<(), DecorationError> {
+    let resolved: Vec<PhysicalDecoration> = decorations
+        .iter()
+        .filter_map(|d| physical_decoration(*d, 1.0))
+        .collect();
+    validate_physical(&resolved)
+}
+
+/// Check the resolved list, which is what actually gets drawn.
+///
+/// Validating the logical list instead lets the two disagree: a decoration
+/// that `physical_decoration` drops (negative spread, non-finite, overflow
+/// under scale) is still counted for ordering, so a dropped entry ahead of a
+/// ring would report `RingNotTopmost` and fail the whole frame even though
+/// the ring really would have been drawn first. A logical sigma that flushes
+/// to zero under a small scale would likewise validate as filtered and then
+/// draw as analytic.
+pub(crate) fn validate_physical(decorations: &[PhysicalDecoration]) -> Result<(), DecorationError> {
     let mut seen_ring = false;
     for (index, decoration) in decorations.iter().enumerate() {
+        if decoration.blur > MAX_BLUR_SIGMA {
+            return Err(DecorationError::BlurTooLarge);
+        }
         if decoration.mode != DecorationMode::Ring {
             // The mask for a filtered decoration is rendered from the
             // undilated glyph, so a spread would be accepted then ignored.
             // Checked after the Ring branch so a blurred ring reports the
             // more specific RingWithBlur.
-            if decoration.blur > 0.0 && decoration.spread > 0.0 {
+            if decoration.is_filtered() && decoration.spread > 0.0 {
                 return Err(DecorationError::BlurWithSpread);
             }
             continue;
@@ -157,7 +193,7 @@ pub fn validate_decorations(decorations: &[TextDecoration]) -> Result<(), Decora
         if index != 0 {
             return Err(DecorationError::RingNotTopmost);
         }
-        if decoration.blur > 0.0 {
+        if decoration.is_filtered() {
             return Err(DecorationError::RingWithBlur);
         }
     }
@@ -341,12 +377,16 @@ pub struct TextArea<'a> {
 }
 
 impl TextArea<'_> {
-    /// Resolve every drawable decoration to physical pixels, in input order.
-    pub(crate) fn physical_decorations(&self) -> Vec<PhysicalDecoration> {
-        self.decorations
+    /// Resolve every drawable decoration to physical pixels, in input order,
+    /// and check the resolved list against what the renderer can draw.
+    pub(crate) fn physical_decorations(&self) -> Result<Vec<PhysicalDecoration>, DecorationError> {
+        let resolved: Vec<PhysicalDecoration> = self
+            .decorations
             .iter()
             .filter_map(|d| physical_decoration(*d, self.scale))
-            .collect()
+            .collect();
+        validate_physical(&resolved)?;
+        Ok(resolved)
     }
 }
 
@@ -649,6 +689,53 @@ mod tests {
         assert_eq!(
             validate_decorations(&[TextDecoration::blurred_shadow(white(), 1.0, 1.0, 3.0)]),
             Ok(())
+        );
+    }
+
+    /// Sigma drives both the mask's size and the per-fragment tap count, so
+    /// an unbounded value is a resource hazard, not a slow frame.
+    #[test]
+    fn oversized_blur_is_refused() {
+        let huge = TextDecoration::blurred_shadow(white(), 0.0, 0.0, MAX_BLUR_SIGMA + 1.0);
+        assert_eq!(
+            validate_decorations(&[huge]),
+            Err(DecorationError::BlurTooLarge)
+        );
+        let at_limit = TextDecoration::blurred_shadow(white(), 0.0, 0.0, MAX_BLUR_SIGMA);
+        assert_eq!(validate_decorations(&[at_limit]), Ok(()));
+    }
+
+    /// The limit is on the PHYSICAL sigma, so a logical value under the limit
+    /// that scales past it is still refused.
+    #[test]
+    fn the_blur_limit_applies_after_scaling() {
+        let area_scale = 4.0;
+        let logical = MAX_BLUR_SIGMA / 2.0;
+        let decoration = TextDecoration::blurred_shadow(white(), 0.0, 0.0, logical);
+        let physical = physical_decoration(decoration, area_scale).expect("resolves");
+        assert_eq!(
+            validate_physical(&[physical]),
+            Err(DecorationError::BlurTooLarge)
+        );
+    }
+
+    /// Validation runs on the RESOLVED list. A decoration that resolution
+    /// drops must not still count toward the ring's position, or a list the
+    /// renderer would have drawn correctly fails the whole frame.
+    #[test]
+    fn a_dropped_decoration_does_not_displace_the_ring() {
+        let dropped = TextDecoration {
+            color: white(),
+            spread: -1.0,
+            offset: [0.0, 0.0],
+            blur: 0.0,
+            mode: DecorationMode::Solid,
+        };
+        let ring = TextDecoration::ring(white(), 2.0);
+        assert_eq!(
+            validate_decorations(&[dropped, ring]),
+            Ok(()),
+            "the dropped entry is not drawn, so the ring really is first"
         );
     }
 

@@ -51,6 +51,12 @@ struct Inner {
     >,
     /// The mask pipeline has one fixed target format, so it needs no key.
     mask: Mutex<Option<BorderPipelineState>>,
+    /// The decoration uniform's layout, created once and shared by every
+    /// border-shader pipeline variant. One bind group is built from it and
+    /// bound under both the underlay and the fill-owning pipeline, so they
+    /// must be the SAME layout rather than two structurally identical ones
+    /// that happen to be interned as equivalent.
+    border_uniforms_layout: BindGroupLayout,
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +152,21 @@ impl Cache {
             pipelines: Mutex::new(Vec::new()),
             border: Mutex::new(Vec::new()),
             mask: Mutex::new(None),
+            border_uniforms_layout: device.create_bind_group_layout(
+                &wgpu::BindGroupLayoutDescriptor {
+                    label: Some("sluggrs border uniforms bind group layout"),
+                    entries: &[BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+                        ty: BindingType::Buffer {
+                            ty: BufferBindingType::Uniform,
+                            has_dynamic_offset: true,
+                            min_binding_size: NonZeroU64::new(32),
+                        },
+                        count: None,
+                    }],
+                },
+            ),
         }))
     }
 
@@ -264,26 +285,15 @@ impl Cache {
         }) {
             return state.clone();
         }
-        let border_uniforms_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("sluggrs border uniforms bind group layout"),
-                entries: &[BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
-                    ty: BindingType::Buffer {
-                        ty: BufferBindingType::Uniform,
-                        has_dynamic_offset: true,
-                        min_binding_size: NonZeroU64::new(32),
-                    },
-                    count: None,
-                }],
-            });
+        // Shared across both variants: one bind group is built from this and
+        // bound under either pipeline.
+        let border_uniforms_layout = &self.0.border_uniforms_layout;
         let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("sluggrs border pipeline layout"),
             bind_group_layouts: &[
                 Some(&self.0.uniforms_layout),
                 Some(&self.0.atlas_layout),
-                Some(&border_uniforms_layout),
+                Some(border_uniforms_layout),
             ],
             immediate_size: 0,
         });
@@ -334,7 +344,7 @@ impl Cache {
         });
         let state = BorderPipelineState {
             pipeline,
-            uniforms_layout: border_uniforms_layout,
+            uniforms_layout: border_uniforms_layout.clone(),
         };
         cached.push((
             format,

@@ -301,11 +301,23 @@ fn plan_bounds(plan: &AreaPlan<'_>) -> [f32; 4] {
     ]
 }
 
-/// The distinct depths present among these instances, in first-seen order.
+/// The distinct depths present among these instances, farthest first.
 ///
-/// A composite quad has one depth, so a blurred shadow is built per depth.
-/// Compared by bit pattern: these are copied verbatim from the values the
+/// A composite quad carries one depth, so a blurred shadow is built once per
+/// depth. Compared by bit pattern: these are copied verbatim from what the
 /// caller's `metadata_to_depth` produced, never arithmetic results.
+///
+/// # Known limitation
+///
+/// Partitioning is what lets each shadow be occluded at its glyphs' own
+/// depth, but it is not the same picture as blurring the union. Where two
+/// partitions' shadows overlap on screen they composite source-over, giving
+/// `a + b(1-a)` rather than the single blur of the combined mask that CSS
+/// `text-shadow` specifies, so the overlap reads darker. One quad cannot do
+/// both, and occlusion was judged the more visible of the two errors. The
+/// case needs an area whose glyphs carry different metadata AND whose
+/// shadows overlap; sorting farthest-first at least makes the result
+/// deterministic instead of dependent on glyph order.
 fn distinct_depths(instances: &[GlyphInstance]) -> Vec<f32> {
     let mut depths: Vec<f32> = Vec::new();
     for instance in instances {
@@ -316,6 +328,7 @@ fn distinct_depths(instances: &[GlyphInstance]) -> Vec<f32> {
             depths.push(instance.depth);
         }
     }
+    depths.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
     depths
 }
 
@@ -332,11 +345,14 @@ fn instance_bounds_at_depth(
             continue;
         }
         let [x, y, w, h] = instance.screen_rect;
+        // vs_border rasterises the mask half a pixel outside screen_rect on
+        // every side, so the union has to include that or the destination is
+        // clipped just inside the convolution's true support.
         let rect = [
-            x + scroll[0],
-            y + scroll[1],
-            x + scroll[0] + w,
-            y + scroll[1] + h,
+            x + scroll[0] - DECORATION_AA,
+            y + scroll[1] - DECORATION_AA,
+            x + scroll[0] + w + DECORATION_AA,
+            y + scroll[1] + h + DECORATION_AA,
         ];
         bounds = Some(match bounds {
             None => rect,
@@ -668,6 +684,13 @@ impl TextRenderer {
         let previous_instances = std::mem::take(&mut self.instances);
         let previous_border_instances = std::mem::take(&mut self.border_instances);
         self.draws.clear();
+        // Every early return below - validation, glyph resolution, border
+        // capacity - leaves the instance streams emptied but the vertex
+        // buffer holding the previous frame. Zero the counts up front so a
+        // caller that logs the error and renders anyway draws nothing rather
+        // than last frame's glyphs from a stale buffer.
+        self.glyphs_to_render = 0;
+        self.raster_glyphs_to_render = 0;
         self.text_area_occurrences.clear();
         let mut non_vector_collector: Vec<NonVectorGlyph> = Vec::new();
 
@@ -693,7 +716,7 @@ impl TextRenderer {
             // Enforced here, not left to the caller: these combinations are
             // ones the execution model cannot draw, so accepting them would
             // mean rendering something other than what was asked for.
-            crate::types::validate_decorations(text_area.decorations)?;
+
             let buffer_ptr = text_area.buffer as BufferPtr;
             let count = self.text_area_occurrences.entry(buffer_ptr).or_default();
             let cache_key = TextAreaCacheKey {
@@ -717,7 +740,7 @@ impl TextRenderer {
                 if glyphs_valid {
                     let dx = text_area.left - cached.left;
                     let dy = text_area.top - cached.top;
-                    let decorations = text_area.physical_decorations();
+                    let decorations = text_area.physical_decorations()?;
                     let extents = DecorationExtents::of(&decorations, DECORATION_AA);
                     // Color is paint only - it rides in the uniform and never
                     // moves a candidate. Spread and offset are geometry, and
@@ -768,7 +791,7 @@ impl TextRenderer {
                 clipped_bounds(text_area.bounds, resolution);
 
             let default_color = color_to_f32(text_area.default_color);
-            let decorations = text_area.physical_decorations();
+            let decorations = text_area.physical_decorations()?;
             let extents = DecorationExtents::of(&decorations, DECORATION_AA);
             let work_start = work.len();
 
@@ -1417,9 +1440,14 @@ impl TextRenderer {
             &border_uniforms,
             !(all_direct_hits && border_order_unchanged),
         );
-        let current_generation = atlas.generation();
+        // Stamped with the generation these entries were VALIDATED against,
+        // sampled before pass 2, not with whatever the atlas reports now. The
+        // two are equal today because only `trim()` bumps the generation and
+        // it is unreachable during prepare, but re-reading it here would mark
+        // entries holding pre-compaction glyph offsets as current and defeat
+        // the RemovedFromAtlas guard the moment that changed.
         for cached in self.text_area_cache.values_mut() {
-            cached.atlas_generation = current_generation;
+            cached.atlas_generation = atlas_gen;
         }
 
         self.raster_instances =
@@ -2126,13 +2154,19 @@ mod tests {
             ppem: 16.0,
         };
         let instances = [at(0.25, 0.0), at(0.75, 10.0), at(0.25, 20.0)];
-        assert_eq!(distinct_depths(&instances), vec![0.25, 0.75]);
+        assert_eq!(
+            distinct_depths(&instances),
+            vec![0.75, 0.25],
+            "farthest first, so the order does not depend on glyph order"
+        );
 
-        // Each partition's bounds cover only its own glyphs.
+        // Each partition's bounds cover only its own glyphs, grown by the
+        // half pixel the mask is actually rasterised over.
+        let aa = f64::from(DECORATION_AA) as f32;
         let near = instance_bounds_at_depth(&instances, [0.0, 0.0], 0.25).expect("has glyphs");
-        assert_eq!(near, [0.0, 0.0, 24.0, 4.0]);
+        assert_eq!(near, [-aa, -aa, 24.0 + aa, 4.0 + aa]);
         let far = instance_bounds_at_depth(&instances, [0.0, 0.0], 0.75).expect("has glyphs");
-        assert_eq!(far, [10.0, 0.0, 14.0, 4.0]);
+        assert_eq!(far, [10.0 - aa, -aa, 14.0 + aa, 4.0 + aa]);
     }
 
     #[test]

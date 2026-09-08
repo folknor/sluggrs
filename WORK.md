@@ -344,6 +344,25 @@ Record it; do not silently rely on the current ordering.
 
 ## Recorded, not fixed
 
+A filtered shadow over an area whose glyphs sit at DIFFERENT depths is
+split into one mask per depth, so each is occluded at its own depth. That
+is not the same picture as blurring the union: where two partitions'
+shadows overlap on screen they composite source-over and read darker
+than a single blur of the combined mask would. One composite quad
+carries one depth, so the two properties cannot both hold; occlusion was
+judged the more visible error. Partitions are ordered farthest-first so
+the result is at least deterministic. Reaching it needs an area whose
+glyphs carry different metadata and whose shadows overlap.
+
+The `&mut CommandEncoder` contract is documented on `prepare` but not
+enforced: a caller who submits a different encoder gets silently empty
+shadows and no error.
+
+WGSL `select` does not short-circuit, so the blur's zero-extension still
+issues a texture fetch for every out-of-domain tap and discards it. A
+cost, not a fault.
+
+
 The solid underlay is not an exact disjoint partition where BOTH
 coverages are partial: `f + o(1-f)` can exceed `o`. Under an idealized
 shared distance ramp, `spread >= 1` physical pixel guarantees `o = 1`

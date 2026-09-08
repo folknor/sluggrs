@@ -68,8 +68,20 @@ fn vs_border(instance: GlyphInstance, @builtin(vertex_index) vid: u32) -> Border
     // would diverge - and a zero-spread decoration is specified to reproduce
     // the glyph shape exactly.
     let ems_per_pixel = em_size / max(instance.screen_rect.zw, vec2<f32>(1.0, 1.0));
-    output.texcoord = base_uv
-        + vec2<f32>(normal.x, -normal.y) * ems_per_pixel * dilation;
+    // Built from the quad CENTRE outward rather than from a corner: the
+    // texcoord then advances at exactly ems_per_pixel per pixel for any quad
+    // size. Anchoring at the corner instead makes the gradient
+    // em_size*(1+2d)/(zw+2d), which equals ems_per_pixel only while
+    // zw >= 1 - so a sub-pixel glyph gave fill_coverage a different fwidth
+    // from fs_main, in exactly the case the shared denominator was meant to
+    // cover.
+    let em_centre = vec2<f32>(
+        (em_rect.x + em_rect.z) * 0.5,
+        (em_rect.y + em_rect.w) * 0.5,
+    );
+    let half_extent_px = instance.screen_rect.zw * 0.5 + vec2<f32>(dilation);
+    output.texcoord = em_centre
+        + vec2<f32>(normal.x, -normal.y) * ems_per_pixel * half_extent_px;
     output.descriptor = instance.glyph.x;
     output.pixels_per_em = instance.depth_ppem.y;
 
@@ -101,11 +113,13 @@ fn vs_border(instance: GlyphInstance, @builtin(vertex_index) vid: u32) -> Border
 /// and which would show as a bright core wherever glyphs touch.
 @fragment
 fn fs_mask(input: BorderVertexOutput) -> @location(0) f32 {
-    let outer = border_outer_coverage(input);
-    // At zero spread the distance field's rendition of the glyph edge is not
-    // exactly the analytic fill's; take whichever covers more so the mask
-    // never undercuts the shape being shadowed.
-    return max(outer, fill_coverage(input));
+    // The analytic fill coverage alone, not max() with the distance field's
+    // estimate of the same edge. Both estimate the coverage of one shape, so
+    // taking the larger is biased upward on every antialiased pixel and casts
+    // a shadow systematically bolder than the glyph casting it. Validation
+    // refuses a spread on a filtered decoration, so the mask is always the
+    // undilated glyph and this is the exact answer for it.
+    return fill_coverage(input);
 }
 
 /// The coverage the normal pipeline would produce for this fragment.
