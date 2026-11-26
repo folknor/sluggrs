@@ -155,8 +155,8 @@ fn main() {
     eprintln!("bench_frames={BENCH_FRAMES}");
     eprintln!("resolution={WIDTH}x{HEIGHT}");
 
-    // Self-reported wall for brokkr --bench (mandatory elapsed_ms KV on the
-    // kv-raw harness path): warmup + benchmark frame loops.
+    // Self-reported wall, the elapsed_ms KV bench/example.lua requires:
+    // warmup + benchmark frame loops.
     let measured_start = std::time::Instant::now();
 
     // Warmup
@@ -207,9 +207,8 @@ fn main() {
     }
 
     if gpu_times_us.is_empty() {
-        // Exit nonzero: with elapsed_ms mandatory on the bench harness path,
-        // a clean exit without KVs would error the whole brokkr run instead
-        // of recording one ERROR row.
+        // Exit nonzero so the bench fails on the exit code, naming this
+        // stderr line, rather than on the missing elapsed_ms KV.
         eprintln!("No valid GPU timestamps collected");
         std::process::exit(1);
     }

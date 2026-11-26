@@ -69,37 +69,40 @@ Never tell a codex agent to read CLAUDE.md (it is Claude-specific and contradict
 Five functions are instrumented with `#[hotpath::measure]`:
 - `extract_outline()`, `prepare_outline()`, `build_bands()`, `upload_glyph()`, `prepare_with_depth()`
 
-`.brokkr/results.db` is committed to git - always commit it after profiling runs so performance data is tracked alongside the code. Brokkr requires a clean git tree to store results, but allows a dirty `results.db` or markdown file changes - so you don't need to commit CLAUDE.md edits before running profiling.
+Benches run through `brokkr bench` (Lua script benches, see AGENTS.md). Runs
+go to the per-user bench store / results server, not to git.
+`.brokkr/results.db` holds the history from the retired `brokkr hotpath`
+command; it stays committed but new runs no longer land in it. A run on a
+dirty tree is stored but marked dirty and never compared, so commit before
+benchmarking anything you want to compare.
 
-The hotpath example emits KV pairs to stderr (captured by brokkr):
-`distinct_glyphs`, `curve_texels`, `band_texels`, `cold_prepare_us`,
-`warm_prepare_avg_us`, `mixed_prepare_avg_us`, `curve_texture_bytes`,
-`band_texture_bytes`, `gpu_text_render_us`.
+Each example's `key=value` stderr lines land in the run's `record.kv`
+(the render bench: `distinct_glyphs`, `cold_prepare_us`,
+`warm_prepare_avg_us`, `mixed_prepare_avg_us`, `buffer_bytes`,
+`gpu_text_render_us` and more). `brokkr results UUID` shows them.
 
 ### Cross-commit A/B
 
-Same-host A/B verdicts no longer need manual checkout juggling:
-
-- `brokkr hotpath --bench` builds the example bare (no hotpath
-  instrumentation) and runs it 3 times by default - these uninstrumented
-  walls are the numbers to compare across commits.
+- `brokkr bench render` builds the example bare (no hotpath
+  instrumentation) and runs it 3 times - these uninstrumented walls are
+  the numbers to compare across commits. `--hotpath` and `--alloc` runs
+  pair only with their own kind.
 - `--commit <sha>` builds and benchmarks an old commit in a brokkr-managed
   worktree, leaving the working tree alone. Worktrees are persistent (with
   their own target dir, deliberately not the shared one); remove them with
   `brokkr clean --worktrees` when done.
-- `brokkr results --compare <sha_a> <sha_b> --mode bench` shows the verdict
-  side-by-side.
-
-Run counts ride on the mode flags (`--bench 5`, `--hotpath 3`, `--alloc 5`);
-the old `-n` flag and `results --compare-last` are gone.
+- `brokkr bench --rounds 6 --commit A --commit B render` runs an
+  interleaved A/B (ABBA order); `brokkr results --invocation ID`
+  summarizes it.
 
 ### GPU profiling
 
 Both CPU and GPU profiling run headless - no user interaction needed.
 
-- `brokkr hotpath` measures CPU-side prepare AND GPU fragment shader
+- `brokkr bench render` measures CPU-side prepare AND GPU fragment shader
   time via wgpu-profiler timestamp queries. Renders to an offscreen 1920x1080
-  texture. The `gpu_text_render_us` KV is stored in results.db.
+  texture. The `gpu_text_render_us` KV is stored in the run's record.
+  `brokkr bench gpu` is the dedicated fragment-shader timing bench.
 - `brokkr run demo` also emits `gpu_text_render_ms` to stderr on each
   redraw (5 warmup frames at startup flush the profiler pipeline). A
   window opens but GPU timing is captured automatically.

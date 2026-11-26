@@ -9,7 +9,7 @@
 //! This stresses cold-path glyph processing, atlas growth, and GPU rendering
 //! at realistic international workloads.
 //!
-//! Run via brokkr:  brokkr sluggrs hotpath --target email2
+//! Run via brokkr:  brokkr bench [--hotpath | --alloc] email2
 //! Run standalone:  cargo run --release --example email2-bench --features hotpath
 
 use std::time::Instant;
@@ -325,8 +325,8 @@ fn main() {
     let mut buffers = build_buffers(&mut harness.font_system, &messages);
     let text_areas = layout_text_areas(&buffers);
 
-    // Self-reported wall for brokkr --bench (mandatory elapsed_ms KV on the
-    // kv-raw harness path). Excludes device/font init and buffer building.
+    // Self-reported wall, the elapsed_ms KV bench/example.lua requires.
+    // Excludes device/font init and buffer building.
     let measured_start = Instant::now();
 
     // -- Cold prepare: all caches empty --

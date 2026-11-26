@@ -6,7 +6,7 @@
 //! Exercises cold/warm/scroll prepare paths and GPU rendering at realistic
 //! glyph counts (~15k instances, ~300 distinct glyphs).
 //!
-//! Run via brokkr:  brokkr sluggrs hotpath  (once wired)
+//! Run via brokkr:  brokkr bench [--hotpath | --alloc] email
 //! Run standalone:  cargo run --release --example email-bench --features hotpath
 
 use std::time::Instant;
@@ -238,8 +238,8 @@ fn main() {
     let mut buffers = build_email_buffers(&mut harness.font_system);
     let text_areas = layout_text_areas(&buffers);
 
-    // Self-reported wall for brokkr --bench (mandatory elapsed_ms KV on the
-    // kv-raw harness path). Excludes device/font init and buffer building.
+    // Self-reported wall, the elapsed_ms KV bench/example.lua requires.
+    // Excludes device/font init and buffer building.
     let measured_start = Instant::now();
 
     // -- Cold prepare: all caches empty --

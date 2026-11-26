@@ -21,7 +21,7 @@ Cleanup opportunities in `wgpu/src/text.rs` - cryoglyph heritage and dual-pipeli
 ## CPU - Cold path
 
 Baseline: 92 glyphs, ~1.8ms cold prepare on RTX 3080.
-Mixed-locale baseline: 364 glyphs, ~4.6ms cold prepare (`brokkr hotpath --target email2`).
+Mixed-locale baseline: 364 glyphs, ~4.6ms cold prepare (`brokkr bench email2`).
 
 ### Additional cold-path items
 

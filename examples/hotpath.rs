@@ -5,7 +5,7 @@
 //! through the public TextRenderer::prepare API. The hotpath guard captures
 //! per-function timing/allocation data and writes it on exit.
 //!
-//! Run via brokkr:  brokkr sluggrs hotpath [--alloc]
+//! Run via brokkr:  brokkr bench [--hotpath | --alloc] render
 //! Run standalone:  cargo run --release --example hotpath --features hotpath
 
 use std::time::Instant;
@@ -44,8 +44,8 @@ fn main() {
         "How vexingly quick daft zebras jump!",
     );
 
-    // Self-reported wall for brokkr --bench (mandatory elapsed_ms KV on the
-    // kv-raw harness path). Excludes device and font-system init: covers
+    // Self-reported wall, the elapsed_ms KV bench/example.lua requires.
+    // Excludes device and font-system init: covers
     // cold + warm + mixed prepare and the GPU render loop.
     let measured_start = Instant::now();
 

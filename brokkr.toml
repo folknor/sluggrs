@@ -1,4 +1,6 @@
 project = "sluggrs"
+bench_scripts = "bench"
+bench_lib = "bench/lib"
 
 # These carry emoji deliberately - they are emoji-rendering fixtures (the whole
 # point is exercising the emoji glyph path), so the gremlin scan must skip them.
@@ -73,3 +75,53 @@ fonts = [
 
 [test]
 debug = true
+
+# Script benches (brokkr man bench). Every example bench shares one script:
+# the example does its own timing and prints key=value lines on stderr, which
+# the script stores in record.kv.
+
+[bench.render]
+script_file = "bench/example.lua"
+description = "Cold, warm and mixed prepare of a Latin paragraph plus GPU render, 1920x1080 offscreen"
+target = "hotpath"
+profile = "release"
+hotpath_features = ["hotpath"]
+alloc_features = ["hotpath-alloc"]
+
+[bench.email]
+script_file = "bench/example.lua"
+description = "Email-client-scale prepare, 8k+ glyphs, with scroll"
+target = "email_bench"
+profile = "release"
+hotpath_features = ["hotpath"]
+alloc_features = ["hotpath-alloc"]
+
+[bench.email2]
+script_file = "bench/example.lua"
+description = "Mixed-locale inbox, CJK, Arabic and Hindi, 200 messages"
+target = "email2_bench"
+profile = "release"
+hotpath_features = ["hotpath"]
+alloc_features = ["hotpath-alloc"]
+
+[bench.shared-buffer]
+script_file = "bench/example.lua"
+description = "Shared buffer prepare: direct hits, reculls and misses"
+target = "shared_buffer_bench"
+profile = "release"
+hotpath_features = ["hotpath"]
+alloc_features = ["hotpath-alloc"]
+
+[bench.atlas-repopulate]
+script_file = "bench/example.lua"
+description = "Atlas repopulate from the blob cache after eviction"
+target = "atlas_repopulate_bench"
+profile = "release"
+hotpath_features = ["hotpath"]
+alloc_features = ["hotpath-alloc"]
+
+[bench.gpu]
+script_file = "bench/example.lua"
+description = "GPU fragment shader timing, no hotpath instrumentation"
+target = "gpu-bench"
+profile = "release"

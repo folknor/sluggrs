@@ -57,16 +57,14 @@ Wait and retry - the lock exists to prevent concurrent benchmark interference.
 brokkr check                                  # clippy + tests
 brokkr check -- --test glyph_pipeline_test    # run one test file
 brokkr check -- -- --ignored                  # run ignored (GPU-only) tests
-brokkr hotpath                                # timing profile (1 run, stored in results.db)
-brokkr hotpath --hotpath 3                    # 3 timing runs (run count rides on the mode flag)
-brokkr hotpath --alloc                        # allocation profile
-brokkr hotpath --alloc 5                      # 5 alloc runs
-brokkr hotpath --bench                        # uninstrumented build, 3 runs - walls comparable across commits
-brokkr hotpath --bench --commit 736e18c       # build + bench an old commit (brokkr-managed worktree)
-brokkr hotpath --target email                 # email-client-scale benchmark (8k+ glyphs)
-brokkr hotpath --target email2                # mixed-locale inbox (CJK/Arabic/Hindi, 200 messages)
-brokkr hotpath --target email --alloc         # email benchmark with allocation tracking
-brokkr hotpath -v                             # full build/bench/result output
+brokkr bench                                  # list the declared benches
+brokkr bench render                           # uninstrumented timing, 3 iterations
+brokkr bench --hotpath render                 # per-function timing profile
+brokkr bench --alloc render                   # allocation profile
+brokkr bench --iterations 10 email            # more iterations
+brokkr bench --commit 736e18c render          # build + bench an old commit (brokkr-managed worktree)
+brokkr bench --rounds 6 --commit main~1 --commit main render   # interleaved A/B of two builds
+brokkr bench --dry-run render                 # check the invocation, build nothing
 brokkr visual [snapshot] [--all]              # run visual snapshot tests
 brokkr fmt                                    # cargo fmt (args forwarded raw)
 brokkr list                                   # list snapshots and approval state
@@ -75,19 +73,23 @@ brokkr report <run_id>                        # show detailed results for a past
 brokkr visual-status                          # dashboard: all snapshots vs approved baselines
 brokkr results                                # last 20 results
 brokkr results <uuid>                         # look up by UUID prefix
-brokkr results --compare abc1 def2 --mode bench   # compare two commits side-by-side
+brokkr results --invocation ID                # summarize a --rounds A/B
 brokkr results --commit abc1                  # filter by commit prefix
 brokkr env                                    # show environment info
 brokkr clean                                  # clean build artifacts and scratch data
 brokkr history                                # browse command history
 ```
 
-The `--target` flag is a free-form string. `brokkr hotpath --target foo` builds
-`examples/foo_bench.rs` and files results under the command name "foo" (the
-default `hotpath` target files under "render"). The measurement mode is a
-separate axis: exact values `bench`, `hotpath`, `alloc`. To add a new
-benchmark target, create `examples/{name}_bench.rs` and a `[[example]]` entry
-in `Cargo.toml`.
+Benches are Lua script benches (`brokkr man bench`, `brokkr man bench-config`),
+declared as `[bench.NAME]` tables in `brokkr.toml`: `render` (examples/hotpath.rs),
+`email`, `email2`, `shared-buffer`, `atlas-repopulate` and `gpu`. They all
+share `bench/example.lua`: it runs the example once as the measured call,
+marked for hotpath capture, and parses its `key=value` stderr lines (via
+`bench/lib/kv.lua`) into `record.kv`. Every example must print `elapsed_ms`,
+and the script fails the run without it. To add a bench, write the example,
+give it an `[[example]]` entry in `Cargo.toml`, and add a `[bench.NAME]` table
+with `script_file = "bench/example.lua"` and `target` naming the example
+(plus `hotpath_features`/`alloc_features` if it holds a hotpath guard).
 
 ### Verifying changes that can alter rendered output
 
@@ -96,8 +98,8 @@ approved baselines, and the GPU-gated test suite (`brokkr check -- -- --ignored`
 The ignored suite is not part of a plain `brokkr check`, and it holds tests a
 snapshot cannot catch - e.g. `tests/solver_regression_test.rs`, which pins the
 solver cancellation fix at an exact subpixel witness no snapshot scene hits.
-For performance work, profile with `brokkr hotpath` and commit
-`.brokkr/results.db` alongside the code.
+For performance work, profile with `brokkr bench --hotpath render` (or the
+relevant bench) and A/B with `brokkr bench --rounds`.
 
 ## Lints
 
